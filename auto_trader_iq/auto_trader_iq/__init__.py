@@ -1,6 +1,6 @@
-"""AUTO TRADER IQ — etapa 1: captura e seleção da tela.
+"""AUTO TRADER IQ — etapas 1 e 2: captura de tela e OCR experimental.
 
-Este pacote não reconhece sinais nem envia ordens à corretora.
+Candidatos OCR são apenas para inspeção humana; este pacote não envia ordens.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

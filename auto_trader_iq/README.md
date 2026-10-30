@@ -1,62 +1,60 @@
-# AUTO TRADER IQ — Etapa 1: captura da tela
+# AUTO TRADER IQ — Etapa 2: OCR experimental de BUY/SELL
 
-Primeiro módulo funcional para selecionar manualmente e visualizar continuamente uma região de tela. **Esta entrega é somente de captura**: não lê BUY/SELL, não identifica velas, não clica, não envia ordens e não interage com a corretora.
+Protótipo para selecionar e visualizar uma região da tela e, opcionalmente, procurar os textos BUY/SELL com OCR. **O resultado é apenas um candidato visual para revisão humana**: não valida o sinal, não associa o texto a uma vela, não clica, não envia ordens e não interage com a corretora. O OCR começa desligado.
 
 ## Arquitetura e decisões técnicas
 
-- **Python 3.12+** e `tkinter` para uma interface local simples (já distribuído com a instalação oficial do Python para Windows).
-- **MSS** para captura de regiões/monitores com baixa sobrecarga e sem capturar desnecessariamente toda a tela em cada atualização.
-- **Pillow** para conversão, preview redimensionado e gravação opcional de snapshots.
-- **Sem OpenCV, Tesseract, PyAutoGUI ou NumPy nesta etapa**: ainda não há processamento de sinais e não se deve incluir automação de entrada real antes de validar captura e reconhecimento. As coordenadas são mantidas em pixels absolutos, incluindo monitores posicionados à esquerda do principal.
-- A indicação de “sem mudança visual” é apenas um **sinal heurístico**. Um gráfico parado pode ser legítimo; a captura visual, por si só, não identifica com segurança carregamento, perda de conexão ou congelamento da plataforma.
+- **Python 3.12+** e `tkinter` para a interface local.
+- **MSS** captura apenas a região selecionada; **Pillow** prepara e anota o preview.
+- **pytesseract** chama o mecanismo Tesseract OCR instalado separadamente no Windows. O mecanismo roda uma vez por segundo, não em todos os quadros.
+- São aceitas somente palavras exatas BUY e SELL após normalização simples e o limite de confiança configurado. A confiança do Tesseract **não é uma probabilidade calibrada de acerto**.
+- O preview desenha caixas sobre o texto detectado. Sem caixa não significa que não existe sinal: pode haver falha de OCR, baixa resolução, oclusão ou contraste insuficiente.
+- Nenhum módulo de automação de mouse/teclado ou envio de ordens existe neste projeto.
 
 ## Instalação no Windows
 
-1. Instale Python 3.12 ou superior pelo site oficial e marque **Add python.exe to PATH**. Confirme que `tkinter` está disponível com `python -m tkinter`.
-2. Abra PowerShell nesta pasta (`auto_trader_iq`) e execute:
+1. Instale Python 3.12 ou superior e confirme `python -m tkinter`.
+2. Instale o **Tesseract OCR para Windows** separadamente. O pacote Python `pytesseract` é apenas um adaptador e não instala o executável OCR. Anote o caminho para `tesseract.exe`; o padrão frequente é `C:\Program Files\Tesseract-OCR\tesseract.exe`.
+3. Abra PowerShell dentro da pasta `auto_trader_iq` do projeto (a que contém `requirements.txt`) e instale as dependências:
 
 ```powershell
 py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-pip install -r requirements.txt
+python -m pip install -r .\requirements.txt
 ```
 
-Se a política do PowerShell impedir ativação do ambiente, use diretamente:
+Se o ambiente virtual já estiver criado e ativo, não crie outro; basta executar o `pip install` acima nessa pasta.
+
+Se o executável Tesseract não estiver no PATH, configure-o para a sessão atual do PowerShell antes de iniciar:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+$env:TESSERACT_CMD = "C:\Program Files\Tesseract-OCR\tesseract.exe"
 ```
 
-## Executar
+## Executar e testar
 
-Com o ambiente virtual ativado e estando dentro de `auto_trader_iq`:
+Estando na pasta `auto_trader_iq` do projeto:
 
 ```powershell
 python -m auto_trader_iq.app
 ```
 
-1. Escolha o monitor onde está o gráfico.
-2. Clique **Selecionar com o mouse…** e arraste para delimitar a área do gráfico; pressione `Esc` para cancelar.
-3. Alternativamente, informe X, Y, largura e altura em pixels e aplique.
-4. Inicie a visualização. A janela mostra aproximadamente dois quadros por segundo; “Parar visualização” encerra o ciclo.
-5. **Salvar captura atual…** grava o último quadro em PNG para inspeção.
+1. Escolha o monitor e selecione apenas a área do **gráfico/indicador**. Evite incluir os botões de compra/venda da corretora ou outras áreas com palavras BUY/SELL.
+2. Para apenas visualizar a tela, deixe **Ativar OCR experimental BUY/SELL** desmarcado e inicie a visualização.
+3. Para testar OCR, marque a opção, configure a confiança mínima e inicie. Se o Tesseract não for encontrado, a mensagem de erro informa o que configurar.
+4. Compare as caixas e palavras mostradas com o gráfico real. Use **Salvar captura atual…** para guardar uma imagem sem anotação em `%LOCALAPPDATA%\AutoTraderIQ\screenshots\`.
+5. A janela inicia parada e o OCR desligado. Parar a visualização interrompe o ciclo.
 
-A configuração e os snapshots ficam fora do repositório: `%LOCALAPPDATA%\AutoTraderIQ\` no Windows. A janela inicia sempre com a captura parada. A seleção precisa ser refeita se resolução, escala de DPI ou organização dos monitores mudar.
-
-## Testes
-
-Na pasta `auto_trader_iq`:
+Testes unitários (não precisam de uma janela gráfica nem do executável Tesseract):
 
 ```powershell
 python -m unittest discover -s tests -v
 ```
 
-Os testes cobrem validação/conversão de coordenadas sem depender de uma sessão gráfica.
+## Limitações importantes / próximos passos
 
-## Limitações e próximas etapas
-
-- Esta etapa não tem detector de BUY/SELL, identidade da vela, validação de fechamento ou banco de operações.
-- OCR em etiquetas pequenas e a associação de um marcador à vela correta podem falhar com zoom, tema, escala, sobreposição e atualização da plataforma. Antes de qualquer operação, será necessário testar em modo de replay/simulação com capturas rotuladas e exigir confirmação em mais de um quadro; dúvida deve significar **não operar**.
-- O fechamento de vela não deve ser inferido apenas pelo relógio do computador. Sem um sinal confiável da plataforma, o sistema deverá aguardar ou solicitar confirmação manual.
-- A execução real em uma corretora envolve risco financeiro, pode contrariar regras/termos da plataforma e um clique não comprova aceitação da ordem. Não faz parte desta etapa; nenhum módulo de clique está incluído.
+- O OCR não sabe se o texto foi desenhado pelo indicador ou pertence a outro elemento visível; mantenha a região restrita ao gráfico.
+- Ainda não há associação de etiqueta à vela, confirmação de fechamento, deduplicação por identidade da vela, registro persistente ou gerenciamento de risco.
+- As coordenadas e a detecção precisam ser verificadas com imagens reais de BUY e SELL, em diferentes temas/zoom e em modo de replay ou simulação. Dúvida significa ignorar o candidato, nunca operar.
+- Não se pode inferir o fechamento efetivo da vela apenas pelo relógio local. Isso exige uma fonte temporal confiável da plataforma; se não puder ser confirmada, o processo deve aguardar.
+- Automação de operações financeiras apresenta risco e pode estar sujeita às regras da plataforma. Esta aplicação continua sendo apenas uma ferramenta de observação; não executa operações reais.

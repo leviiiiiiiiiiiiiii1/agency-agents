@@ -11,14 +11,16 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
 
-from PIL import Image, ImageTk
+from PIL import Image, ImageDraw, ImageTk
 
 from .capture import ScreenCapture, ScreenRegion
 from .region_selector import RegionSelector
+from .signal_detector import SignalCandidate, TesseractSignalDetector
 
 
 APP_NAME = "AUTO TRADER IQ"
 POLL_MS = 500
+OCR_INTERVAL_SECONDS = 1.0
 
 
 def _enable_windows_dpi_awareness() -> None:
@@ -55,7 +57,7 @@ class AutoTraderApp(tk.Tk):
     def __init__(self) -> None:
         _enable_windows_dpi_awareness()
         super().__init__()
-        self.title(f"{APP_NAME} — Captura de tela (Etapa 1)")
+        self.title(f"{APP_NAME} — Reconhecimento experimental (Etapa 2)")
         self.geometry("1050x760")
         self.minsize(800, 580)
 
@@ -68,8 +70,14 @@ class AutoTraderApp(tk.Tk):
         self.last_change_at = time.monotonic()
         self.last_pil_image: Image.Image | None = None
         self.preview_photo: ImageTk.PhotoImage | None = None
+        self.detector: TesseractSignalDetector | None = None
+        self.last_candidates: list[SignalCandidate] = []
+        self.last_ocr_at = 0.0
 
         self.monitor_var = tk.StringVar()
+        self.ocr_enabled_var = tk.BooleanVar(value=False)
+        self.confidence_var = tk.StringVar(value="70")
+        self.ocr_status = tk.StringVar(value="OCR desligado; nenhuma operação é executada.")
         self.region_vars = {key: tk.StringVar() for key in ("left", "top", "width", "height")}
         self.capture_status = tk.StringVar(value="Captura parada")
         self.heartbeat_status = tk.StringVar(value="Sem captura")
@@ -88,12 +96,12 @@ class AutoTraderApp(tk.Tk):
         header = ttk.Frame(self, padding=(18, 16))
         header.pack(fill="x")
         ttk.Label(header, text=APP_NAME, font=("Segoe UI", 20, "bold")).pack(anchor="w")
-        ttk.Label(header, text="Etapa 1 · Captura e seleção manual da região do gráfico",
+        ttk.Label(header, text="Etapa 2 · Reconhecimento OCR experimental de BUY/SELL",
                   font=("Segoe UI", 10)).pack(anchor="w", pady=(3, 0))
 
         warning = ttk.Label(
             self,
-            text="MODO SOMENTE CAPTURA — não reconhece sinais, não controla mouse/teclado e não envia ordens.",
+            text="SOMENTE OBSERVAÇÃO — OCR pode errar; candidatos não são sinais validados. Não controla mouse/teclado e não envia ordens.",
             foreground="#8a4b08", background="#fff3cd", padding=9,
         )
         warning.pack(fill="x", padx=18, pady=(0, 10))
@@ -126,10 +134,19 @@ class AutoTraderApp(tk.Tk):
             row=14, column=0, sticky="ew", pady=5
         )
 
+        ttk.Checkbutton(
+            controls, text="Ativar OCR experimental BUY/SELL", variable=self.ocr_enabled_var
+        ).grid(row=15, column=0, sticky="w", pady=(8, 2))
+        ttk.Label(controls, text="Confiança OCR mínima (0–100)").grid(row=16, column=0, sticky="w")
+        ttk.Spinbox(controls, from_=0, to=100, textvariable=self.confidence_var, width=8).grid(
+            row=17, column=0, sticky="w", pady=(2, 0)
+        )
+
         info = ttk.LabelFrame(controls, text="Estado", padding=10)
-        info.grid(row=15, column=0, sticky="ew", pady=(12, 0))
+        info.grid(row=18, column=0, sticky="ew", pady=(10, 0))
         ttk.Label(info, textvariable=self.capture_status, wraplength=250).pack(anchor="w")
         ttk.Label(info, textvariable=self.heartbeat_status, wraplength=250).pack(anchor="w", pady=(5, 0))
+        ttk.Label(info, textvariable=self.ocr_status, wraplength=250).pack(anchor="w", pady=(5, 0))
         controls.columnconfigure(0, weight=1)
 
         preview_box = ttk.LabelFrame(body, text="Pré-visualização da região", padding=8)
@@ -215,6 +232,22 @@ class AutoTraderApp(tk.Tk):
             self._apply_coordinates()
             if self.region is None:
                 return
+        self.detector = None
+        if self.ocr_enabled_var.get():
+            try:
+                confidence = float(self.confidence_var.get())
+                executable = os.environ.get("TESSERACT_CMD")
+                detector = TesseractSignalDetector(confidence, executable)
+                detector.check_ready()
+                self.detector = detector
+                self.ocr_status.set(f"OCR ativo · confiança mínima {confidence:.0f}% · apenas candidatos visuais")
+            except (ValueError, RuntimeError) as exc:
+                messagebox.showerror(APP_NAME, f"Não foi possível ativar o OCR:\n{exc}", parent=self)
+                return
+        else:
+            self.ocr_status.set("OCR desligado; nenhuma operação é executada.")
+        self.last_candidates = []
+        self.last_ocr_at = 0.0
         self.running = True
         self.last_frame_hash = None
         self.last_change_at = time.monotonic()
@@ -240,6 +273,15 @@ class AutoTraderApp(tk.Tk):
                     f"Sem mudança visual há {unchanged}s (heurística; não confirma congelamento)"
                     if unchanged >= 5 else "Captura ativa; quadro sem mudança momentânea"
                 )
+            if self.detector is not None and now - self.last_ocr_at >= OCR_INTERVAL_SECONDS:
+                try:
+                    self.last_candidates = self.detector.detect(image)
+                    self.last_ocr_at = now
+                    self._update_ocr_status(self.last_candidates)
+                except Exception as exc:
+                    # Falha do OCR não encerra a captura visual, mas interrompe novas leituras.
+                    self.detector = None
+                    self.ocr_status.set(f"OCR interrompido por erro: {exc}")
             self._show_preview(image)
             self.capture_status.set(f"Captura ativa · {image.width}×{image.height} px · 2 quadros/s")
         except Exception as exc:
@@ -250,10 +292,30 @@ class AutoTraderApp(tk.Tk):
             return
         self.after(POLL_MS, self._capture_tick)
 
+    def _update_ocr_status(self, candidates: list[SignalCandidate]) -> None:
+        if not candidates:
+            self.ocr_status.set("Nenhuma etiqueta BUY/SELL legível neste quadro; isso não descarta um sinal.")
+            return
+        summary = " | ".join(
+            f"{item.direction} {item.confidence:.0f}% em ({item.left},{item.top})"
+            for item in candidates[:4]
+        )
+        if len(candidates) > 4:
+            summary += f" | +{len(candidates) - 4}"
+        self.ocr_status.set(f"Candidato(s) OCR — revisar visualmente: {summary}")
+
     def _show_preview(self, image: Image.Image) -> None:
         max_width = max(200, self.preview.winfo_width() - 20)
         max_height = max(150, self.preview.winfo_height() - 20)
         preview_image = image.copy()
+        if self.last_candidates:
+            draw = ImageDraw.Draw(preview_image)
+            for item in self.last_candidates:
+                color = "#19a05b" if item.direction == "BUY" else "#e34141"
+                box = (item.left, item.top, item.left + item.width, item.top + item.height)
+                draw.rectangle(box, outline=color, width=3)
+                draw.text((item.left, max(0, item.top - 16)),
+                          f"{item.direction} {item.confidence:.0f}%", fill=color)
         preview_image.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
         self.preview_photo = ImageTk.PhotoImage(preview_image)
         self.preview.configure(image=self.preview_photo, text="")
