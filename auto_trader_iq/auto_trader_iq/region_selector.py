@@ -40,7 +40,7 @@ class RegionSelector(tk.Toplevel):
         self.canvas.pack()
         self.canvas.create_image(0, 0, image=self.photo, anchor="nw")
         self.canvas.create_text(
-            18, 18, anchor="nw", text="Arraste para marcar o gráfico. Esc cancela.",
+            18, 18, anchor="nw", text="Marque toda a área das velas (não só a atual). Esc cancela.",
             fill="white", font=("Segoe UI", 14, "bold"),
         )
         self.canvas.bind("<ButtonPress-1>", self._start_selection)

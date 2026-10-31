@@ -40,7 +40,7 @@ Dentro da pasta `auto_trader_iq` do projeto:
 python -m auto_trader_iq.app
 ```
 
-1. Selecione apenas o gráfico/indicador; exclua botões da corretora, janela do AUTO TRADER, banners e menus.
+1. Selecione toda a área útil do gráfico onde as velas podem se deslocar; não recorte somente a vela atual. Exclua botões da corretora, janela do AUTO TRADER, banners e menus. O filtro procura sinais apenas nas duas barras mais à direita.
 2. Marque **Ativar OCR experimental COMPRA/VENDER** antes de iniciar a visualização. **Modo compacto ao monitorar** fica ligado por padrão.
 3. Ao iniciar, o app vira um painel pequeno e continua na frente para permitir armar/confirmar. Arraste-o para uma área que não esteja dentro da região capturada; monitore o gráfico sem que o painel cubra os rótulos.
 4. Clique **Configurações (pausar)** para parar a captura e voltar à janela completa. Para evitar que o app seja reconhecido como parte do gráfico, a região e o painel compacto não podem se sobrepor.
