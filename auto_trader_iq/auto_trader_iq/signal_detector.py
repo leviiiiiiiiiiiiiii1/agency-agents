@@ -26,12 +26,21 @@ def parse_ocr_rows(data: dict[str, Any], min_confidence: float = 70.0) -> list[S
     if not 0 <= min_confidence <= 100:
         raise ValueError("A confiança mínima deve estar entre 0 e 100.")
 
+    aliases = {
+        "BUY": "BUY",
+        "COMPRA": "BUY",
+        "COMPRAR": "BUY",
+        "SELL": "SELL",
+        "VENDER": "SELL",
+        "VENDA": "SELL",
+    }
     candidates: list[SignalCandidate] = []
     row_count = len(data.get("text", []))
     for index in range(row_count):
         observed = str(data["text"][index]).strip()
         normalized = re.sub(r"[^A-Z]", "", observed.upper())
-        if normalized not in {"BUY", "SELL"}:
+        direction = aliases.get(normalized)
+        if direction is None:
             continue
         try:
             confidence = float(data["conf"][index])
@@ -43,7 +52,7 @@ def parse_ocr_rows(data: dict[str, Any], min_confidence: float = 70.0) -> list[S
             continue
         if confidence < min_confidence or width <= 0 or height <= 0:
             continue
-        candidates.append(SignalCandidate(normalized, confidence, left, top, width, height, observed))
+        candidates.append(SignalCandidate(direction, confidence, left, top, width, height, observed))
     return candidates
 
 
@@ -85,7 +94,7 @@ class TesseractSignalDetector:
         scale = 2
         prepared = ImageOps.autocontrast(image.convert("L"))
         prepared = prepared.resize((image.width * scale, image.height * scale), Image.Resampling.LANCZOS)
-        config = "--oem 3 --psm 11 -c tessedit_char_whitelist=BUYSELL"
+        config = "--oem 3 --psm 11 -c tessedit_char_whitelist=BUYSELLCOMPRAVENDER"
         data = pytesseract.image_to_data(prepared, config=config, output_type=pytesseract.Output.DICT)
         candidates = parse_ocr_rows(data, self.min_confidence)
         return [

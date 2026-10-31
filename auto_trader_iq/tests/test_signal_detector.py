@@ -29,6 +29,10 @@ class ParseOcrRowsTests(unittest.TestCase):
         found = parse_ocr_rows(rows(["sell!", "B-U-Y"], [90, 90]))
         self.assertEqual([candidate.direction for candidate in found], ["SELL", "BUY"])
 
+    def test_maps_portuguese_labels_to_buy_sell_directions(self):
+        found = parse_ocr_rows(rows(["COMPRA", "COMPRAR", "VENDER", "VENDA"], [95, 91, 90, 89]))
+        self.assertEqual([candidate.direction for candidate in found], ["BUY", "BUY", "SELL", "SELL"])
+
     def test_rejects_out_of_range_threshold(self):
         with self.assertRaises(ValueError):
             parse_ocr_rows(rows(["BUY"], [90]), 101)

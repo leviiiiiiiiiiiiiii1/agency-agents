@@ -1,13 +1,13 @@
-# AUTO TRADER IQ — Etapa 2: OCR experimental de BUY/SELL
+# AUTO TRADER IQ — Etapa 2: OCR experimental de COMPRA/VENDER
 
-Protótipo para selecionar e visualizar uma região da tela e, opcionalmente, procurar os textos BUY/SELL com OCR. **O resultado é apenas um candidato visual para revisão humana**: não valida o sinal, não associa o texto a uma vela, não clica, não envia ordens e não interage com a corretora. O OCR começa desligado.
+Protótipo para selecionar e visualizar uma região da tela e, opcionalmente, procurar os textos COMPRA/VENDER (e os aliases BUY/SELL) com OCR. **O resultado é apenas um candidato visual para revisão humana**: não valida o sinal, não associa o texto a uma vela, não clica, não envia ordens e não interage com a corretora. O OCR começa desligado.
 
 ## Arquitetura e decisões técnicas
 
 - **Python 3.12+** e `tkinter` para a interface local.
 - **MSS** captura apenas a região selecionada; **Pillow** prepara e anota o preview.
 - **pytesseract** chama o mecanismo Tesseract OCR instalado separadamente no Windows. O mecanismo roda uma vez por segundo, não em todos os quadros.
-- São aceitas somente palavras exatas BUY e SELL após normalização simples e o limite de confiança configurado. A confiança do Tesseract **não é uma probabilidade calibrada de acerto**.
+- São aceitas palavras exatas COMPRA, COMPRAR, VENDER, VENDA, BUY e SELL após normalização simples; a interface apresenta COMPRA/VENDER. O limite de confiança filtra candidatos, mas a confiança do Tesseract **não é uma probabilidade calibrada de acerto**.
 - O preview desenha caixas sobre o texto detectado. Sem caixa não significa que não existe sinal: pode haver falha de OCR, baixa resolução, oclusão ou contraste insuficiente.
 - Nenhum módulo de automação de mouse/teclado ou envio de ordens existe neste projeto.
 
@@ -40,8 +40,8 @@ python -m auto_trader_iq.app
 ```
 
 1. Escolha o monitor e selecione apenas a área do **gráfico/indicador**. Evite incluir os botões de compra/venda da corretora ou outras áreas com palavras BUY/SELL.
-2. Para apenas visualizar a tela, deixe **Ativar OCR experimental BUY/SELL** desmarcado e inicie a visualização.
-3. Para testar OCR, marque a opção, configure a confiança mínima e inicie. Se o Tesseract não for encontrado, a mensagem de erro informa o que configurar.
+2. Para apenas visualizar a tela, deixe **Ativar OCR experimental COMPRA/VENDER** desmarcado e inicie a visualização.
+3. Para testar OCR, marque a opção, configure a confiança mínima e inicie. O detector aceita COMPRA/VENDER e também BUY/SELL. Se o Tesseract não for encontrado, a mensagem de erro informa o que configurar.
 4. Compare as caixas e palavras mostradas com o gráfico real. Use **Salvar captura atual…** para guardar uma imagem sem anotação em `%LOCALAPPDATA%\AutoTraderIQ\screenshots\`.
 5. A janela inicia parada e o OCR desligado. Parar a visualização interrompe o ciclo.
 

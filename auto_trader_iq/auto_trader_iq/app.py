@@ -96,7 +96,7 @@ class AutoTraderApp(tk.Tk):
         header = ttk.Frame(self, padding=(18, 16))
         header.pack(fill="x")
         ttk.Label(header, text=APP_NAME, font=("Segoe UI", 20, "bold")).pack(anchor="w")
-        ttk.Label(header, text="Etapa 2 · Reconhecimento OCR experimental de BUY/SELL",
+        ttk.Label(header, text="Etapa 2 · OCR experimental de COMPRA/VENDER (BUY/SELL)",
                   font=("Segoe UI", 10)).pack(anchor="w", pady=(3, 0))
 
         warning = ttk.Label(
@@ -135,7 +135,7 @@ class AutoTraderApp(tk.Tk):
         )
 
         ttk.Checkbutton(
-            controls, text="Ativar OCR experimental BUY/SELL", variable=self.ocr_enabled_var
+            controls, text="Ativar OCR experimental COMPRA/VENDER", variable=self.ocr_enabled_var
         ).grid(row=15, column=0, sticky="w", pady=(8, 2))
         ttk.Label(controls, text="Confiança OCR mínima (0–100)").grid(row=16, column=0, sticky="w")
         ttk.Spinbox(controls, from_=0, to=100, textvariable=self.confidence_var, width=8).grid(
@@ -300,10 +300,11 @@ class AutoTraderApp(tk.Tk):
 
     def _update_ocr_status(self, candidates: list[SignalCandidate]) -> None:
         if not candidates:
-            self.ocr_status.set("Nenhuma etiqueta BUY/SELL legível neste quadro; isso não descarta um sinal.")
+            self.ocr_status.set("Nenhuma etiqueta COMPRA/VENDER legível neste quadro; isso não descarta um sinal.")
             return
         summary = " | ".join(
-            f"{item.direction} {item.confidence:.0f}% em ({item.left},{item.top})"
+            f"{'COMPRA' if item.direction == 'BUY' else 'VENDER'} {item.confidence:.0f}% "
+            f"(OCR: {item.observed_text}) em ({item.left},{item.top})"
             for item in candidates[:4]
         )
         if len(candidates) > 4:
@@ -320,8 +321,9 @@ class AutoTraderApp(tk.Tk):
                 color = "#19a05b" if item.direction == "BUY" else "#e34141"
                 box = (item.left, item.top, item.left + item.width, item.top + item.height)
                 draw.rectangle(box, outline=color, width=3)
+                label = "COMPRA" if item.direction == "BUY" else "VENDER"
                 draw.text((item.left, max(0, item.top - 16)),
-                          f"{item.direction} {item.confidence:.0f}%", fill=color)
+                          f"{label} {item.confidence:.0f}%", fill=color)
         preview_image.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
         self.preview_photo = ImageTk.PhotoImage(preview_image)
         self.preview.configure(image=self.preview_photo, text="")
