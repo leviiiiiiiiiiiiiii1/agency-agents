@@ -1,6 +1,6 @@
 # AUTO TRADER IQ — Etapa 3: simulação assistida
 
-O aplicativo seleciona uma área da tela e reconhece, por OCR, etiquetas COMPRA/COMPRAR e VENDER/VENDA (também aceita BUY/SELL). Durante a captura, a janela do AUTO TRADER é minimizada por padrão para não cobrir a corretora; ao restaurá-la, a captura pausa. A simulação implementa o fluxo informado: o sinal aparece após o fechamento de N; a entrada de teste só é registrada depois da confirmação de que N+1 nasceu.
+O aplicativo seleciona uma área da tela e reconhece, por OCR, etiquetas COMPRA/COMPRAR e VENDER/VENDA (também aceita BUY/SELL). Durante a captura, a interface muda para um painel compacto com controles de armar/confirmar, que pode ser movido para fora da região monitorada. Assim, o usuário interage sem restaurar a janela completa sobre o gráfico. A simulação segue o fluxo: o sinal aparece após o fechamento de N; a entrada de teste só é registrada depois da confirmação de que N+1 nasceu.
 
 **A abertura de N+1 é confirmada manualmente nesta etapa.** O programa ainda não determina automaticamente a identidade/abertura da vela. Nada clica, envia ordem ou interage com a corretora; o fluxo é uma simulação assistida e não valida sinal nem resultado financeiro.
 
@@ -40,8 +40,9 @@ python -m auto_trader_iq.app
 ```
 
 1. Selecione apenas o gráfico/indicador; exclua botões da corretora, janela do AUTO TRADER, banners e menus.
-2. Marque **Ativar OCR experimental COMPRA/VENDER** antes de iniciar a visualização. **Minimizar durante captura** fica ligado por padrão: a janela se esconde para deixar o gráfico visível.
-3. Para parar e editar, restaure a janela pelo ícone da barra de tarefas; isso pausa automaticamente a captura. Após iniciar, deixe o app minimizado. Se a janela ficar visível sobre a área, os pixels capturados serão contaminados.
+2. Marque **Ativar OCR experimental COMPRA/VENDER** antes de iniciar a visualização. **Modo compacto ao monitorar** fica ligado por padrão.
+3. Ao iniciar, o app vira um painel pequeno e continua na frente para permitir armar/confirmar. Arraste-o para uma área que não esteja dentro da região capturada; monitore o gráfico sem que o painel cubra os rótulos.
+4. Clique **Configurações (pausar)** para parar a captura e voltar à janela completa. Para evitar que o app seja reconhecido como parte do gráfico, a região e o painel compacto não podem se sobrepor.
 5. Confira os candidatos e selecione uma etiqueta na tabela. O rótulo e sua caixa no preview devem coincidir com a etiqueta do indicador.
 6. Clique **Armar candidato selecionado**. O aplicativo fica pendente e não registra uma entrada ainda.
 7. Somente depois de observar que a próxima vela N+1 nasceu, clique **Confirmar abertura da próxima vela**. O resultado é marcado como entrada simulada em memória. Use **Cancelar** para descartar o pendente; a mesma etiqueta não será rearmada naquela sessão.

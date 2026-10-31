@@ -1,4 +1,4 @@
-"""Interface da etapa 1: seleção e visualização contínua da tela."""
+"""Interface da etapa 3: OCR e simulação assistida sem ordens reais."""
 
 from __future__ import annotations
 
@@ -77,10 +77,10 @@ class AutoTraderApp(tk.Tk):
         self.simulation = SimulationWorkflow()
         self.candidates_by_id: dict[str, SignalCandidate] = {}
         self.simulation_status = tk.StringVar(value="Simulação parada; nenhuma entrada foi registrada.")
-        self.minimized_for_capture = False
+        self.compact_mode = False
 
         self.monitor_var = tk.StringVar()
-        self.minimize_during_capture_var = tk.BooleanVar(value=True)
+        self.compact_during_capture_var = tk.BooleanVar(value=True)
         self.ocr_enabled_var = tk.BooleanVar(value=False)
         self.confidence_var = tk.StringVar(value="70")
         self.ocr_status = tk.StringVar(value="OCR desligado; nenhuma operação é executada.")
@@ -90,7 +90,6 @@ class AutoTraderApp(tk.Tk):
         self._build_ui()
         self._load_monitors()
         self._load_config()
-        self.bind("<Map>", self._on_window_map, add="+")
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _build_ui(self) -> None:
@@ -100,20 +99,22 @@ class AutoTraderApp(tk.Tk):
         except tk.TclError:
             pass
 
-        header = ttk.Frame(self, padding=(18, 16))
+        self.full_ui = ttk.Frame(self)
+        self.full_ui.pack(fill="both", expand=True)
+        header = ttk.Frame(self.full_ui, padding=(18, 16))
         header.pack(fill="x")
         ttk.Label(header, text=APP_NAME, font=("Segoe UI", 20, "bold")).pack(anchor="w")
         ttk.Label(header, text="Etapa 3 · OCR e simulação assistida de COMPRA/VENDER",
                   font=("Segoe UI", 10)).pack(anchor="w", pady=(3, 0))
 
         warning = ttk.Label(
-            self,
+            self.full_ui,
             text="SIMULAÇÃO ASSISTIDA — escolha o rótulo, aguarde N+1 nascer e confirme manualmente. Não controla mouse/teclado nem envia ordens.",
             foreground="#8a4b08", background="#fff3cd", padding=9,
         )
         warning.pack(fill="x", padx=18, pady=(0, 10))
 
-        body = ttk.Frame(self, padding=(18, 0, 18, 18))
+        body = ttk.Frame(self.full_ui, padding=(18, 0, 18, 18))
         body.pack(fill="both", expand=True)
         controls = ttk.LabelFrame(body, text="Região monitorada", padding=12)
         controls.pack(side="left", fill="y", padx=(0, 14))
@@ -150,8 +151,8 @@ class AutoTraderApp(tk.Tk):
         )
 
         ttk.Checkbutton(
-            controls, text="Minimizar durante captura (recomendado)",
-            variable=self.minimize_during_capture_var,
+            controls, text="Modo compacto ao monitorar (recomendado)",
+            variable=self.compact_during_capture_var,
         ).grid(row=18, column=0, sticky="w", pady=(6, 0))
 
         info = ttk.LabelFrame(controls, text="Estado", padding=10)
@@ -207,8 +208,49 @@ class AutoTraderApp(tk.Tk):
         self.cancel_sim_button.pack(side="left", padx=6)
         ttk.Label(simulation_box, textvariable=self.simulation_status, wraplength=650).pack(anchor="w", pady=(4, 0))
 
-        footer = ttk.Label(self, text=f"Configuração e imagens locais: {self.data_dir}", padding=(18, 0, 18, 12))
+        footer = ttk.Label(self.full_ui, text=f"Configuração e imagens locais: {self.data_dir}", padding=(18, 0, 18, 12))
         footer.pack(fill="x")
+
+        self.compact_frame = ttk.Frame(self, padding=10)
+        ttk.Label(self.compact_frame, text="AUTO TRADER IQ · captura ativa",
+                  font=("Segoe UI", 13, "bold")).pack(anchor="w")
+        ttk.Label(
+            self.compact_frame,
+            text="Mantenha este painel fora da região monitorada. A captura continua enquanto você arma/confirma.",
+            wraplength=520,
+        ).pack(anchor="w", pady=(2, 4))
+        ttk.Label(self.compact_frame, textvariable=self.ocr_status, wraplength=520).pack(anchor="w", pady=(0, 4))
+        self.compact_candidate_table = ttk.Treeview(
+            self.compact_frame, columns=("label", "confidence", "position"),
+            show="headings", height=4, selectmode="browse",
+        )
+        self.compact_candidate_table.heading("label", text="Candidato OCR")
+        self.compact_candidate_table.heading("confidence", text="Confiança")
+        self.compact_candidate_table.heading("position", text="Posição")
+        self.compact_candidate_table.column("label", width=160, stretch=True)
+        self.compact_candidate_table.column("confidence", width=90, anchor="center")
+        self.compact_candidate_table.column("position", width=120, anchor="center")
+        self.compact_candidate_table.pack(fill="x", expand=True)
+        compact_buttons = ttk.Frame(self.compact_frame)
+        compact_buttons.pack(fill="x", pady=(6, 2))
+        ttk.Button(compact_buttons, text="Armar selecionado", command=self._arm_compact_candidate).pack(
+            side="left", padx=(0, 5)
+        )
+        self.compact_confirm_button = ttk.Button(
+            compact_buttons, text="Confirmar N+1", command=self._confirm_next_candle, state="disabled"
+        )
+        self.compact_confirm_button.pack(side="left", padx=5)
+        self.compact_cancel_button = ttk.Button(
+            compact_buttons, text="Cancelar pendente", command=self._cancel_pending_simulation,
+            state="disabled",
+        )
+        self.compact_cancel_button.pack(side="left", padx=5)
+        ttk.Button(
+            compact_buttons, text="Configurações (pausar)", command=self._return_to_full_ui
+        ).pack(side="right")
+        ttk.Label(self.compact_frame, textvariable=self.simulation_status, wraplength=520).pack(
+            anchor="w", pady=(4, 0)
+        )
 
     def _load_monitors(self) -> None:
         try:
@@ -310,29 +352,43 @@ class AutoTraderApp(tk.Tk):
         self.last_change_at = time.monotonic()
         self.start_button.configure(text="Parar visualização")
         self.capture_status.set("Capturando…")
-        self.minimized_for_capture = self.minimize_during_capture_var.get()
-        if self.minimized_for_capture:
-            self.capture_status.set("Capturando em segundo plano; restaurar a janela pausa a captura.")
-            self.after(150, self._minimize_for_capture)
-            # Aguarda a janela desaparecer antes do primeiro screenshot, evitando capturar o próprio app.
-            self.after(650, self._capture_tick)
+        if self.compact_during_capture_var.get():
+            self._enter_compact_mode()
+            self.capture_status.set("Captura ativa em modo compacto; deixe este painel fora da região monitorada.")
+            # Espera a janela redimensionar antes do primeiro screenshot.
+            self.after(350, self._capture_tick)
         else:
             self._capture_tick()
 
-    def _minimize_for_capture(self) -> None:
-        if self.running and self.minimized_for_capture:
-            self.iconify()
+    def _enter_compact_mode(self) -> None:
+        if self.compact_mode:
+            return
+        self.full_ui.pack_forget()
+        self.compact_frame.pack(fill="both", expand=True)
+        self.compact_mode = True
+        self.minsize(420, 300)
+        self.geometry("560x330+0+0")
+        self.update_idletasks()
 
-    def _on_window_map(self, event: tk.Event) -> None:
-        if event.widget is self and self.running and self.minimized_for_capture:
-            self._stop_capture("Captura pausada porque a janela do AUTO TRADER foi restaurada.")
+    def _exit_compact_mode(self) -> None:
+        if not self.compact_mode:
+            return
+        self.compact_frame.pack_forget()
+        self.full_ui.pack(fill="both", expand=True)
+        self.compact_mode = False
+        self.minsize(800, 580)
+        self.geometry("1050x760")
+        self.update_idletasks()
+
+    def _return_to_full_ui(self) -> None:
+        self._stop_capture("Captura pausada para ajustes.")
 
     def _stop_capture(self, reason: str) -> None:
         self.running = False
-        self.minimized_for_capture = False
         self.start_button.configure(text="Iniciar visualização")
         self.capture_status.set(reason)
         self.heartbeat_status.set("Sem captura")
+        self._exit_compact_mode()
 
     def _capture_tick(self) -> None:
         if not self.running or self.region is None:
@@ -392,10 +448,13 @@ class AutoTraderApp(tk.Tk):
         return f"{candidate.direction}-{center_x // 12}-{center_y // 12}"
 
     def _update_candidate_table(self, candidates: list[SignalCandidate]) -> None:
-        selected = self.candidate_table.selection()
-        selected_id = selected[0] if selected else None
-        for item_id in self.candidate_table.get_children():
-            self.candidate_table.delete(item_id)
+        main_selection = self.candidate_table.selection()
+        compact_selection = self.compact_candidate_table.selection()
+        main_id = main_selection[0] if main_selection else None
+        compact_id = compact_selection[0] if compact_selection else None
+        for table in (self.candidate_table, self.compact_candidate_table):
+            for item_id in table.get_children():
+                table.delete(item_id)
         self.candidates_by_id.clear()
         for candidate in candidates:
             item_id = self._candidate_row_id(candidate)
@@ -405,20 +464,31 @@ class AutoTraderApp(tk.Tk):
                 self.candidates_by_id[item_id] = candidate
         for item_id, candidate in self.candidates_by_id.items():
             label = "COMPRA" if candidate.direction == "BUY" else "VENDER"
-            self.candidate_table.insert(
-                "", "end", iid=item_id,
-                values=(f"{label} ({candidate.observed_text})", f"{candidate.confidence:.0f}%",
-                        f"{candidate.left}, {candidate.top}"),
-            )
-        if selected_id in self.candidates_by_id:
-            self.candidate_table.selection_set(selected_id)
+            values = (f"{label} ({candidate.observed_text})", f"{candidate.confidence:.0f}%",
+                      f"{candidate.left}, {candidate.top}")
+            self.candidate_table.insert("", "end", iid=item_id, values=values)
+            self.compact_candidate_table.insert("", "end", iid=item_id, values=values)
+        if main_id in self.candidates_by_id:
+            self.candidate_table.selection_set(main_id)
+        if compact_id in self.candidates_by_id:
+            self.compact_candidate_table.selection_set(compact_id)
 
     def _arm_selected_candidate(self) -> None:
         selection = self.candidate_table.selection()
         if not selection:
             self.simulation_status.set("Selecione um candidato OCR e confira a caixa sobre a etiqueta no gráfico.")
             return
-        candidate = self.candidates_by_id.get(selection[0])
+        self._arm_candidate_id(selection[0])
+
+    def _arm_compact_candidate(self) -> None:
+        selection = self.compact_candidate_table.selection()
+        if not selection:
+            self.simulation_status.set("Selecione uma etiqueta visível no gráfico.")
+            return
+        self._arm_candidate_id(selection[0])
+
+    def _arm_candidate_id(self, item_id: str) -> None:
+        candidate = self.candidates_by_id.get(item_id)
         if candidate is None:
             self.simulation_status.set("O candidato não está mais no quadro atual; aguarde a próxima leitura.")
             return
@@ -432,8 +502,10 @@ class AutoTraderApp(tk.Tk):
             f"Pendente: {label} ({pending.confidence:.0f}%). Aguarde a próxima vela nascer; "
             "confirme manualmente apenas quando isso estiver visível. Nenhuma ordem será enviada."
         )
-        self.confirm_candle_button.configure(state="normal")
-        self.cancel_sim_button.configure(state="normal")
+        for button in (self.confirm_candle_button, self.compact_confirm_button):
+            button.configure(state="normal")
+        for button in (self.cancel_sim_button, self.compact_cancel_button):
+            button.configure(state="normal")
 
     def _confirm_next_candle(self) -> None:
         try:
@@ -451,8 +523,10 @@ class AutoTraderApp(tk.Tk):
             f"ENTRADA SIMULADA: {label} às {confirmed}; abertura da próxima vela confirmada manualmente. "
             f"Histórico desta sessão: {len(self.simulation.entries)} entrada(s)."
         )
-        self.confirm_candle_button.configure(state="disabled")
-        self.cancel_sim_button.configure(state="disabled")
+        for button in (self.confirm_candle_button, self.compact_confirm_button):
+            button.configure(state="disabled")
+        for button in (self.cancel_sim_button, self.compact_cancel_button):
+            button.configure(state="disabled")
 
     def _cancel_pending_simulation(self) -> None:
         try:
@@ -463,8 +537,10 @@ class AutoTraderApp(tk.Tk):
         self.simulation_status.set(
             f"Simulação pendente cancelada ({pending.observed_text}); o mesmo rótulo não será rearmado nesta sessão."
         )
-        self.confirm_candle_button.configure(state="disabled")
-        self.cancel_sim_button.configure(state="disabled")
+        for button in (self.confirm_candle_button, self.compact_confirm_button):
+            button.configure(state="disabled")
+        for button in (self.cancel_sim_button, self.compact_cancel_button):
+            button.configure(state="disabled")
 
     def _show_preview(self, image: Image.Image) -> None:
         max_width = max(200, self.preview.winfo_width() - 20)
