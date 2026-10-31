@@ -1,6 +1,6 @@
 # AUTO TRADER IQ — Etapa 3: simulação assistida
 
-O aplicativo seleciona uma área da tela e reconhece, por OCR, etiquetas COMPRA/COMPRAR e VENDER/VENDA (também aceita BUY/SELL). A simulação implementa o fluxo informado: o sinal aparece após o fechamento de N; a entrada de teste só é registrada depois da confirmação de que N+1 nasceu.
+O aplicativo seleciona uma área da tela e reconhece, por OCR, etiquetas COMPRA/COMPRAR e VENDER/VENDA (também aceita BUY/SELL). Durante a captura, a janela do AUTO TRADER é minimizada por padrão para não cobrir a corretora; ao restaurá-la, a captura pausa. A simulação implementa o fluxo informado: o sinal aparece após o fechamento de N; a entrada de teste só é registrada depois da confirmação de que N+1 nasceu.
 
 **A abertura de N+1 é confirmada manualmente nesta etapa.** O programa ainda não determina automaticamente a identidade/abertura da vela. Nada clica, envia ordem ou interage com a corretora; o fluxo é uma simulação assistida e não valida sinal nem resultado financeiro.
 
@@ -40,10 +40,11 @@ python -m auto_trader_iq.app
 ```
 
 1. Selecione apenas o gráfico/indicador; exclua botões da corretora, janela do AUTO TRADER, banners e menus.
-2. Marque **Ativar OCR experimental COMPRA/VENDER** antes de iniciar a visualização.
-3. Confira os candidatos e selecione uma etiqueta na tabela. O rótulo e sua caixa no preview devem coincidir com a etiqueta do indicador.
-4. Clique **Armar candidato selecionado**. O aplicativo fica pendente e não registra uma entrada ainda.
-5. Somente depois de observar que a próxima vela N+1 nasceu, clique **Confirmar abertura da próxima vela**. O resultado é marcado como entrada simulada em memória. Use **Cancelar** para descartar o pendente; a mesma etiqueta não será rearmada naquela sessão.
+2. Marque **Ativar OCR experimental COMPRA/VENDER** antes de iniciar a visualização. **Minimizar durante captura** fica ligado por padrão: a janela se esconde para deixar o gráfico visível.
+3. Para parar e editar, restaure a janela pelo ícone da barra de tarefas; isso pausa automaticamente a captura. Após iniciar, deixe o app minimizado. Se a janela ficar visível sobre a área, os pixels capturados serão contaminados.
+5. Confira os candidatos e selecione uma etiqueta na tabela. O rótulo e sua caixa no preview devem coincidir com a etiqueta do indicador.
+6. Clique **Armar candidato selecionado**. O aplicativo fica pendente e não registra uma entrada ainda.
+7. Somente depois de observar que a próxima vela N+1 nasceu, clique **Confirmar abertura da próxima vela**. O resultado é marcado como entrada simulada em memória. Use **Cancelar** para descartar o pendente; a mesma etiqueta não será rearmada naquela sessão.
 
 Testes unitários (não precisam de tela gráfica nem do mecanismo Tesseract):
 

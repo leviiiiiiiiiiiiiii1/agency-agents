@@ -77,8 +77,10 @@ class AutoTraderApp(tk.Tk):
         self.simulation = SimulationWorkflow()
         self.candidates_by_id: dict[str, SignalCandidate] = {}
         self.simulation_status = tk.StringVar(value="Simulação parada; nenhuma entrada foi registrada.")
+        self.minimized_for_capture = False
 
         self.monitor_var = tk.StringVar()
+        self.minimize_during_capture_var = tk.BooleanVar(value=True)
         self.ocr_enabled_var = tk.BooleanVar(value=False)
         self.confidence_var = tk.StringVar(value="70")
         self.ocr_status = tk.StringVar(value="OCR desligado; nenhuma operação é executada.")
@@ -88,6 +90,7 @@ class AutoTraderApp(tk.Tk):
         self._build_ui()
         self._load_monitors()
         self._load_config()
+        self.bind("<Map>", self._on_window_map, add="+")
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _build_ui(self) -> None:
@@ -146,8 +149,13 @@ class AutoTraderApp(tk.Tk):
             row=17, column=0, sticky="w", pady=(2, 0)
         )
 
+        ttk.Checkbutton(
+            controls, text="Minimizar durante captura (recomendado)",
+            variable=self.minimize_during_capture_var,
+        ).grid(row=18, column=0, sticky="w", pady=(6, 0))
+
         info = ttk.LabelFrame(controls, text="Estado", padding=10)
-        info.grid(row=18, column=0, sticky="ew", pady=(10, 0))
+        info.grid(row=19, column=0, sticky="ew", pady=(8, 0))
         ttk.Label(info, textvariable=self.capture_status, wraplength=250).pack(anchor="w")
         ttk.Label(info, textvariable=self.heartbeat_status, wraplength=250).pack(anchor="w", pady=(5, 0))
         ttk.Label(info, textvariable=self.ocr_status, wraplength=250).pack(anchor="w", pady=(5, 0))
@@ -224,6 +232,8 @@ class AutoTraderApp(tk.Tk):
         return index if 0 <= index < len(self.monitors) else None
 
     def _open_selector(self) -> None:
+        if self.running:
+            self._stop_capture("Captura pausada para selecionar a região.")
         index = self._selected_monitor_index()
         if index is None:
             messagebox.showerror(APP_NAME, "Nenhum monitor disponível para captura.", parent=self)
@@ -273,10 +283,7 @@ class AutoTraderApp(tk.Tk):
 
     def _toggle_capture(self) -> None:
         if self.running:
-            self.running = False
-            self.start_button.configure(text="Iniciar visualização")
-            self.capture_status.set("Captura parada")
-            self.heartbeat_status.set("Sem captura")
+            self._stop_capture("Captura parada pelo usuário.")
             return
         if self.region is None:
             self._apply_coordinates()
@@ -303,7 +310,29 @@ class AutoTraderApp(tk.Tk):
         self.last_change_at = time.monotonic()
         self.start_button.configure(text="Parar visualização")
         self.capture_status.set("Capturando…")
-        self._capture_tick()
+        self.minimized_for_capture = self.minimize_during_capture_var.get()
+        if self.minimized_for_capture:
+            self.capture_status.set("Capturando em segundo plano; restaurar a janela pausa a captura.")
+            self.after(150, self._minimize_for_capture)
+            # Aguarda a janela desaparecer antes do primeiro screenshot, evitando capturar o próprio app.
+            self.after(650, self._capture_tick)
+        else:
+            self._capture_tick()
+
+    def _minimize_for_capture(self) -> None:
+        if self.running and self.minimized_for_capture:
+            self.iconify()
+
+    def _on_window_map(self, event: tk.Event) -> None:
+        if event.widget is self and self.running and self.minimized_for_capture:
+            self._stop_capture("Captura pausada porque a janela do AUTO TRADER foi restaurada.")
+
+    def _stop_capture(self, reason: str) -> None:
+        self.running = False
+        self.minimized_for_capture = False
+        self.start_button.configure(text="Iniciar visualização")
+        self.capture_status.set(reason)
+        self.heartbeat_status.set("Sem captura")
 
     def _capture_tick(self) -> None:
         if not self.running or self.region is None:
@@ -335,9 +364,9 @@ class AutoTraderApp(tk.Tk):
             self._show_preview(image)
             self.capture_status.set(f"Captura ativa · {image.width}×{image.height} px · 2 quadros/s")
         except Exception as exc:
-            self.running = False
-            self.start_button.configure(text="Iniciar visualização")
-            self.capture_status.set(f"Erro de captura: {exc}")
+            self._stop_capture(f"Erro de captura: {exc}")
+            if self.state() == "iconic":
+                self.deiconify()
             messagebox.showerror(APP_NAME, f"A captura foi interrompida:\n{exc}", parent=self)
             return
         self.after(POLL_MS, self._capture_tick)
