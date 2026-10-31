@@ -14,6 +14,7 @@ from tkinter import messagebox, ttk
 from PIL import Image, ImageDraw, ImageTk
 
 from .capture import ScreenCapture, ScreenRegion
+from .candle_monitor import detect_candle_bars, filter_to_recent_candle
 from .region_selector import RegionSelector
 from .signal_detector import SignalCandidate, TesseractSignalDetector
 from .simulation import SimulationWorkflow
@@ -410,9 +411,11 @@ class AutoTraderApp(tk.Tk):
                 )
             if self.detector is not None and now - self.last_ocr_at >= OCR_INTERVAL_SECONDS:
                 try:
-                    self.last_candidates = self.detector.detect(image)
+                    raw_candidates = self.detector.detect(image)
+                    bars = detect_candle_bars(image)
+                    self.last_candidates = filter_to_recent_candle(raw_candidates, bars)
                     self.last_ocr_at = now
-                    self._update_ocr_status(self.last_candidates)
+                    self._update_ocr_status(self.last_candidates, len(raw_candidates), len(bars))
                 except Exception as exc:
                     # Falha do OCR não encerra a captura visual, mas interrompe novas leituras.
                     self.detector = None
@@ -427,10 +430,23 @@ class AutoTraderApp(tk.Tk):
             return
         self.after(POLL_MS, self._capture_tick)
 
-    def _update_ocr_status(self, candidates: list[SignalCandidate]) -> None:
+    def _update_ocr_status(
+        self, candidates: list[SignalCandidate], raw_count: int = 0, candle_count: int = 0
+    ) -> None:
         self._update_candidate_table(candidates)
         if not candidates:
-            self.ocr_status.set("Nenhuma etiqueta COMPRA/VENDER legível neste quadro; isso não descarta um sinal.")
+            if raw_count and candle_count < 2:
+                self.ocr_status.set(
+                    f"OCR viu {raw_count} etiqueta(s), mas não localizou 2 velas com segurança; "
+                    "candidatos bloqueados."
+                )
+            elif raw_count:
+                self.ocr_status.set(
+                    f"OCR viu {raw_count} etiqueta(s); todas parecem históricas ou desalinhadas "
+                    "das 2 velas mais recentes e foram ignoradas."
+                )
+            else:
+                self.ocr_status.set("Nenhuma etiqueta recente legível; rótulos de velas passadas são ignorados.")
             return
         summary = " | ".join(
             f"{'COMPRA' if item.direction == 'BUY' else 'VENDER'} {item.confidence:.0f}% "
@@ -439,7 +455,10 @@ class AutoTraderApp(tk.Tk):
         )
         if len(candidates) > 4:
             summary += f" | +{len(candidates) - 4}"
-        self.ocr_status.set(f"Candidato(s) OCR — revisar visualmente: {summary}")
+        self.ocr_status.set(
+            f"Candidato(s) nas velas mais recentes — revise: {summary} "
+            f"(OCR bruto: {raw_count}; barras detectadas: {candle_count})"
+        )
 
     @staticmethod
     def _candidate_row_id(candidate: SignalCandidate) -> str:

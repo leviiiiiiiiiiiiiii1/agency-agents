@@ -10,6 +10,7 @@ O aplicativo seleciona uma área da tela e reconhece, por OCR, etiquetas COMPRA/
 - **MSS** captura somente a região selecionada; **Pillow** prepara e anota o preview.
 - **pytesseract** chama o mecanismo Tesseract OCR instalado separadamente no Windows. O OCR roda aproximadamente uma vez por segundo.
 - A confiança do Tesseract **não é uma probabilidade calibrada de acerto**. A palavra pode vir de controles da plataforma; mantenha a região restrita ao gráfico.
+- Um filtro heurístico em Pillow localiza corpos de candles vermelhos/verdes e só libera OCR associado ao mais recente sinal nas duas barras mais à direita. Se não localizar pelo menos duas barras ou não conseguir associar o texto, bloqueia o candidato. Isso reduz sinais históricos, mas não prova identidade de candle.
 - `SimulationWorkflow` impede mais de um sinal pendente, registra entrada somente quando o usuário confirma a próxima vela e bloqueia reutilização aproximada da mesma etiqueta durante a sessão. A identidade espacial é uma proteção de teste, não equivale à identidade real da vela e não persiste após fechar o programa.
 - Não há módulo de automação de mouse/teclado, conexão com corretora ou envio de ordens.
 
@@ -55,7 +56,7 @@ python -m unittest discover -s tests -v
 
 ## Limitações / próxima etapa
 
-- O OCR não distingue se uma palavra é etiqueta do indicador, texto histórico ou botão da plataforma. A seleção manual do candidato ainda é necessária.
+- O filtro de barras é uma heurística baseada em cor/largura/altura e mantém apenas candidatos alinhados às duas barras mais recentes; zoom, temas, doji, velas muito estreitas, rolagem e overlays podem causar falso bloqueio ou associação errada. Confira visualmente cada candidato; a seleção manual continua necessária.
 - A confirmação da abertura da próxima vela é manual porque ainda não foi validado um método visual confiável para detectar vela/candle identity, rolagem do gráfico e período configurado.
 - O histórico da simulação é apenas em memória; não mede lucro, não verifica aceitação de ordem e não usa dados de mercado.
 - Antes de automatizar essa confirmação, será necessário validar capturas sequenciais reais com o ativo e o período gráfico usados. Em qualquer incerteza, a ação segura é não simular/operar.
