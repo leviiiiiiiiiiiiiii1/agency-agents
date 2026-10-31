@@ -185,13 +185,19 @@ class AutoTraderApp(tk.Tk):
             messagebox.showerror(APP_NAME, "Nenhum monitor disponível para captura.", parent=self)
             return
         monitor = self.monitors[index]
+        # Esconda o próprio AUTO TRADER antes do screenshot para não selecionar a janela dele.
+        self.withdraw()
+        self.update_idletasks()
+        self.after(350, lambda: self._show_region_overlay(monitor))
+
+    def _show_region_overlay(self, monitor: dict[str, int]) -> None:
         try:
             image = ScreenCapture.capture(ScreenRegion(monitor["left"], monitor["top"],
                                                        monitor["width"], monitor["height"]))
         except Exception as exc:
+            self.deiconify()
             messagebox.showerror(APP_NAME, f"Falha ao capturar o monitor:\n{exc}", parent=self)
             return
-        self.withdraw()
 
         def selected(region: ScreenRegion) -> None:
             self.deiconify()
