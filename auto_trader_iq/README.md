@@ -1,21 +1,23 @@
-# AUTO TRADER IQ — Etapa 2: OCR experimental de COMPRA/VENDER
+# AUTO TRADER IQ — Etapa 3: simulação assistida
 
-Protótipo para selecionar e visualizar uma região da tela e, opcionalmente, procurar os textos COMPRA/VENDER (e os aliases BUY/SELL) com OCR. **O resultado é apenas um candidato visual para revisão humana**: não valida o sinal, não associa o texto a uma vela, não clica, não envia ordens e não interage com a corretora. O OCR começa desligado.
+O aplicativo seleciona uma área da tela e reconhece, por OCR, etiquetas COMPRA/COMPRAR e VENDER/VENDA (também aceita BUY/SELL). A simulação implementa o fluxo informado: o sinal aparece após o fechamento de N; a entrada de teste só é registrada depois da confirmação de que N+1 nasceu.
+
+**A abertura de N+1 é confirmada manualmente nesta etapa.** O programa ainda não determina automaticamente a identidade/abertura da vela. Nada clica, envia ordem ou interage com a corretora; o fluxo é uma simulação assistida e não valida sinal nem resultado financeiro.
 
 ## Arquitetura e decisões técnicas
 
 - **Python 3.12+** e `tkinter` para a interface local.
-- **MSS** captura apenas a região selecionada; **Pillow** prepara e anota o preview.
-- **pytesseract** chama o mecanismo Tesseract OCR instalado separadamente no Windows. O mecanismo roda uma vez por segundo, não em todos os quadros.
-- São aceitas palavras exatas COMPRA, COMPRAR, VENDER, VENDA, BUY e SELL após normalização simples; a interface apresenta COMPRA/VENDER. O limite de confiança filtra candidatos, mas a confiança do Tesseract **não é uma probabilidade calibrada de acerto**.
-- O preview desenha caixas sobre o texto detectado. Sem caixa não significa que não existe sinal: pode haver falha de OCR, baixa resolução, oclusão ou contraste insuficiente.
-- Nenhum módulo de automação de mouse/teclado ou envio de ordens existe neste projeto.
+- **MSS** captura somente a região selecionada; **Pillow** prepara e anota o preview.
+- **pytesseract** chama o mecanismo Tesseract OCR instalado separadamente no Windows. O OCR roda aproximadamente uma vez por segundo.
+- A confiança do Tesseract **não é uma probabilidade calibrada de acerto**. A palavra pode vir de controles da plataforma; mantenha a região restrita ao gráfico.
+- `SimulationWorkflow` impede mais de um sinal pendente, registra entrada somente quando o usuário confirma a próxima vela e bloqueia reutilização aproximada da mesma etiqueta durante a sessão. A identidade espacial é uma proteção de teste, não equivale à identidade real da vela e não persiste após fechar o programa.
+- Não há módulo de automação de mouse/teclado, conexão com corretora ou envio de ordens.
 
 ## Instalação no Windows
 
 1. Instale Python 3.12 ou superior e confirme `python -m tkinter`.
-2. Instale o **Tesseract OCR para Windows** separadamente. O pacote Python `pytesseract` é apenas um adaptador e não instala o executável OCR. Anote o caminho para `tesseract.exe`; o padrão frequente é `C:\Program Files\Tesseract-OCR\tesseract.exe`.
-3. Abra PowerShell dentro da pasta `auto_trader_iq` do projeto (a que contém `requirements.txt`) e instale as dependências:
+2. Instale o **Tesseract OCR para Windows** separadamente. `pytesseract` é apenas o adaptador Python. O caminho padrão frequente é `C:\Program Files\Tesseract-OCR\tesseract.exe`.
+3. No PowerShell, dentro da pasta `auto_trader_iq` do projeto (a que contém `requirements.txt`):
 
 ```powershell
 py -3.12 -m venv .venv
@@ -23,9 +25,7 @@ py -3.12 -m venv .venv
 python -m pip install -r .\requirements.txt
 ```
 
-Se o ambiente virtual já estiver criado e ativo, não crie outro; basta executar o `pip install` acima nessa pasta.
-
-Se o executável Tesseract não estiver no PATH, configure-o para a sessão atual do PowerShell antes de iniciar:
+Se a venv já estiver ativa, não crie outra. Caso o Tesseract não esteja no PATH, configure antes de iniciar:
 
 ```powershell
 $env:TESSERACT_CMD = "C:\Program Files\Tesseract-OCR\tesseract.exe"
@@ -33,28 +33,28 @@ $env:TESSERACT_CMD = "C:\Program Files\Tesseract-OCR\tesseract.exe"
 
 ## Executar e testar
 
-Estando na pasta `auto_trader_iq` do projeto:
+Dentro da pasta `auto_trader_iq` do projeto:
 
 ```powershell
 python -m auto_trader_iq.app
 ```
 
-1. Escolha o monitor e selecione apenas a área do **gráfico/indicador**. Evite incluir os botões de compra/venda da corretora ou outras áreas com palavras BUY/SELL.
-2. Para apenas visualizar a tela, deixe **Ativar OCR experimental COMPRA/VENDER** desmarcado e inicie a visualização.
-3. Para testar OCR, marque a opção, configure a confiança mínima e inicie. O detector aceita COMPRA/VENDER e também BUY/SELL. Se o Tesseract não for encontrado, a mensagem de erro informa o que configurar.
-4. Compare as caixas e palavras mostradas com o gráfico real. Use **Salvar captura atual…** para guardar uma imagem sem anotação em `%LOCALAPPDATA%\AutoTraderIQ\screenshots\`.
-5. A janela inicia parada e o OCR desligado. Parar a visualização interrompe o ciclo.
+1. Selecione apenas o gráfico/indicador; exclua botões da corretora, janela do AUTO TRADER, banners e menus.
+2. Marque **Ativar OCR experimental COMPRA/VENDER** antes de iniciar a visualização.
+3. Confira os candidatos e selecione uma etiqueta na tabela. O rótulo e sua caixa no preview devem coincidir com a etiqueta do indicador.
+4. Clique **Armar candidato selecionado**. O aplicativo fica pendente e não registra uma entrada ainda.
+5. Somente depois de observar que a próxima vela N+1 nasceu, clique **Confirmar abertura da próxima vela**. O resultado é marcado como entrada simulada em memória. Use **Cancelar** para descartar o pendente; a mesma etiqueta não será rearmada naquela sessão.
 
-Testes unitários (não precisam de uma janela gráfica nem do executável Tesseract):
+Testes unitários (não precisam de tela gráfica nem do mecanismo Tesseract):
 
 ```powershell
 python -m unittest discover -s tests -v
 ```
 
-## Limitações importantes / próximos passos
+## Limitações / próxima etapa
 
-- O OCR não sabe se o texto foi desenhado pelo indicador ou pertence a outro elemento visível; mantenha a região restrita ao gráfico.
-- Ainda não há associação de etiqueta à vela, confirmação de fechamento, deduplicação por identidade da vela, registro persistente ou gerenciamento de risco.
-- As coordenadas e a detecção precisam ser verificadas com imagens reais de BUY e SELL, em diferentes temas/zoom e em modo de replay ou simulação. Dúvida significa ignorar o candidato, nunca operar.
-- Não se pode inferir o fechamento efetivo da vela apenas pelo relógio local. Isso exige uma fonte temporal confiável da plataforma; se não puder ser confirmada, o processo deve aguardar.
-- Automação de operações financeiras apresenta risco e pode estar sujeita às regras da plataforma. Esta aplicação continua sendo apenas uma ferramenta de observação; não executa operações reais.
+- O OCR não distingue se uma palavra é etiqueta do indicador, texto histórico ou botão da plataforma. A seleção manual do candidato ainda é necessária.
+- A confirmação da abertura da próxima vela é manual porque ainda não foi validado um método visual confiável para detectar vela/candle identity, rolagem do gráfico e período configurado.
+- O histórico da simulação é apenas em memória; não mede lucro, não verifica aceitação de ordem e não usa dados de mercado.
+- Antes de automatizar essa confirmação, será necessário validar capturas sequenciais reais com o ativo e o período gráfico usados. Em qualquer incerteza, a ação segura é não simular/operar.
+- Operações financeiras envolvem risco e podem estar sujeitas às regras da plataforma. Execução real continua fora do escopo.

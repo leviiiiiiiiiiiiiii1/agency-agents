@@ -16,6 +16,7 @@ from PIL import Image, ImageDraw, ImageTk
 from .capture import ScreenCapture, ScreenRegion
 from .region_selector import RegionSelector
 from .signal_detector import SignalCandidate, TesseractSignalDetector
+from .simulation import SimulationWorkflow
 
 
 APP_NAME = "AUTO TRADER IQ"
@@ -57,7 +58,7 @@ class AutoTraderApp(tk.Tk):
     def __init__(self) -> None:
         _enable_windows_dpi_awareness()
         super().__init__()
-        self.title(f"{APP_NAME} — Reconhecimento experimental (Etapa 2)")
+        self.title(f"{APP_NAME} — Simulação assistida (Etapa 3)")
         self.geometry("1050x760")
         self.minsize(800, 580)
 
@@ -73,6 +74,9 @@ class AutoTraderApp(tk.Tk):
         self.detector: TesseractSignalDetector | None = None
         self.last_candidates: list[SignalCandidate] = []
         self.last_ocr_at = 0.0
+        self.simulation = SimulationWorkflow()
+        self.candidates_by_id: dict[str, SignalCandidate] = {}
+        self.simulation_status = tk.StringVar(value="Simulação parada; nenhuma entrada foi registrada.")
 
         self.monitor_var = tk.StringVar()
         self.ocr_enabled_var = tk.BooleanVar(value=False)
@@ -96,12 +100,12 @@ class AutoTraderApp(tk.Tk):
         header = ttk.Frame(self, padding=(18, 16))
         header.pack(fill="x")
         ttk.Label(header, text=APP_NAME, font=("Segoe UI", 20, "bold")).pack(anchor="w")
-        ttk.Label(header, text="Etapa 2 · OCR experimental de COMPRA/VENDER (BUY/SELL)",
+        ttk.Label(header, text="Etapa 3 · OCR e simulação assistida de COMPRA/VENDER",
                   font=("Segoe UI", 10)).pack(anchor="w", pady=(3, 0))
 
         warning = ttk.Label(
             self,
-            text="SOMENTE OBSERVAÇÃO — OCR pode errar; candidatos não são sinais validados. Não controla mouse/teclado e não envia ordens.",
+            text="SIMULAÇÃO ASSISTIDA — escolha o rótulo, aguarde N+1 nascer e confirme manualmente. Não controla mouse/teclado nem envia ordens.",
             foreground="#8a4b08", background="#fff3cd", padding=9,
         )
         warning.pack(fill="x", padx=18, pady=(0, 10))
@@ -154,6 +158,46 @@ class AutoTraderApp(tk.Tk):
         self.preview = ttk.Label(preview_box, text="Selecione uma região e inicie a visualização.",
                                  anchor="center")
         self.preview.pack(fill="both", expand=True)
+
+        simulation_box = ttk.LabelFrame(preview_box, text="Simulação assistida da próxima vela (sem ordens)", padding=6)
+        simulation_box.pack(fill="x", pady=(8, 0))
+        self.candidate_table = ttk.Treeview(
+            simulation_box, columns=("label", "confidence", "position"), show="headings", height=3,
+            selectmode="browse",
+        )
+        self.candidate_table.heading("label", text="Etiqueta OCR")
+        self.candidate_table.heading("confidence", text="Confiança")
+        self.candidate_table.heading("position", text="Posição na captura")
+        self.candidate_table.column("label", width=120, stretch=True)
+        self.candidate_table.column("confidence", width=100, anchor="center")
+        self.candidate_table.column("position", width=150, anchor="center")
+        self.candidate_table.pack(fill="x")
+        ttk.Label(simulation_box, text="Entradas simuladas nesta sessão").pack(anchor="w", pady=(5, 0))
+        self.history_table = ttk.Treeview(
+            simulation_box, columns=("time", "direction", "status"), show="headings", height=2
+        )
+        self.history_table.heading("time", text="Horário")
+        self.history_table.heading("direction", text="Direção")
+        self.history_table.heading("status", text="Estado")
+        self.history_table.column("time", width=90, anchor="center")
+        self.history_table.column("direction", width=100, anchor="center")
+        self.history_table.column("status", width=200, anchor="w")
+        self.history_table.pack(fill="x")
+        sim_buttons = ttk.Frame(simulation_box)
+        sim_buttons.pack(fill="x", pady=(5, 0))
+        ttk.Button(sim_buttons, text="Armar candidato selecionado", command=self._arm_selected_candidate).pack(
+            side="left", padx=(0, 6)
+        )
+        self.confirm_candle_button = ttk.Button(
+            sim_buttons, text="Confirmar abertura da próxima vela", command=self._confirm_next_candle,
+            state="disabled",
+        )
+        self.confirm_candle_button.pack(side="left", padx=6)
+        self.cancel_sim_button = ttk.Button(
+            sim_buttons, text="Cancelar", command=self._cancel_pending_simulation, state="disabled"
+        )
+        self.cancel_sim_button.pack(side="left", padx=6)
+        ttk.Label(simulation_box, textvariable=self.simulation_status, wraplength=650).pack(anchor="w", pady=(4, 0))
 
         footer = ttk.Label(self, text=f"Configuração e imagens locais: {self.data_dir}", padding=(18, 0, 18, 12))
         footer.pack(fill="x")
@@ -299,6 +343,7 @@ class AutoTraderApp(tk.Tk):
         self.after(POLL_MS, self._capture_tick)
 
     def _update_ocr_status(self, candidates: list[SignalCandidate]) -> None:
+        self._update_candidate_table(candidates)
         if not candidates:
             self.ocr_status.set("Nenhuma etiqueta COMPRA/VENDER legível neste quadro; isso não descarta um sinal.")
             return
@@ -310,6 +355,87 @@ class AutoTraderApp(tk.Tk):
         if len(candidates) > 4:
             summary += f" | +{len(candidates) - 4}"
         self.ocr_status.set(f"Candidato(s) OCR — revisar visualmente: {summary}")
+
+    @staticmethod
+    def _candidate_row_id(candidate: SignalCandidate) -> str:
+        center_x = candidate.left + candidate.width // 2
+        center_y = candidate.top + candidate.height // 2
+        return f"{candidate.direction}-{center_x // 12}-{center_y // 12}"
+
+    def _update_candidate_table(self, candidates: list[SignalCandidate]) -> None:
+        selected = self.candidate_table.selection()
+        selected_id = selected[0] if selected else None
+        for item_id in self.candidate_table.get_children():
+            self.candidate_table.delete(item_id)
+        self.candidates_by_id.clear()
+        for candidate in candidates:
+            item_id = self._candidate_row_id(candidate)
+            # OCR pode reportar um mesmo rótulo mais de uma vez; mantém a maior confiança.
+            old = self.candidates_by_id.get(item_id)
+            if old is None or candidate.confidence > old.confidence:
+                self.candidates_by_id[item_id] = candidate
+        for item_id, candidate in self.candidates_by_id.items():
+            label = "COMPRA" if candidate.direction == "BUY" else "VENDER"
+            self.candidate_table.insert(
+                "", "end", iid=item_id,
+                values=(f"{label} ({candidate.observed_text})", f"{candidate.confidence:.0f}%",
+                        f"{candidate.left}, {candidate.top}"),
+            )
+        if selected_id in self.candidates_by_id:
+            self.candidate_table.selection_set(selected_id)
+
+    def _arm_selected_candidate(self) -> None:
+        selection = self.candidate_table.selection()
+        if not selection:
+            self.simulation_status.set("Selecione um candidato OCR e confira a caixa sobre a etiqueta no gráfico.")
+            return
+        candidate = self.candidates_by_id.get(selection[0])
+        if candidate is None:
+            self.simulation_status.set("O candidato não está mais no quadro atual; aguarde a próxima leitura.")
+            return
+        try:
+            pending = self.simulation.arm(candidate)
+        except ValueError as exc:
+            self.simulation_status.set(str(exc))
+            return
+        label = "COMPRA" if pending.direction == "BUY" else "VENDER"
+        self.simulation_status.set(
+            f"Pendente: {label} ({pending.confidence:.0f}%). Aguarde a próxima vela nascer; "
+            "confirme manualmente apenas quando isso estiver visível. Nenhuma ordem será enviada."
+        )
+        self.confirm_candle_button.configure(state="normal")
+        self.cancel_sim_button.configure(state="normal")
+
+    def _confirm_next_candle(self) -> None:
+        try:
+            entry = self.simulation.confirm_next_candle()
+        except ValueError as exc:
+            self.simulation_status.set(str(exc))
+            return
+        label = "COMPRA" if entry.direction == "BUY" else "VENDER"
+        confirmed = entry.next_candle_confirmed_at.astimezone().strftime("%H:%M:%S")
+        self.history_table.insert(
+            "", "end", iid=entry.signal_id,
+            values=(confirmed, label, "SIMULADA · N+1 confirmada"),
+        )
+        self.simulation_status.set(
+            f"ENTRADA SIMULADA: {label} às {confirmed}; abertura da próxima vela confirmada manualmente. "
+            f"Histórico desta sessão: {len(self.simulation.entries)} entrada(s)."
+        )
+        self.confirm_candle_button.configure(state="disabled")
+        self.cancel_sim_button.configure(state="disabled")
+
+    def _cancel_pending_simulation(self) -> None:
+        try:
+            pending = self.simulation.cancel_pending()
+        except ValueError as exc:
+            self.simulation_status.set(str(exc))
+            return
+        self.simulation_status.set(
+            f"Simulação pendente cancelada ({pending.observed_text}); o mesmo rótulo não será rearmado nesta sessão."
+        )
+        self.confirm_candle_button.configure(state="disabled")
+        self.cancel_sim_button.configure(state="disabled")
 
     def _show_preview(self, image: Image.Image) -> None:
         max_width = max(200, self.preview.winfo_width() - 20)
