@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import math
 import sys
 from dataclasses import dataclass
 from typing import Callable
@@ -18,6 +19,20 @@ class ClickTarget:
             raise ValueError("As coordenadas do botão precisam ser inteiros não negativos.")
         if not isinstance(self.x, int) or not isinstance(self.y, int) or self.x < 0 or self.y < 0:
             raise ValueError("As coordenadas do botão precisam ser inteiros não negativos.")
+
+
+def demo_entry_deadline_open(
+    armed_at: float | None,
+    now: float,
+    max_delay_seconds: float = 10.0,
+) -> bool:
+    """Return whether an automatic DEMO entry is still within its arm deadline."""
+    if armed_at is None or not math.isfinite(armed_at) or not math.isfinite(now):
+        return False
+    if not math.isfinite(max_delay_seconds) or max_delay_seconds < 0:
+        return False
+    elapsed = now - armed_at
+    return 0 <= elapsed <= max_delay_seconds
 
 
 def click_demo_direction(

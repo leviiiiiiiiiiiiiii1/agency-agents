@@ -15,7 +15,13 @@ from tkinter import messagebox, ttk
 from PIL import Image, ImageDraw, ImageTk
 
 from .capture import ScreenCapture, ScreenRegion
-from .demo_click import ClickTarget, click_demo_direction, windows_mouse_click, windows_mouse_position
+from .demo_click import (
+    ClickTarget,
+    click_demo_direction,
+    demo_entry_deadline_open,
+    windows_mouse_click,
+    windows_mouse_position,
+)
 from .candle_monitor import detect_candle_bars, filter_to_recent_candle
 from .candle_timer import (
     PlatformClockReading,
@@ -36,6 +42,7 @@ POLL_MS = 500
 OCR_INTERVAL_SECONDS = 1.0
 TIMER_MAX_AGE_SECONDS = 1.5
 DEMO_ACTIVATION_TIMEOUT_SECONDS = 75
+DEMO_ENTRY_MAX_DELAY_SECONDS = 10.0
 
 
 def _enable_windows_dpi_awareness() -> None:
@@ -93,6 +100,7 @@ class AutoTraderApp(tk.Tk):
         self.latest_clock_at: float | None = None
         self.pending_armed_clock: PlatformClockReading | None = None
         self.pending_rollover_notified = False
+        self.demo_signal_armed_at: float | None = None
         self.latest_bar_count = 0
         self.sequence_recorder = SequenceRecorder(self.data_dir / "sequences")
         self.sequence_status = tk.StringVar(value="Gravação de teste inativa; nenhuma imagem está sendo salva.")
@@ -591,9 +599,9 @@ class AutoTraderApp(tk.Tk):
             "ATENÇÃO — cliques experimentais em conta DEMO.\n\n"
             "Confirme que a plataforma está na conta DEMO e que valor/expiração já foram conferidos. "
             "O AUTO TRADER não consegue verificar o tipo de conta nem os valores configurados.\n\n"
-            "Nesta ativação, o OCR arma automaticamente apenas um candidato inequívoco. Depois que HORA ATUAL "
-            "avançar exatamente um minuto, o app clica uma vez no botão calibrado se ainda estiver nos primeiros "
-            "30 segundos. A virada do relógio é somente uma aproximação de N+1; a vela não é identificada visualmente. "
+            "Nesta ativação, o OCR arma automaticamente apenas um candidato inequívoco e o app tenta clicar "
+            f"imediatamente, em até {DEMO_ENTRY_MAX_DELAY_SECONDS:.0f} s do armamento. Não espera a virada para N+1; "
+            "a entrada pode ocorrer ainda na vela N. A identidade da vela não é verificada visualmente. "
             f"O modo desliga após um clique ou após {DEMO_ACTIVATION_TIMEOUT_SECONDS} s. "
             "Se a conta não estiver em DEMO, o clique poderá enviar uma ordem real.\n\n"
             "Ativar este teste agora?",
@@ -609,8 +617,8 @@ class AutoTraderApp(tk.Tk):
         )
         self._update_demo_toggle_text()
         self.demo_status.set(
-            f"CLIQUE DEMO ATIVO por até {DEMO_ACTIVATION_TIMEOUT_SECONDS} s: aguardando um único candidato OCR; "
-            "será usado o próximo avanço de HORA ATUAL como aproximação de N+1, somente até M1 +30 s."
+            f"CLIQUE DEMO ATIVO por até {DEMO_ACTIVATION_TIMEOUT_SECONDS} s: aguardando um candidato OCR inequívoco; "
+            f"após armamento, tentará clicar em até {DEMO_ENTRY_MAX_DELAY_SECONDS:.0f} s, sem esperar N+1."
         )
 
     def _maybe_auto_arm_demo_signal(self) -> None:
@@ -643,6 +651,7 @@ class AutoTraderApp(tk.Tk):
             return
         self.pending_armed_clock = self.latest_platform_clock
         self.pending_rollover_notified = False
+        self.demo_signal_armed_at = time.monotonic()
         label = "COMPRA" if pending.direction == "BUY" else "VENDER"
         error = self._record_simulation_event(
             "sinal_armado_demo", direction=pending.direction, observed_text=pending.observed_text,
@@ -650,10 +659,11 @@ class AutoTraderApp(tk.Tk):
         )
         persistence_note = f" Histórico não gravado: {error}" if error else ""
         self.demo_status.set(
-            f"DEMO: {label} armado automaticamente ({pending.confidence:.0f}%). Aguardando avanço do relógio; "
-            f"isso não confirma visualmente N+1.{persistence_note}"
+            f"DEMO: {label} armado automaticamente ({pending.confidence:.0f}%). Tentando clicar agora; "
+            f"limite de {DEMO_ENTRY_MAX_DELAY_SECONDS:.0f} s, sem esperar N+1.{persistence_note}"
         )
         self._refresh_simulation_buttons()
+        self._execute_demo_click()
 
     def _demo_target_is_covered_by_app(self, target: ClickTarget) -> bool:
         if not self.winfo_viewable():
@@ -669,13 +679,25 @@ class AutoTraderApp(tk.Tk):
         clock = self.latest_platform_clock
         if not self.demo_automation_enabled or self.demo_clicks_remaining <= 0 or pending is None:
             return
-        if (
-            not self.pending_rollover_notified
-            or not platform_minute_advanced(self.pending_armed_clock, clock)
-            or clock is None
-            or not self._m1_window_valid()
+        now = time.monotonic()
+        if not demo_entry_deadline_open(
+            self.demo_signal_armed_at, now, DEMO_ENTRY_MAX_DELAY_SECONDS
         ):
-            self.demo_status.set("DEMO bloqueado: HORA ATUAL ausente, vencida ou fora de M1 +0–30 s.")
+            self._deactivate_demo_automation()
+            self._cancel_pending_simulation()
+            self.demo_status.set(
+                f"DEMO cancelado: passou o limite de {DEMO_ENTRY_MAX_DELAY_SECONDS:.0f} s desde o armamento; "
+                "nenhum clique foi tentado."
+            )
+            return
+        if (
+            clock is None
+            or self.latest_clock_at is None
+            or now - self.latest_clock_at > TIMER_MAX_AGE_SECONDS
+        ):
+            self._deactivate_demo_automation()
+            self._cancel_pending_simulation()
+            self.demo_status.set("DEMO bloqueado: HORA ATUAL ausente ou desatualizada; nenhum clique foi tentado.")
             return
         target = self.demo_click_targets[pending.direction]
         if (
@@ -696,9 +718,7 @@ class AutoTraderApp(tk.Tk):
                 demo_confirmed=self.demo_account_confirmed,
                 clicker=windows_mouse_click,
             )
-            entry = self.simulation.confirm_next_candle(
-                elapsed_seconds_after_open=clock.elapsed_seconds_in_m1
-            )
+            entry = self.simulation.confirm_next_candle()
         except Exception as exc:
             # A falha pode ter ocorrido depois de o sistema operacional enviar o clique;
             # nunca tentar novamente automaticamente para não duplicar uma operação.
@@ -722,26 +742,23 @@ class AutoTraderApp(tk.Tk):
 
         label = "COMPRA" if entry.direction == "BUY" else "VENDER"
         time_text = f"{clock.hour:02d}:{clock.minute:02d}:{clock.second:02d}"
-        elapsed = entry.elapsed_seconds_after_open
-        elapsed_text = f"M1 +{elapsed}s" if elapsed is not None else ""
         log_error = self._record_simulation_event(
             "entrada_demo_clicada", direction=entry.direction, observed_text=entry.signal_text,
             confidence=entry.confidence, signal_x=entry.signal_x, signal_y=entry.signal_y,
-            elapsed_seconds_m1=elapsed,
         )
         self.history_table.insert(
             "", 0, iid=f"demo-{entry.signal_id}",
-            values=(time_text, label, f"DEMO · CLIQUE ENVIADO · {elapsed_text}"),
+            values=(time_text, label, "DEMO · CLIQUE ENVIADO · até 10 s do armamento"),
         )
         self._clear_pending_clock_observation()
         self._deactivate_demo_automation()
         persistence_note = f" Histórico local não gravado: {log_error}" if log_error else ""
         self.demo_status.set(
-            f"Clique {label} enviado às {time_text} ({elapsed_text}); aceitação pela plataforma não verificada. "
-            f"Ativação encerrada após um clique.{persistence_note}"
+            f"Clique {label} enviado às {time_text}, dentro de {DEMO_ENTRY_MAX_DELAY_SECONDS:.0f} s do armamento; "
+            f"aceitação pela plataforma não verificada. Ativação encerrada após um clique.{persistence_note}"
         )
         self.simulation_status.set(
-            f"Tentativa DEMO registrada após clique; aceitação não verificada e N+1 não identificada visualmente. "
+            "Tentativa DEMO registrada após clique; identidade da vela e aceitação pela plataforma não verificadas. "
             f"Histórico desta sessão: {len(self.simulation.entries)} tentativa(s)."
         )
         self._refresh_simulation_buttons()
@@ -1198,21 +1215,16 @@ class AutoTraderApp(tk.Tk):
             signal_x=pending.x, signal_y=pending.y,
         )
         persistence_note = f" Histórico local não gravado: {log_error}" if log_error else ""
-        rollover_note = (
-            "O teste DEMO tentará um clique se a janela M1 continuar aberta; a vela não é identificada visualmente."
-            if self.demo_automation_enabled
-            else "Confira visualmente se N+1 nasceu; a confirmação continua manual."
-        )
+        rollover_note = "Confira visualmente se N+1 nasceu; a confirmação manual continua necessária."
         self.simulation_status.set(
             f"HORA ATUAL avançou para {clock.hour:02d}:{clock.minute:02d} após armar {label}. "
             f"{rollover_note}{persistence_note}"
         )
-        if self.demo_automation_enabled:
-            self._execute_demo_click()
 
     def _clear_pending_clock_observation(self) -> None:
         self.pending_armed_clock = None
         self.pending_rollover_notified = False
+        self.demo_signal_armed_at = None
 
     def _confirm_next_candle(self) -> None:
         elapsed_seconds = None
@@ -1362,10 +1374,15 @@ class AutoTraderApp(tk.Tk):
                 else "a leitura avançou mais de um minuto ou voltou no tempo"
             )
             self.timer_status.set(f"M1: entrada bloqueada — {expire_reason}.")
+        elif self.demo_automation_enabled:
+            self.timer_status.set(
+                f"M1: HORA ATUAL {platform_clock.hour:02d}:{platform_clock.minute:02d}:"
+                f"{platform_clock.second:02d}; clique DEMO em até {DEMO_ENTRY_MAX_DELAY_SECONDS:.0f} s após armar, sem esperar N+1."
+            )
         elif 0 <= elapsed <= 30:
             self.timer_status.set(
                 f"M1: HORA ATUAL {platform_clock.hour:02d}:{platform_clock.minute:02d}:"
-                f"{platform_clock.second:02d}; {elapsed}s da vela, janela aberta."
+                f"{platform_clock.second:02d}; {elapsed}s da vela, janela manual aberta."
             )
         else:
             self.timer_status.set(f"M1: {elapsed}s decorridos; janela de 30s expirada.")
