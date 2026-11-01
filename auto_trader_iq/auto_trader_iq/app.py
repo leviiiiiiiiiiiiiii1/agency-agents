@@ -33,6 +33,7 @@ from .candle_timer import (
 from .region_selector import RegionSelector
 from .sequence_recorder import SequenceRecorder
 from .screen_mask import mask_screen_regions, point_is_masked_with_margin
+from .demo_signal_guard import DemoSignalRepeatGuard
 from .signal_detector import SignalCandidate, TesseractSignalDetector
 from .simulation_history import SimulationHistoryStore, append_event_best_effort
 from .simulation import SimulationWorkflow
@@ -106,6 +107,7 @@ class AutoTraderApp(tk.Tk):
         self.sequence_recorder = SequenceRecorder(self.data_dir / "sequences")
         self.sequence_status = tk.StringVar(value="Gravação de teste inativa; nenhuma imagem está sendo salva.")
         self.simulation = SimulationWorkflow()
+        self.demo_signal_guard = DemoSignalRepeatGuard()
         self.candidates_by_id: dict[str, SignalCandidate] = {}
         self.simulation_status = tk.StringVar(value="Simulação parada; nenhuma entrada foi registrada.")
         self.demo_status = tk.StringVar(value="Cliques DEMO desligados; esta opção nunca é reativada automaticamente.")
@@ -647,6 +649,13 @@ class AutoTraderApp(tk.Tk):
                 self.demo_status.set("DEMO bloqueado: há mais de um candidato OCR; revise o gráfico.")
             return
         candidate = candidates[0]
+        if self.demo_signal_guard.blocks(candidate):
+            self._deactivate_demo_automation()
+            self.demo_status.set(
+                "DEMO desligado: este sinal já recebeu uma entrada. Aguarde o rótulo desaparecer "
+                "por 3 leituras OCR antes de reativar."
+            )
+            return
         try:
             pending = self.simulation.arm(candidate)
         except ValueError:
@@ -734,6 +743,9 @@ class AutoTraderApp(tk.Tk):
             if self.simulation.pending is not None:
                 try:
                     failed = self.simulation.cancel_pending()
+                    self.demo_signal_guard.mark_entered(
+                        failed.direction, failed.x, failed.y
+                    )
                     self._record_simulation_event(
                         "clique_demo_inconclusivo", direction=failed.direction,
                         observed_text=failed.observed_text, confidence=failed.confidence,
@@ -759,12 +771,16 @@ class AutoTraderApp(tk.Tk):
             "", 0, iid=f"demo-{entry.signal_id}",
             values=(time_text, label, "DEMO · CLIQUE ENVIADO · até 10 s do armamento"),
         )
+        self.demo_signal_guard.mark_entered(
+            entry.direction, entry.signal_x, entry.signal_y
+        )
         self._clear_pending_clock_observation()
         self._deactivate_demo_automation()
         persistence_note = f" Histórico local não gravado: {log_error}" if log_error else ""
         self.demo_status.set(
             f"Clique {label} enviado às {time_text}, dentro de {DEMO_ENTRY_MAX_DELAY_SECONDS:.0f} s do armamento; "
-            f"aceitação pela plataforma não verificada. Ativação encerrada após um clique.{persistence_note}"
+            "aceitação pela plataforma não verificada. Esse rótulo não será reutilizado até sumir por 3 leituras OCR. "
+            f"Ativação encerrada após um clique.{persistence_note}"
         )
         self.simulation_status.set(
             "Tentativa DEMO registrada após clique; identidade da vela e aceitação pela plataforma não verificadas. "
@@ -906,6 +922,7 @@ class AutoTraderApp(tk.Tk):
                     bars = detect_candle_bars(image)
                     self.latest_bar_count = len(bars)
                     self.last_candidates = filter_to_recent_candle(raw_candidates, bars)
+                    self.demo_signal_guard.observe(self.last_candidates)
                     self.last_ocr_at = now
                     self._update_ocr_status(self.last_candidates, len(raw_candidates), len(bars))
                     self._maybe_auto_arm_demo_signal()
