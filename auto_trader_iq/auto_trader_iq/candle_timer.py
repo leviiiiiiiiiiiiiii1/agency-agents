@@ -143,6 +143,18 @@ def parse_platform_clock_line(
     )
 
 
+def platform_minute_advanced(
+    previous: PlatformClockReading | None,
+    current: PlatformClockReading | None,
+) -> bool:
+    """Return True only when HORA ATUAL advances by exactly one minute."""
+    if previous is None or current is None:
+        return False
+    previous_minute = previous.hour * 60 + previous.minute
+    current_minute = current.hour * 60 + current.minute
+    return (current_minute - previous_minute) % (24 * 60) == 1
+
+
 def m1_entry_window_open(reading: PlatformClockReading | None, max_elapsed_seconds: int = 30) -> bool:
     """M1: permite entrada apenas de 00 a max_elapsed segundos após a virada do minuto."""
     if reading is None or not 0 <= max_elapsed_seconds <= 60:

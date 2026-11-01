@@ -1,9 +1,11 @@
 import unittest
 
 from auto_trader_iq.candle_timer import (
+    PlatformClockReading,
     m1_entry_window_open,
     parse_platform_clock,
     parse_platform_clock_line,
+    platform_minute_advanced,
 )
 
 
@@ -88,6 +90,22 @@ class PlatformClockTests(unittest.TestCase):
         self.assertIsNone(parse_platform_clock(self.make_rows(top=100), 1200, 500))
         self.assertIsNone(parse_platform_clock(self.make_rows("26:23:10"), 1200, 500))
         self.assertFalse(m1_entry_window_open(None))
+
+
+class PlatformMinuteTransitionTests(unittest.TestCase):
+    @staticmethod
+    def clock(hour, minute, second):
+        return PlatformClockReading(hour, minute, second, 95.0, 0, 0, f"{hour:02d}:{minute:02d}:{second:02d}")
+
+    def test_detects_observed_next_minute_across_hour_and_day_boundaries(self):
+        self.assertTrue(platform_minute_advanced(self.clock(23, 14, 59), self.clock(23, 15, 1)))
+        self.assertTrue(platform_minute_advanced(self.clock(23, 59, 59), self.clock(0, 0, 1)))
+
+    def test_rejects_same_minute_skipped_minutes_and_missing_readings(self):
+        self.assertFalse(platform_minute_advanced(self.clock(23, 14, 30), self.clock(23, 14, 59)))
+        self.assertFalse(platform_minute_advanced(self.clock(23, 14, 59), self.clock(23, 16, 1)))
+        self.assertFalse(platform_minute_advanced(None, self.clock(23, 15, 1)))
+        self.assertFalse(platform_minute_advanced(self.clock(23, 14, 59), None))
 
 
 if __name__ == "__main__":

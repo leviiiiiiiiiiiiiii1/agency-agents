@@ -15,7 +15,11 @@ from PIL import Image, ImageDraw, ImageTk
 
 from .capture import ScreenCapture, ScreenRegion
 from .candle_monitor import detect_candle_bars, filter_to_recent_candle
-from .candle_timer import PlatformClockReading, m1_entry_window_open
+from .candle_timer import (
+    PlatformClockReading,
+    m1_entry_window_open,
+    platform_minute_advanced,
+)
 from .region_selector import RegionSelector
 from .sequence_recorder import SequenceRecorder
 from .signal_detector import SignalCandidate, TesseractSignalDetector
@@ -80,6 +84,8 @@ class AutoTraderApp(tk.Tk):
         self.last_ocr_at = 0.0
         self.latest_platform_clock: PlatformClockReading | None = None
         self.latest_clock_at: float | None = None
+        self.pending_armed_clock: PlatformClockReading | None = None
+        self.pending_rollover_notified = False
         self.latest_bar_count = 0
         self.sequence_recorder = SequenceRecorder(self.data_dir / "sequences")
         self.sequence_status = tk.StringVar(value="Gravação de teste inativa; nenhuma imagem está sendo salva.")
@@ -454,6 +460,7 @@ class AutoTraderApp(tk.Tk):
                 try:
                     raw_candidates, self.latest_platform_clock = self.detector.detect_frame(image)
                     self.latest_clock_at = now if self.latest_platform_clock is not None else None
+                    self._observe_pending_platform_minute()
                     bars = detect_candle_bars(image)
                     self.latest_bar_count = len(bars)
                     self.last_candidates = filter_to_recent_candle(raw_candidates, bars)
@@ -661,12 +668,40 @@ class AutoTraderApp(tk.Tk):
         except ValueError as exc:
             self.simulation_status.set(str(exc))
             return
+        self.pending_armed_clock = (
+            self.latest_platform_clock
+            if self.latest_clock_at is not None
+            and time.monotonic() - self.latest_clock_at <= TIMER_MAX_AGE_SECONDS
+            else None
+        )
+        self.pending_rollover_notified = False
         label = "COMPRA" if pending.direction == "BUY" else "VENDER"
         self.simulation_status.set(
             f"Pendente: {label} ({pending.confidence:.0f}%). Aguarde a próxima vela nascer; "
             "confirme manualmente apenas quando isso estiver visível. Nenhuma ordem será enviada."
         )
         self._refresh_simulation_buttons()
+
+    def _observe_pending_platform_minute(self) -> None:
+        if (
+            self.timeframe_var.get() != "M1"
+            or self.simulation.pending is None
+            or self.pending_rollover_notified
+            or not platform_minute_advanced(self.pending_armed_clock, self.latest_platform_clock)
+        ):
+            return
+        self.pending_rollover_notified = True
+        clock = self.latest_platform_clock
+        assert clock is not None
+        label = "COMPRA" if self.simulation.pending.direction == "BUY" else "VENDER"
+        self.simulation_status.set(
+            f"HORA ATUAL avançou para {clock.hour:02d}:{clock.minute:02d} após armar {label}. "
+            "Confira visualmente se N+1 nasceu; a confirmação continua manual."
+        )
+
+    def _clear_pending_clock_observation(self) -> None:
+        self.pending_armed_clock = None
+        self.pending_rollover_notified = False
 
     def _confirm_next_candle(self) -> None:
         elapsed_seconds = None
@@ -684,6 +719,7 @@ class AutoTraderApp(tk.Tk):
         except ValueError as exc:
             self.simulation_status.set(str(exc))
             return
+        self._clear_pending_clock_observation()
         label = "COMPRA" if entry.direction == "BUY" else "VENDER"
         confirmed = entry.next_candle_confirmed_at.astimezone().strftime("%H:%M:%S")
         elapsed_text = (
@@ -709,6 +745,7 @@ class AutoTraderApp(tk.Tk):
         except ValueError as exc:
             self.simulation_status.set(str(exc))
             return
+        self._clear_pending_clock_observation()
         self.simulation_status.set(
             f"Simulação pendente cancelada ({pending.observed_text}); o mesmo rótulo não será rearmado nesta sessão."
         )
@@ -758,6 +795,7 @@ class AutoTraderApp(tk.Tk):
             self.timer_status.set(f"M1: {elapsed}s decorridos; janela de 30s expirada.")
             if self.simulation.pending is not None:
                 expired = self.simulation.cancel_pending()
+                self._clear_pending_clock_observation()
                 label = "COMPRA" if expired.direction == "BUY" else "VENDER"
                 self.simulation_status.set(
                     f"Sinal {label} expirado: ultrapassou 30s de M1; descartado sem entrada."
