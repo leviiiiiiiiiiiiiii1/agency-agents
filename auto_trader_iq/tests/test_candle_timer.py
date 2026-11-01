@@ -1,46 +1,43 @@
 import unittest
 
-from auto_trader_iq.candle_timer import m1_entry_window_open, parse_platform_candle_timer
+from auto_trader_iq.candle_timer import m1_entry_window_open, parse_platform_clock
 
 
-class CandleTimerTests(unittest.TestCase):
-    def make_rows(self, timer="00:47", include_hour=True):
-        words = (["HORA", "DE", "COMPRA"] if include_hour else ["COMPRA"])
-        texts = words + [timer]
-        left = [900, 930, 950, 1000] if include_hour else [950, 1000]
+class PlatformClockTests(unittest.TestCase):
+    def make_rows(self, clock="21:23:02", include_anchor=True, top=450):
+        texts = (["HORA", "ATUAL"] if include_anchor else ["OUTUBRO"]) + [clock]
+        left = ([780, 835] if include_anchor else [835]) + [930]
         return {
             "text": texts,
-            "conf": [95, 94, 96, 92] if include_hour else [96, 92],
+            "conf": [96] * len(texts),
             "left": left,
-            "top": [20] * len(texts),
-            "width": [30] * len(texts),
-            "height": [12] * len(texts),
+            "top": [top] * len(texts),
+            "width": [40] * len(texts),
+            "height": [16] * len(texts),
         }
 
-    def test_reads_remaining_timer_near_hora_anchor(self):
-        reading = parse_platform_candle_timer(self.make_rows(), 1200, 500)
+    def test_reads_platform_clock_and_elapsed_m1_seconds(self):
+        reading = parse_platform_clock(self.make_rows(), 1200, 500)
         self.assertIsNotNone(reading)
-        self.assertEqual(reading.remaining_seconds, 47)
-        self.assertEqual(reading.elapsed_seconds, 13)
+        self.assertEqual((reading.hour, reading.minute, reading.second), (21, 23, 2))
+        self.assertEqual(reading.elapsed_seconds_in_m1, 2)
         self.assertTrue(m1_entry_window_open(reading))
 
-    def test_rejects_confirmation_after_first_30_seconds(self):
-        reading = parse_platform_candle_timer(self.make_rows("00:29"), 1200, 500)
-        self.assertIsNotNone(reading)
-        self.assertEqual(reading.elapsed_seconds, 31)
-        self.assertFalse(m1_entry_window_open(reading))
-
-    def test_accepts_exact_open_and_cutoff_boundary(self):
-        at_open = parse_platform_candle_timer(self.make_rows("01:00"), 1200, 500)
-        at_cutoff = parse_platform_candle_timer(self.make_rows("00:30"), 1200, 500)
-        self.assertEqual(at_open.elapsed_seconds, 0)
-        self.assertEqual(at_cutoff.elapsed_seconds, 30)
-        self.assertTrue(m1_entry_window_open(at_open))
+    def test_accepts_only_first_30_seconds(self):
+        at_cutoff = parse_platform_clock(self.make_rows("21:23:30"), 1200, 500)
+        after_cutoff = parse_platform_clock(self.make_rows("21:23:31"), 1200, 500)
         self.assertTrue(m1_entry_window_open(at_cutoff))
+        self.assertFalse(m1_entry_window_open(after_cutoff))
 
-    def test_requires_hora_anchor_and_valid_timer(self):
-        self.assertIsNone(parse_platform_candle_timer(self.make_rows(include_hour=False), 1200, 500))
-        self.assertIsNone(parse_platform_candle_timer(self.make_rows("01:05"), 1200, 500))
+    def test_accepts_exact_minute_rollover(self):
+        at_open = parse_platform_clock(self.make_rows("21:24:00"), 1200, 500)
+        self.assertEqual(at_open.elapsed_seconds_in_m1, 0)
+        self.assertTrue(m1_entry_window_open(at_open))
+
+    def test_requires_bottom_right_clock_and_hora_anchor(self):
+        self.assertIsNone(parse_platform_clock(self.make_rows(include_anchor=False), 1200, 500))
+        self.assertIsNone(parse_platform_clock(self.make_rows(top=100), 1200, 500))
+        self.assertIsNone(parse_platform_clock(self.make_rows("26:23:10"), 1200, 500))
         self.assertFalse(m1_entry_window_open(None))
 
 

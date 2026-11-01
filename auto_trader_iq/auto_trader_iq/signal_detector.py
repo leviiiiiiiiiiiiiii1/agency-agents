@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from .candle_timer import CandleTimerReading, parse_platform_candle_timer
+from .candle_timer import PlatformClockReading, parse_platform_clock
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,11 +83,11 @@ class TesseractSignalDetector:
                 "defina TESSERACT_CMD com o caminho completo para tesseract.exe."
             ) from exc
 
-    def detect_frame(self, image) -> tuple[list[SignalCandidate], CandleTimerReading | None]:
-        """Lê rótulos e timer da plataforma em uma passagem OCR.
+    def detect_frame(self, image) -> tuple[list[SignalCandidate], PlatformClockReading | None]:
+        """Lê rótulos e relógio HORA ATUAL da plataforma em uma passagem OCR.
 
-        As coordenadas retornadas são relativas à captura original. O timer só é
-        aceito quando aparece junto ao texto HORA, para evitar confundir preço/eixo.
+        As coordenadas retornadas são relativas à captura original. O relógio só é
+        aceito perto do rótulo no rodapé/canto direito, não a partir do PC.
         """
         try:
             import pytesseract
@@ -100,7 +100,7 @@ class TesseractSignalDetector:
         scale = 2
         prepared = ImageOps.autocontrast(image.convert("L"))
         prepared = prepared.resize((image.width * scale, image.height * scale), Image.Resampling.LANCZOS)
-        whitelist = "BUYSELLCOMPRAVENDERHORADE0123456789:"
+        whitelist = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789:"
         config = f"--oem 3 --psm 11 -c tessedit_char_whitelist={whitelist}"
         data = pytesseract.image_to_data(prepared, config=config, output_type=pytesseract.Output.DICT)
         candidates = parse_ocr_rows(data, self.min_confidence)
@@ -109,13 +109,13 @@ class TesseractSignalDetector:
                             max(1, c.width // scale), max(1, c.height // scale), c.observed_text)
             for c in candidates
         ]
-        timer = parse_platform_candle_timer(data, prepared.width, prepared.height)
-        if timer is not None:
-            timer = CandleTimerReading(
-                timer.remaining_seconds, timer.confidence, timer.left // scale,
-                timer.top // scale, timer.text,
+        clock = parse_platform_clock(data, prepared.width, prepared.height)
+        if clock is not None:
+            clock = PlatformClockReading(
+                clock.hour, clock.minute, clock.second, clock.confidence,
+                clock.left // scale, clock.top // scale, clock.text,
             )
-        return candidates, timer
+        return candidates, clock
 
     def detect(self, image) -> list[SignalCandidate]:
         """Compatibilidade: retorna apenas os candidatos de sinal."""

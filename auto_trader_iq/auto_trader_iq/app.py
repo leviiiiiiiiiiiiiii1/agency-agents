@@ -15,7 +15,7 @@ from PIL import Image, ImageDraw, ImageTk
 
 from .capture import ScreenCapture, ScreenRegion
 from .candle_monitor import detect_candle_bars, filter_to_recent_candle
-from .candle_timer import CandleTimerReading, m1_entry_window_open
+from .candle_timer import PlatformClockReading, m1_entry_window_open
 from .region_selector import RegionSelector
 from .signal_detector import SignalCandidate, TesseractSignalDetector
 from .simulation import SimulationWorkflow
@@ -77,8 +77,8 @@ class AutoTraderApp(tk.Tk):
         self.detector: TesseractSignalDetector | None = None
         self.last_candidates: list[SignalCandidate] = []
         self.last_ocr_at = 0.0
-        self.latest_candle_timer: CandleTimerReading | None = None
-        self.latest_timer_at: float | None = None
+        self.latest_platform_clock: PlatformClockReading | None = None
+        self.latest_clock_at: float | None = None
         self.simulation = SimulationWorkflow()
         self.candidates_by_id: dict[str, SignalCandidate] = {}
         self.simulation_status = tk.StringVar(value="Simulação parada; nenhuma entrada foi registrada.")
@@ -86,7 +86,7 @@ class AutoTraderApp(tk.Tk):
 
         self.monitor_var = tk.StringVar()
         self.timeframe_var = tk.StringVar(value="M1")
-        self.timer_status = tk.StringVar(value="M1: aguardando leitura do contador da plataforma.")
+        self.timer_status = tk.StringVar(value="M1: aguardando leitura de HORA ATUAL da plataforma.")
         self.compact_during_capture_var = tk.BooleanVar(value=True)
         self.ocr_enabled_var = tk.BooleanVar(value=False)
         self.confidence_var = tk.StringVar(value="70")
@@ -364,8 +364,8 @@ class AutoTraderApp(tk.Tk):
             self.ocr_status.set("OCR desligado; nenhuma operação é executada.")
         self.last_candidates = []
         self.last_ocr_at = 0.0
-        self.latest_candle_timer = None
-        self.latest_timer_at = None
+        self.latest_platform_clock = None
+        self.latest_clock_at = None
         self._update_timer_status()
         self.running = True
         self.last_frame_hash = None
@@ -430,8 +430,8 @@ class AutoTraderApp(tk.Tk):
                 )
             if self.detector is not None and now - self.last_ocr_at >= OCR_INTERVAL_SECONDS:
                 try:
-                    raw_candidates, self.latest_candle_timer = self.detector.detect_frame(image)
-                    self.latest_timer_at = now if self.latest_candle_timer is not None else None
+                    raw_candidates, self.latest_platform_clock = self.detector.detect_frame(image)
+                    self.latest_clock_at = now if self.latest_platform_clock is not None else None
                     bars = detect_candle_bars(image)
                     self.last_candidates = filter_to_recent_candle(raw_candidates, bars)
                     self.last_ocr_at = now
@@ -440,8 +440,8 @@ class AutoTraderApp(tk.Tk):
                 except Exception as exc:
                     # Falha do OCR não encerra a captura visual, mas interrompe novas leituras.
                     self.detector = None
-                    self.latest_candle_timer = None
-                    self.latest_timer_at = None
+                    self.latest_platform_clock = None
+                    self.latest_clock_at = None
                     self.ocr_status.set(f"OCR interrompido por erro: {exc}")
                     self._update_timer_status()
             self._show_preview(image)
@@ -552,12 +552,12 @@ class AutoTraderApp(tk.Tk):
         if self.timeframe_var.get() == "M1":
             if not self._m1_window_valid():
                 self.simulation_status.set(
-                    "Entrada M1 bloqueada: o timer HORA DE COMPRA não foi lido ou já passou de 30 s."
+                    "Entrada M1 bloqueada: HORA ATUAL da plataforma não foi lida ou já passou de 30 s."
                 )
                 self._refresh_simulation_buttons()
                 return
-            assert self.latest_candle_timer is not None
-            elapsed_seconds = self.latest_candle_timer.elapsed_seconds
+            assert self.latest_platform_clock is not None
+            elapsed_seconds = self.latest_platform_clock.elapsed_seconds_in_m1
         try:
             entry = self.simulation.confirm_next_candle(elapsed_seconds_after_open=elapsed_seconds)
         except ValueError as exc:
@@ -597,11 +597,11 @@ class AutoTraderApp(tk.Tk):
             button.configure(state="disabled")
 
     def _m1_window_valid(self) -> bool:
-        if self.latest_candle_timer is None or self.latest_timer_at is None:
+        if self.latest_platform_clock is None or self.latest_clock_at is None:
             return False
-        if time.monotonic() - self.latest_timer_at > TIMER_MAX_AGE_SECONDS:
+        if time.monotonic() - self.latest_clock_at > TIMER_MAX_AGE_SECONDS:
             return False
-        return m1_entry_window_open(self.latest_candle_timer, max_elapsed_seconds=30)
+        return m1_entry_window_open(self.latest_platform_clock, max_elapsed_seconds=30)
 
     def _refresh_simulation_buttons(self) -> None:
         pending = self.simulation.pending is not None
@@ -621,15 +621,18 @@ class AutoTraderApp(tk.Tk):
             )
             self._refresh_simulation_buttons()
             return
-        timer = self.latest_candle_timer
-        fresh = self.latest_timer_at is not None and (now or time.monotonic()) - self.latest_timer_at <= TIMER_MAX_AGE_SECONDS
-        if timer is None or not fresh:
-            self.timer_status.set("M1: timer HORA DE COMPRA não legível/atual; confirmação bloqueada.")
+        platform_clock = self.latest_platform_clock
+        fresh = self.latest_clock_at is not None and (now or time.monotonic()) - self.latest_clock_at <= TIMER_MAX_AGE_SECONDS
+        if platform_clock is None or not fresh:
+            self.timer_status.set("M1: relógio HORA ATUAL não legível/atual; confirmação bloqueada.")
             self._refresh_simulation_buttons()
             return
-        elapsed = timer.elapsed_seconds
+        elapsed = platform_clock.elapsed_seconds_in_m1
         if 0 <= elapsed <= 30:
-            self.timer_status.set(f"M1: vela com {elapsed}s decorridos; janela de 0–30s aberta.")
+            self.timer_status.set(
+                f"M1: HORA ATUAL {platform_clock.hour:02d}:{platform_clock.minute:02d}:"
+                f"{platform_clock.second:02d}; {elapsed}s da vela, janela aberta."
+            )
         else:
             self.timer_status.set(f"M1: {elapsed}s decorridos; janela de 30s expirada.")
             if self.simulation.pending is not None:
