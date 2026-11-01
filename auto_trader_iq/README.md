@@ -60,6 +60,19 @@ Durante uma visualização M1 com OCR ativo, o botão **Gravar sequência de tes
 
 Após confirmação explícita, as imagens da região selecionada e um `manifest.csv` (hora e confiança do OCR, trecho diagnóstico da leitura HORA ATUAL, contagem heurística de candles e candidatos OCR) são gravados somente em `%LOCALAPPDATA%\AutoTraderIQ\sequences`. A aplicação não envia esses arquivos pela rede. Como as imagens podem conter informação pessoal, confira o recorte e inspecione os arquivos antes de compartilhar. O registro é apenas para validação: não confirma N+1 automaticamente e não envia ordens.
 
+### Verificar apenas a virada do relógio
+
+Com uma sequência gravada, rode a verificação local do `manifest.csv` no PowerShell, dentro da pasta `auto_trader_iq` do projeto:
+
+```powershell
+$seq = Get-ChildItem "$env:LOCALAPPDATA\AutoTraderIQ\sequences" -Directory |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 1
+python -m auto_trader_iq.validate_sequence $seq.FullName
+```
+
+O relatório considera leituras adjacentes com confiança OCR mínima de 70% e informa se observou o relógio avançar exatamente um minuto. Lê somente o CSV — não abre imagens, não interpreta sinais/candles e não confirma N+1. Código de saída 0 indica virada observada; 1, nenhuma virada confirmada no manifesto; 2, erro de leitura/validação. Se não houver virada observada, confira a gravação e o recorte antes de qualquer outra conclusão.
+
 Testes unitários (não precisam de tela gráfica nem do mecanismo Tesseract):
 
 ```powershell
