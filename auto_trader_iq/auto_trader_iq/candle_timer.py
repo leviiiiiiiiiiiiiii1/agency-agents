@@ -143,16 +143,24 @@ def parse_platform_clock_line(
     )
 
 
+def platform_minute_offset(
+    previous: PlatformClockReading | None,
+    current: PlatformClockReading | None,
+) -> int | None:
+    """Return elapsed minute steps on the platform clock, including midnight wrap."""
+    if previous is None or current is None:
+        return None
+    previous_minute = previous.hour * 60 + previous.minute
+    current_minute = current.hour * 60 + current.minute
+    return (current_minute - previous_minute) % (24 * 60)
+
+
 def platform_minute_advanced(
     previous: PlatformClockReading | None,
     current: PlatformClockReading | None,
 ) -> bool:
     """Return True only when HORA ATUAL advances by exactly one minute."""
-    if previous is None or current is None:
-        return False
-    previous_minute = previous.hour * 60 + previous.minute
-    current_minute = current.hour * 60 + current.minute
-    return (current_minute - previous_minute) % (24 * 60) == 1
+    return platform_minute_offset(previous, current) == 1
 
 
 def m1_entry_window_open(reading: PlatformClockReading | None, max_elapsed_seconds: int = 30) -> bool:
@@ -160,3 +168,15 @@ def m1_entry_window_open(reading: PlatformClockReading | None, max_elapsed_secon
     if reading is None or not 0 <= max_elapsed_seconds <= 60:
         return False
     return 0 <= reading.elapsed_seconds_in_m1 <= max_elapsed_seconds
+
+
+def m1_next_candle_entry_window_open(
+    armed_clock: PlatformClockReading | None,
+    current_clock: PlatformClockReading | None,
+    max_elapsed_seconds: int = 30,
+) -> bool:
+    """Require exactly one platform-minute advance and an open N+1 M1 window."""
+    return (
+        platform_minute_offset(armed_clock, current_clock) == 1
+        and m1_entry_window_open(current_clock, max_elapsed_seconds)
+    )

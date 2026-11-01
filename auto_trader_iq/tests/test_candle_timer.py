@@ -3,9 +3,11 @@ import unittest
 from auto_trader_iq.candle_timer import (
     PlatformClockReading,
     m1_entry_window_open,
+    m1_next_candle_entry_window_open,
     parse_platform_clock,
     parse_platform_clock_line,
     platform_minute_advanced,
+    platform_minute_offset,
 )
 
 
@@ -106,6 +108,24 @@ class PlatformMinuteTransitionTests(unittest.TestCase):
         self.assertFalse(platform_minute_advanced(self.clock(23, 14, 59), self.clock(23, 16, 1)))
         self.assertFalse(platform_minute_advanced(None, self.clock(23, 15, 1)))
         self.assertFalse(platform_minute_advanced(self.clock(23, 14, 59), None))
+
+    def test_minute_offset_distinguishes_waiting_from_n_plus_one_and_skips(self):
+        armed = self.clock(23, 14, 40)
+        self.assertEqual(platform_minute_offset(armed, self.clock(23, 14, 59)), 0)
+        self.assertEqual(platform_minute_offset(armed, self.clock(23, 15, 15)), 1)
+        self.assertEqual(platform_minute_offset(armed, self.clock(23, 16, 1)), 2)
+        self.assertIsNone(platform_minute_offset(None, self.clock(23, 15, 15)))
+
+    def test_n_plus_one_window_requires_exact_next_minute_and_first_30_seconds(self):
+        armed = self.clock(23, 14, 40)
+        self.assertFalse(m1_next_candle_entry_window_open(armed, self.clock(23, 14, 29)))
+        self.assertTrue(m1_next_candle_entry_window_open(armed, self.clock(23, 15, 0)))
+        self.assertTrue(m1_next_candle_entry_window_open(armed, self.clock(23, 15, 30)))
+        self.assertFalse(m1_next_candle_entry_window_open(armed, self.clock(23, 15, 31)))
+        self.assertFalse(m1_next_candle_entry_window_open(armed, self.clock(23, 16, 5)))
+        self.assertTrue(m1_next_candle_entry_window_open(
+            self.clock(23, 59, 50), self.clock(0, 0, 10)
+        ))
 
 
 if __name__ == "__main__":

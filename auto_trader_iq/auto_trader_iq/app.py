@@ -1,4 +1,4 @@
-"""Interface da etapa 3: OCR e simulação assistida sem ordens reais."""
+"""Interface com simulação assistida e teste experimental de cliques em conta DEMO."""
 
 from __future__ import annotations
 
@@ -15,11 +15,13 @@ from tkinter import messagebox, ttk
 from PIL import Image, ImageDraw, ImageTk
 
 from .capture import ScreenCapture, ScreenRegion
+from .demo_click import ClickTarget, click_demo_direction, windows_mouse_click
 from .candle_monitor import detect_candle_bars, filter_to_recent_candle
 from .candle_timer import (
     PlatformClockReading,
-    m1_entry_window_open,
+    m1_next_candle_entry_window_open,
     platform_minute_advanced,
+    platform_minute_offset,
 )
 from .region_selector import RegionSelector
 from .sequence_recorder import SequenceRecorder
@@ -32,6 +34,7 @@ APP_NAME = "AUTO TRADER IQ"
 POLL_MS = 500
 OCR_INTERVAL_SECONDS = 1.0
 TIMER_MAX_AGE_SECONDS = 1.5
+DEMO_ACTIVATION_TIMEOUT_SECONDS = 75
 
 
 def _enable_windows_dpi_awareness() -> None:
@@ -68,7 +71,7 @@ class AutoTraderApp(tk.Tk):
     def __init__(self) -> None:
         _enable_windows_dpi_awareness()
         super().__init__()
-        self.title(f"{APP_NAME} — Simulação assistida (Etapa 3)")
+        self.title(f"{APP_NAME} — Teste DEMO assistido")
         self.geometry("1050x760")
         self.minsize(800, 580)
 
@@ -95,6 +98,12 @@ class AutoTraderApp(tk.Tk):
         self.simulation = SimulationWorkflow()
         self.candidates_by_id: dict[str, SignalCandidate] = {}
         self.simulation_status = tk.StringVar(value="Simulação parada; nenhuma entrada foi registrada.")
+        self.demo_status = tk.StringVar(value="Cliques DEMO desligados; esta opção nunca é reativada automaticamente.")
+        self.demo_automation_enabled = False
+        self.demo_account_confirmed = False
+        self.demo_clicks_remaining = 0
+        self.demo_timeout_after_id: str | None = None
+        self.demo_click_targets: dict[str, ClickTarget | None] = {"BUY": None, "SELL": None}
         self.compact_mode = False
 
         self.monitor_var = tk.StringVar()
@@ -107,6 +116,8 @@ class AutoTraderApp(tk.Tk):
         self.region_vars = {key: tk.StringVar() for key in ("left", "top", "width", "height")}
         self.capture_status = tk.StringVar(value="Captura parada")
         self.heartbeat_status = tk.StringVar(value="Sem captura")
+        self.buy_target_status = tk.StringVar(value="não calibrado")
+        self.sell_target_status = tk.StringVar(value="não calibrado")
         self._build_ui()
         self._load_persisted_simulation_history()
         self._load_monitors()
@@ -125,12 +136,12 @@ class AutoTraderApp(tk.Tk):
         header = ttk.Frame(self.full_ui, padding=(18, 16))
         header.pack(fill="x")
         ttk.Label(header, text=APP_NAME, font=("Segoe UI", 20, "bold")).pack(anchor="w")
-        ttk.Label(header, text="Etapa 3 · OCR e simulação assistida de COMPRA/VENDER",
+        ttk.Label(header, text="OCR COMPRA/VENDER · simulação assistida e teste de clique DEMO",
                   font=("Segoe UI", 10)).pack(anchor="w", pady=(3, 0))
 
         warning = ttk.Label(
             self.full_ui,
-            text="SIMULAÇÃO ASSISTIDA — escolha o rótulo, aguarde N+1 nascer e confirme manualmente. Não controla mouse/teclado nem envia ordens.",
+            text="Por padrão, sem cliques. Teste DEMO experimental (desligado por padrão) pode clicar uma vez por ativação; o app não verifica se a conta é DEMO nem se a plataforma aceitou a ordem.",
             foreground="#8a4b08", background="#fff3cd", padding=9,
         )
         warning.pack(fill="x", padx=18, pady=(0, 10))
@@ -205,7 +216,7 @@ class AutoTraderApp(tk.Tk):
                                  anchor="center")
         self.preview.pack(fill="both", expand=True)
 
-        simulation_box = ttk.LabelFrame(preview_box, text="Simulação assistida da próxima vela (sem ordens)", padding=6)
+        simulation_box = ttk.LabelFrame(preview_box, text="Simulação assistida · cliques experimentais apenas em DEMO", padding=6)
         simulation_box.pack(fill="x", pady=(8, 0))
         self.candidate_table = ttk.Treeview(
             simulation_box, columns=("label", "confidence", "position"), show="headings", height=3,
@@ -219,8 +230,10 @@ class AutoTraderApp(tk.Tk):
         self.candidate_table.column("position", width=150, anchor="center")
         self.candidate_table.pack(fill="x")
         ttk.Label(simulation_box, text="Histórico local de entradas simuladas (mais recentes)").pack(anchor="w", pady=(5, 0))
+        history_frame = ttk.Frame(simulation_box)
+        history_frame.pack(fill="x")
         self.history_table = ttk.Treeview(
-            simulation_box, columns=("time", "direction", "status"), show="headings", height=4
+            history_frame, columns=("time", "direction", "status"), show="headings", height=4
         )
         self.history_table.heading("time", text="Horário")
         self.history_table.heading("direction", text="Direção")
@@ -228,7 +241,7 @@ class AutoTraderApp(tk.Tk):
         self.history_table.column("time", width=90, anchor="center")
         self.history_table.column("direction", width=100, anchor="center")
         self.history_table.column("status", width=200, anchor="w")
-        history_scrollbar = ttk.Scrollbar(simulation_box, orient="vertical", command=self.history_table.yview)
+        history_scrollbar = ttk.Scrollbar(history_frame, orient="vertical", command=self.history_table.yview)
         self.history_table.configure(yscrollcommand=history_scrollbar.set)
         self.history_table.pack(side="left", fill="x", expand=True)
         history_scrollbar.pack(side="right", fill="y")
@@ -246,6 +259,21 @@ class AutoTraderApp(tk.Tk):
             sim_buttons, text="Cancelar", command=self._cancel_pending_simulation, state="disabled"
         )
         self.cancel_sim_button.pack(side="left", padx=6)
+        self.demo_toggle_button = ttk.Button(
+            sim_buttons, text="Ativar cliques DEMO…", command=self._toggle_demo_automation
+        )
+        self.demo_toggle_button.pack(side="right", padx=6)
+        demo_target_row = ttk.Frame(simulation_box)
+        demo_target_row.pack(fill="x", pady=(4, 0))
+        ttk.Button(
+            demo_target_row, text="Calibrar COMPRAR", command=lambda: self._calibrate_demo_target("BUY")
+        ).pack(side="left", padx=(0, 4))
+        ttk.Label(demo_target_row, textvariable=self.buy_target_status).pack(side="left", padx=(0, 12))
+        ttk.Button(
+            demo_target_row, text="Calibrar VENDER", command=lambda: self._calibrate_demo_target("SELL")
+        ).pack(side="left", padx=(0, 4))
+        ttk.Label(demo_target_row, textvariable=self.sell_target_status).pack(side="left")
+        ttk.Label(simulation_box, textvariable=self.demo_status, wraplength=650).pack(anchor="w", pady=(3, 0))
         ttk.Label(simulation_box, textvariable=self.simulation_status, wraplength=650).pack(anchor="w", pady=(4, 0))
 
         footer = ttk.Label(self.full_ui, text=f"Configuração, imagens e histórico locais: {self.data_dir}", padding=(18, 0, 18, 12))
@@ -286,6 +314,10 @@ class AutoTraderApp(tk.Tk):
             state="disabled",
         )
         self.compact_cancel_button.pack(side="left", padx=5)
+        self.compact_demo_toggle_button = ttk.Button(
+            compact_buttons, text="Ativar DEMO…", command=self._toggle_demo_automation
+        )
+        self.compact_demo_toggle_button.pack(side="left", padx=5)
         ttk.Button(
             compact_buttons, text="Configurações (pausar)", command=self._return_to_full_ui
         ).pack(side="right")
@@ -297,6 +329,9 @@ class AutoTraderApp(tk.Tk):
         self.compact_sequence_button.pack(side="left")
         ttk.Label(recorder_row, textvariable=self.sequence_status, wraplength=350).pack(
             side="left", padx=(8, 0)
+        )
+        ttk.Label(self.compact_frame, textvariable=self.demo_status, wraplength=520).pack(
+            anchor="w", pady=(4, 0)
         )
         ttk.Label(self.compact_frame, textvariable=self.simulation_status, wraplength=520).pack(
             anchor="w", pady=(4, 0)
@@ -363,6 +398,291 @@ class AutoTraderApp(tk.Tk):
                            ("width", region.width), ("height", region.height)):
             self.region_vars[key].set(str(value))
         self.capture_status.set(f"Região definida: {region.width}×{region.height} px")
+
+    def _set_demo_target_label(self, direction: str, target: ClickTarget | None) -> None:
+        label = self.buy_target_status if direction == "BUY" else self.sell_target_status
+        label.set("não calibrado" if target is None else f"{target.x}, {target.y}")
+
+    def _inside_capture_region(self, target: ClickTarget) -> bool:
+        region = self.region
+        return bool(
+            region is not None
+            and region.left <= target.x < region.left + region.width
+            and region.top <= target.y < region.top + region.height
+        )
+
+    def _calibrate_demo_target(self, direction: str) -> None:
+        if sys.platform != "win32":
+            messagebox.showerror(APP_NAME, "A calibração de cliques só funciona no Windows.", parent=self)
+            return
+        if direction not in {"BUY", "SELL"}:
+            return
+        if self.demo_automation_enabled:
+            messagebox.showinfo(APP_NAME, "Desative os cliques DEMO antes de calibrar os botões.", parent=self)
+            return
+        label = "COMPRAR" if direction == "BUY" else "VENDER"
+        consent = messagebox.askyesno(
+            APP_NAME,
+            f"Calibrar o centro do botão {label}. Ao continuar, a janela AUTO TRADER ficará oculta por 5 segundos. "
+            "Mova o cursor para o centro do botão na plataforma e não clique. A calibração apenas lê a posição do cursor.",
+            parent=self,
+        )
+        if not consent:
+            return
+        self.demo_status.set(f"Calibração {label}: janela oculta por 5 s; posicione o cursor no centro do botão.")
+        self.withdraw()
+        self._calibration_after_id = self.after(5000, lambda: self._finish_demo_calibration(direction))
+
+    def _finish_demo_calibration(self, direction: str) -> None:
+        target: ClickTarget | None = None
+        error: Exception | None = None
+        try:
+            import pyautogui
+            point = pyautogui.position()
+            target = ClickTarget(int(point.x), int(point.y))
+        except Exception as exc:
+            error = exc
+        finally:
+            try:
+                self.deiconify()
+            except tk.TclError:
+                return
+        if error is not None:
+            messagebox.showerror(APP_NAME, f"Não foi possível ler a posição do mouse:\n{error}", parent=self)
+            return
+        assert target is not None
+        if self._inside_capture_region(target):
+            messagebox.showerror(
+                APP_NAME,
+                "O ponto calibrado está dentro da região do gráfico. Recalibre sobre o botão da corretora; "
+                "a região monitorada deve continuar excluindo os botões.",
+                parent=self,
+            )
+            return
+        self.demo_click_targets[direction] = target
+        self._set_demo_target_label(direction, target)
+        self._persist_config()
+        label = "COMPRAR" if direction == "BUY" else "VENDER"
+        self.demo_status.set(f"Botão {label} calibrado em {target.x}, {target.y}; nenhum clique foi enviado.")
+
+    def _update_demo_toggle_text(self) -> None:
+        text = "Parar cliques DEMO" if self.demo_automation_enabled else "Ativar cliques DEMO…"
+        for name in ("demo_toggle_button", "compact_demo_toggle_button"):
+            button = getattr(self, name, None)
+            if button is not None:
+                button.configure(text=text)
+
+    def _toggle_demo_automation(self) -> None:
+        if self.demo_automation_enabled:
+            self._deactivate_demo_automation()
+            if self.simulation.pending is not None:
+                self._cancel_pending_simulation()
+            self.demo_status.set("Cliques DEMO desligados pelo usuário; nenhum sinal pendente será executado.")
+            return
+        if sys.platform != "win32":
+            messagebox.showerror(APP_NAME, "A automação do mouse só funciona no Windows.", parent=self)
+            return
+        if not self.running or self.detector is None:
+            messagebox.showinfo(APP_NAME, "Inicie a captura com OCR ativo antes de habilitar cliques DEMO.", parent=self)
+            return
+        if self.timeframe_var.get() != "M1":
+            messagebox.showinfo(APP_NAME, "O teste automático de clique desta etapa está limitado ao período M1.", parent=self)
+            return
+        if self.simulation.pending is not None:
+            messagebox.showinfo(APP_NAME, "Cancele o sinal pendente antes de habilitar cliques DEMO.", parent=self)
+            return
+        buy_target = self.demo_click_targets["BUY"]
+        sell_target = self.demo_click_targets["SELL"]
+        if buy_target is None or sell_target is None:
+            messagebox.showinfo(APP_NAME, "Calibre os centros dos botões COMPRAR e VENDER antes de ativar.", parent=self)
+            return
+        if self.region is None or self._inside_capture_region(buy_target) or self._inside_capture_region(sell_target):
+            messagebox.showerror(APP_NAME, "Os botões calibrados precisam ficar fora da região capturada do gráfico.", parent=self)
+            return
+        try:
+            import pyautogui  # noqa: F401 - verify dependency without moving/clicking the mouse
+        except Exception as exc:
+            messagebox.showerror(APP_NAME, f"PyAutoGUI não está disponível:\n{exc}", parent=self)
+            return
+        consent = messagebox.askyesno(
+            APP_NAME,
+            "ATENÇÃO — cliques experimentais em conta DEMO.\n\n"
+            "Confirme que a plataforma está na conta DEMO e que valor/expiração já foram conferidos. "
+            "O AUTO TRADER não consegue verificar o tipo de conta nem os valores configurados.\n\n"
+            "Nesta ativação, o OCR arma automaticamente apenas um candidato inequívoco. Depois que HORA ATUAL "
+            "avançar exatamente um minuto, o app clica uma vez no botão calibrado se ainda estiver nos primeiros "
+            "30 segundos. A virada do relógio é somente uma aproximação de N+1; a vela não é identificada visualmente. "
+            f"O modo desliga após um clique ou após {DEMO_ACTIVATION_TIMEOUT_SECONDS} s. "
+            "Se a conta não estiver em DEMO, o clique poderá enviar uma ordem real.\n\n"
+            "Ativar este teste agora?",
+            parent=self,
+        )
+        if not consent:
+            return
+        self.demo_automation_enabled = True
+        self.demo_account_confirmed = True
+        self.demo_clicks_remaining = 1
+        self.demo_timeout_after_id = self.after(
+            DEMO_ACTIVATION_TIMEOUT_SECONDS * 1000, self._expire_demo_activation
+        )
+        self._update_demo_toggle_text()
+        self.demo_status.set(
+            f"CLIQUE DEMO ATIVO por até {DEMO_ACTIVATION_TIMEOUT_SECONDS} s: aguardando um único candidato OCR; "
+            "será usado o próximo avanço de HORA ATUAL como aproximação de N+1, somente até M1 +30 s."
+        )
+
+    def _maybe_auto_arm_demo_signal(self) -> None:
+        if (
+            not self.demo_automation_enabled
+            or not self.running
+            or self.detector is None
+            or self.timeframe_var.get() != "M1"
+            or self.demo_clicks_remaining <= 0
+            or self.simulation.pending is not None
+        ):
+            return
+        now = time.monotonic()
+        if (
+            self.latest_platform_clock is None
+            or self.latest_clock_at is None
+            or now - self.latest_clock_at > TIMER_MAX_AGE_SECONDS
+        ):
+            self.demo_status.set("DEMO aguardando leitura recente e confiável de HORA ATUAL; nenhum clique será feito.")
+            return
+        candidates = list(self.candidates_by_id.values())
+        if len(candidates) != 1:
+            if len(candidates) > 1:
+                self.demo_status.set("DEMO bloqueado: há mais de um candidato OCR; revise o gráfico.")
+            return
+        candidate = candidates[0]
+        try:
+            pending = self.simulation.arm(candidate)
+        except ValueError:
+            return
+        self.pending_armed_clock = self.latest_platform_clock
+        self.pending_rollover_notified = False
+        label = "COMPRA" if pending.direction == "BUY" else "VENDER"
+        error = self._record_simulation_event(
+            "sinal_armado_demo", direction=pending.direction, observed_text=pending.observed_text,
+            confidence=pending.confidence, signal_x=pending.x, signal_y=pending.y,
+        )
+        persistence_note = f" Histórico não gravado: {error}" if error else ""
+        self.demo_status.set(
+            f"DEMO: {label} armado automaticamente ({pending.confidence:.0f}%). Aguardando avanço do relógio; "
+            f"isso não confirma visualmente N+1.{persistence_note}"
+        )
+        self._refresh_simulation_buttons()
+
+    def _demo_target_is_covered_by_app(self, target: ClickTarget) -> bool:
+        if not self.winfo_viewable():
+            return False
+        left, top = self.winfo_rootx(), self.winfo_rooty()
+        return (
+            left <= target.x < left + self.winfo_width()
+            and top <= target.y < top + self.winfo_height()
+        )
+
+    def _execute_demo_click(self) -> None:
+        pending = self.simulation.pending
+        clock = self.latest_platform_clock
+        if not self.demo_automation_enabled or self.demo_clicks_remaining <= 0 or pending is None:
+            return
+        if (
+            not self.pending_rollover_notified
+            or not platform_minute_advanced(self.pending_armed_clock, clock)
+            or clock is None
+            or not self._m1_window_valid()
+        ):
+            self.demo_status.set("DEMO bloqueado: HORA ATUAL ausente, vencida ou fora de M1 +0–30 s.")
+            return
+        target = self.demo_click_targets[pending.direction]
+        if target is None or self._inside_capture_region(target) or self._demo_target_is_covered_by_app(target):
+            self._deactivate_demo_automation()
+            self.demo_status.set("DEMO bloqueado: alvo inválido, dentro do gráfico ou coberto pela janela do app.")
+            self._cancel_pending_simulation()
+            return
+        try:
+            click_demo_direction(
+                pending.direction,
+                buy_target=self.demo_click_targets["BUY"],
+                sell_target=self.demo_click_targets["SELL"],
+                enabled=self.demo_automation_enabled,
+                demo_confirmed=self.demo_account_confirmed,
+                clicker=windows_mouse_click,
+            )
+            entry = self.simulation.confirm_next_candle(
+                elapsed_seconds_after_open=clock.elapsed_seconds_in_m1
+            )
+        except Exception as exc:
+            # A falha pode ter ocorrido depois de o sistema operacional enviar o clique;
+            # nunca tentar novamente automaticamente para não duplicar uma operação.
+            if self.simulation.pending is not None:
+                try:
+                    failed = self.simulation.cancel_pending()
+                    self._record_simulation_event(
+                        "clique_demo_inconclusivo", direction=failed.direction,
+                        observed_text=failed.observed_text, confidence=failed.confidence,
+                        signal_x=failed.x, signal_y=failed.y,
+                    )
+                except ValueError:
+                    pass
+            self._clear_pending_clock_observation()
+            self._deactivate_demo_automation()
+            self.demo_status.set(
+                f"Resultado do clique DEMO incerto ({exc}); não houve nova tentativa. Verifique a plataforma."
+            )
+            self._refresh_simulation_buttons()
+            return
+
+        label = "COMPRA" if entry.direction == "BUY" else "VENDER"
+        time_text = f"{clock.hour:02d}:{clock.minute:02d}:{clock.second:02d}"
+        elapsed = entry.elapsed_seconds_after_open
+        elapsed_text = f"M1 +{elapsed}s" if elapsed is not None else ""
+        log_error = self._record_simulation_event(
+            "entrada_demo_clicada", direction=entry.direction, observed_text=entry.signal_text,
+            confidence=entry.confidence, signal_x=entry.signal_x, signal_y=entry.signal_y,
+            elapsed_seconds_m1=elapsed,
+        )
+        self.history_table.insert(
+            "", 0, iid=f"demo-{entry.signal_id}",
+            values=(time_text, label, f"DEMO · CLIQUE ENVIADO · {elapsed_text}"),
+        )
+        self._clear_pending_clock_observation()
+        self._deactivate_demo_automation()
+        persistence_note = f" Histórico local não gravado: {log_error}" if log_error else ""
+        self.demo_status.set(
+            f"Clique {label} enviado às {time_text} ({elapsed_text}); aceitação pela plataforma não verificada. "
+            f"Ativação encerrada após um clique.{persistence_note}"
+        )
+        self.simulation_status.set(
+            f"Tentativa DEMO registrada após clique; aceitação não verificada e N+1 não identificada visualmente. "
+            f"Histórico desta sessão: {len(self.simulation.entries)} tentativa(s)."
+        )
+        self._refresh_simulation_buttons()
+
+    def _expire_demo_activation(self) -> None:
+        self.demo_timeout_after_id = None
+        if not self.demo_automation_enabled:
+            return
+        self._deactivate_demo_automation()
+        if self.simulation.pending is not None:
+            self._cancel_pending_simulation()
+        self.demo_status.set(
+            f"Teste DEMO expirou após {DEMO_ACTIVATION_TIMEOUT_SECONDS} s sem clique; "
+            "nenhuma nova tentativa será feita."
+        )
+
+    def _deactivate_demo_automation(self) -> None:
+        self.demo_automation_enabled = False
+        self.demo_account_confirmed = False
+        self.demo_clicks_remaining = 0
+        if self.demo_timeout_after_id is not None:
+            try:
+                self.after_cancel(self.demo_timeout_after_id)
+            except tk.TclError:
+                pass
+            self.demo_timeout_after_id = None
+        self._update_demo_toggle_text()
 
     def _apply_coordinates(self) -> None:
         try:
@@ -439,6 +759,8 @@ class AutoTraderApp(tk.Tk):
 
     def _stop_capture(self, reason: str) -> None:
         self._stop_sequence_recording("captura parada")
+        if self.demo_automation_enabled:
+            self._toggle_demo_automation()
         self.running = False
         self.start_button.configure(text="Iniciar visualização")
         self.capture_status.set(reason)
@@ -473,9 +795,12 @@ class AutoTraderApp(tk.Tk):
                     self.last_candidates = filter_to_recent_candle(raw_candidates, bars)
                     self.last_ocr_at = now
                     self._update_ocr_status(self.last_candidates, len(raw_candidates), len(bars))
+                    self._maybe_auto_arm_demo_signal()
                     self._update_timer_status(now)
                 except Exception as exc:
-                    # Falha do OCR não encerra a captura visual, mas interrompe novas leituras.
+                    # Falha do OCR encerra também qualquer modo que poderia clicar.
+                    if self.demo_automation_enabled:
+                        self._toggle_demo_automation()
                     self.detector = None
                     self.latest_platform_clock = None
                     self.latest_clock_at = None
@@ -663,10 +988,14 @@ class AutoTraderApp(tk.Tk):
             direction = "COMPRA" if row.get("direction") == "BUY" else "VENDER"
             elapsed = row.get("elapsed_seconds_m1", "")
             elapsed_text = f" · M1 +{elapsed}s" if elapsed else ""
+            row_status = (
+                f"DEMO · CLIQUE ENVIADO{elapsed_text}"
+                if row.get("event") == "entrada_demo_clicada"
+                else f"SIMULADA · N+1{elapsed_text}"
+            )
             self.history_table.insert(
                 "", 0, iid=f"persisted-{index}",
-                values=(row.get("platform_clock") or "—", direction,
-                        f"SIMULADA · N+1{elapsed_text}"),
+                values=(row.get("platform_clock") or "—", direction, row_status),
             )
         if rows:
             self.simulation_status.set(
@@ -724,9 +1053,19 @@ class AutoTraderApp(tk.Tk):
         self._arm_candidate_id(selection[0])
 
     def _arm_candidate_id(self, item_id: str) -> None:
+        if self.demo_automation_enabled:
+            self.simulation_status.set("No modo DEMO, os candidatos são armados automaticamente; use Cancelar para abortar.")
+            return
         candidate = self.candidates_by_id.get(item_id)
         if candidate is None:
             self.simulation_status.set("O candidato não está mais no quadro atual; aguarde a próxima leitura.")
+            return
+        if self.timeframe_var.get() == "M1" and (
+            self.latest_platform_clock is None
+            or self.latest_clock_at is None
+            or time.monotonic() - self.latest_clock_at > TIMER_MAX_AGE_SECONDS
+        ):
+            self.simulation_status.set("Não foi possível armar: HORA ATUAL da plataforma está ausente ou desatualizada.")
             return
         try:
             pending = self.simulation.arm(candidate)
@@ -772,11 +1111,17 @@ class AutoTraderApp(tk.Tk):
             signal_x=pending.x, signal_y=pending.y,
         )
         persistence_note = f" Histórico local não gravado: {log_error}" if log_error else ""
+        rollover_note = (
+            "O teste DEMO tentará um clique se a janela M1 continuar aberta; a vela não é identificada visualmente."
+            if self.demo_automation_enabled
+            else "Confira visualmente se N+1 nasceu; a confirmação continua manual."
+        )
         self.simulation_status.set(
             f"HORA ATUAL avançou para {clock.hour:02d}:{clock.minute:02d} após armar {label}. "
-            "Confira visualmente se N+1 nasceu; a confirmação continua manual."
-            f"{persistence_note}"
+            f"{rollover_note}{persistence_note}"
         )
+        if self.demo_automation_enabled:
+            self._execute_demo_click()
 
     def _clear_pending_clock_observation(self) -> None:
         self.pending_armed_clock = None
@@ -787,7 +1132,7 @@ class AutoTraderApp(tk.Tk):
         if self.timeframe_var.get() == "M1":
             if not self._m1_window_valid():
                 self.simulation_status.set(
-                    "Entrada M1 bloqueada: HORA ATUAL da plataforma não foi lida ou já passou de 30 s."
+                    "Entrada M1 bloqueada: aguarde HORA ATUAL avançar exatamente um minuto e confirme até +30 s."
                 )
                 self._refresh_simulation_buttons()
                 return
@@ -863,15 +1208,21 @@ class AutoTraderApp(tk.Tk):
             button.configure(state="disabled")
 
     def _m1_window_valid(self) -> bool:
-        if self.latest_platform_clock is None or self.latest_clock_at is None:
+        if (
+            self.latest_platform_clock is None
+            or self.latest_clock_at is None
+            or self.pending_armed_clock is None
+        ):
             return False
         if time.monotonic() - self.latest_clock_at > TIMER_MAX_AGE_SECONDS:
             return False
-        return m1_entry_window_open(self.latest_platform_clock, max_elapsed_seconds=30)
+        return m1_next_candle_entry_window_open(
+            self.pending_armed_clock, self.latest_platform_clock, max_elapsed_seconds=30
+        )
 
     def _refresh_simulation_buttons(self) -> None:
         pending = self.simulation.pending is not None
-        confirm_allowed = pending and (
+        confirm_allowed = pending and not self.demo_automation_enabled and (
             self.timeframe_var.get() != "M1" or self._m1_window_valid()
         )
         for button in (self.confirm_candle_button, self.compact_confirm_button):
@@ -888,36 +1239,72 @@ class AutoTraderApp(tk.Tk):
             self._refresh_simulation_buttons()
             return
         platform_clock = self.latest_platform_clock
-        fresh = self.latest_clock_at is not None and (now or time.monotonic()) - self.latest_clock_at <= TIMER_MAX_AGE_SECONDS
+        observed_at = time.monotonic() if now is None else now
+        fresh = (
+            self.latest_clock_at is not None
+            and observed_at - self.latest_clock_at <= TIMER_MAX_AGE_SECONDS
+        )
         if platform_clock is None or not fresh:
-            self.timer_status.set("M1: relógio HORA ATUAL não legível/atual; confirmação bloqueada.")
+            self.timer_status.set("M1: HORA ATUAL ausente/desatualizada; confirmação e clique bloqueados.")
             self._refresh_simulation_buttons()
             return
+
         elapsed = platform_clock.elapsed_seconds_in_m1
-        if 0 <= elapsed <= 30:
+        pending = self.simulation.pending
+        offset = (
+            platform_minute_offset(self.pending_armed_clock, platform_clock)
+            if pending is not None else None
+        )
+        expire_reason: str | None = None
+        if pending is not None and offset is None:
+            self.timer_status.set("M1: pendente sem relógio de armamento; não será confirmado.")
+            expire_reason = "relógio do sinal ausente"
+        elif pending is not None and offset == 0:
+            self.timer_status.set(
+                f"M1: sinal armado em {platform_clock.hour:02d}:{platform_clock.minute:02d}; "
+                "aguardando a próxima virada. A janela ainda não começou."
+            )
+        elif pending is not None and offset == 1 and 0 <= elapsed <= 30:
+            self.timer_status.set(
+                f"M1: HORA ATUAL {platform_clock.hour:02d}:{platform_clock.minute:02d}:"
+                f"{platform_clock.second:02d}; N+1 observada pelo relógio, janela M1 aberta."
+            )
+        elif pending is not None:
+            expire_reason = (
+                "mais de 30 s em N+1" if offset == 1
+                else "a leitura avançou mais de um minuto ou voltou no tempo"
+            )
+            self.timer_status.set(f"M1: entrada bloqueada — {expire_reason}.")
+        elif 0 <= elapsed <= 30:
             self.timer_status.set(
                 f"M1: HORA ATUAL {platform_clock.hour:02d}:{platform_clock.minute:02d}:"
                 f"{platform_clock.second:02d}; {elapsed}s da vela, janela aberta."
             )
         else:
             self.timer_status.set(f"M1: {elapsed}s decorridos; janela de 30s expirada.")
-            if self.simulation.pending is not None:
-                expired = self.simulation.cancel_pending()
-                self._clear_pending_clock_observation()
-                label = "COMPRA" if expired.direction == "BUY" else "VENDER"
-                log_error = self._record_simulation_event(
-                    "sinal_expirado", direction=expired.direction,
-                    observed_text=expired.observed_text, confidence=expired.confidence,
-                    signal_x=expired.x, signal_y=expired.y,
-                )
-                persistence_note = f" Histórico local não gravado: {log_error}" if log_error else ""
-                self.simulation_status.set(
-                    f"Sinal {label} expirado: ultrapassou 30s de M1; descartado sem entrada."
-                    f"{persistence_note}"
-                )
+
+        if pending is not None and expire_reason is not None:
+            expired = self.simulation.cancel_pending()
+            self._clear_pending_clock_observation()
+            label = "COMPRA" if expired.direction == "BUY" else "VENDER"
+            log_error = self._record_simulation_event(
+                "sinal_expirado", direction=expired.direction,
+                observed_text=expired.observed_text, confidence=expired.confidence,
+                signal_x=expired.x, signal_y=expired.y,
+            )
+            if self.demo_automation_enabled:
+                self._deactivate_demo_automation()
+                self.demo_status.set("Teste DEMO encerrado sem clique: janela M1/N+1 não foi válida.")
+            persistence_note = f" Histórico local não gravado: {log_error}" if log_error else ""
+            self.simulation_status.set(
+                f"Sinal {label} descartado: {expire_reason}; nenhuma entrada enviada."
+                f"{persistence_note}"
+            )
         self._refresh_simulation_buttons()
 
     def _on_timeframe_change(self, _event: tk.Event | None = None) -> None:
+        if self.demo_automation_enabled and self.timeframe_var.get() != "M1":
+            self._toggle_demo_automation()
         self._persist_config()
         self._update_timer_status()
 
@@ -952,22 +1339,22 @@ class AutoTraderApp(tk.Tk):
             messagebox.showerror(APP_NAME, f"Não foi possível salvar a imagem:\n{exc}", parent=self)
 
     def _persist_config(self) -> None:
-        if self.region is None:
-            return
-        payload = {
-            "region": self.region.as_mss_dict(),
-            "monitor_index": self._selected_monitor_index(),
-            "timeframe": self.timeframe_var.get(),
-        }
+        payload = {"timeframe": self.timeframe_var.get()}
+        if self.region is not None:
+            payload["region"] = self.region.as_mss_dict()
+        monitor_index = self._selected_monitor_index()
+        if monitor_index is not None:
+            payload["monitor_index"] = monitor_index
         try:
             self.config_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         except OSError as exc:
-            self.capture_status.set(f"Região aplicada, mas não foi possível salvar a configuração: {exc}")
+            self.capture_status.set(f"Configuração aplicada, mas não foi possível salvar: {exc}")
 
     def _load_config(self) -> None:
         try:
             config = json.loads(self.config_path.read_text(encoding="utf-8"))
-            self._set_region(ScreenRegion.from_dict(config["region"]))
+            if "region" in config:
+                self._set_region(ScreenRegion.from_dict(config["region"]))
             index = config.get("monitor_index")
             if isinstance(index, int) and 0 <= index < len(self.monitors):
                 self.monitor_combo.current(index)
@@ -981,6 +1368,8 @@ class AutoTraderApp(tk.Tk):
 
     def _on_close(self) -> None:
         self._stop_sequence_recording("aplicativo fechado")
+        if self.demo_automation_enabled:
+            self._toggle_demo_automation()
         self.running = False
         self.destroy()
 

@@ -78,6 +78,6 @@ class SimulationHistoryStore:
         with self.path.open("r", newline="", encoding="utf-8") as handle:
             rows = [
                 row for row in csv.DictReader(handle)
-                if row.get("event") == "entrada_simulada"
+                if row.get("event") in {"entrada_simulada", "entrada_demo_clicada"}
             ]
         return rows[-limit:]

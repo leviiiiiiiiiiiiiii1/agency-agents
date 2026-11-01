@@ -65,6 +65,15 @@ class SimulationHistoryStoreTests(unittest.TestCase):
             rows = list(csv.DictReader(handle))
         self.assertEqual(len(rows), 2)
 
+    def test_recent_entries_includes_demo_click_but_ignores_other_events(self):
+        self.append("sinal_armado_demo")
+        self.append("entrada_demo_clicada", direction="SELL", elapsed=15)
+
+        rows = self.store.load_recent_entries()
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["event"], "entrada_demo_clicada")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,17 +2,19 @@
 
 O aplicativo seleciona uma área da tela e reconhece, por OCR, etiquetas COMPRA/COMPRAR e VENDER/VENDA (também aceita BUY/SELL). Durante a captura, a interface muda para um painel compacto com controles de armar/confirmar, que pode ser movido para fora da região monitorada. Assim, o usuário interage sem restaurar a janela completa sobre o gráfico. A simulação segue o fluxo: o sinal aparece após o fechamento de N; a entrada de teste só é registrada depois da confirmação de que N+1 nasceu.
 
-**A abertura de N+1 é confirmada manualmente nesta etapa.** Em M1, a confirmação só é permitida nos primeiros 30 s após a virada do minuto, usando OCR do relógio “HORA ATUAL” da plataforma no canto inferior direito; se o relógio não puder ser lido com confiança, a confirmação fica bloqueada. O programa ainda não detecta automaticamente o nascimento da vela. Nada clica, envia ordem ou interage com a corretora; o fluxo é uma simulação assistida e não valida sinal nem resultado financeiro.
+**Por padrão, a abertura de N+1 é confirmada manualmente.** Em M1, só é permitida após HORA ATUAL avançar exatamente um minuto desde o armamento e durante os primeiros 30 s, calculados pelo relógio da plataforma; leituras ausentes, atrasadas ou com minutos pulados bloqueiam/descartam a entrada. O app ainda não identifica visualmente o nascimento da vela.
+
+Há também um recurso experimental, desligado por padrão, para testar **um clique por ativação (no máximo 75 s)** em conta DEMO no Windows. Ele arma automaticamente somente um candidato OCR inequívoco, espera um avanço de um minuto e clica no alvo COMPRAR/VENDER calibrado se o relógio indicar M1 +0–30 s. Esse avanço do relógio é apenas uma aproximação de N+1 — não prova a identidade/nascimento da vela. O app não consegue verificar se a conta é DEMO, qual valor/expiração está configurado nem se a plataforma aceitou o clique. Se a janela estiver em conta real, o clique pode enviar uma ordem real. Não use em conta real.
 
 ## Arquitetura e decisões técnicas
 
 - **Python 3.12+** e `tkinter` para a interface local.
-- **MSS** captura somente a região selecionada; **Pillow** prepara e anota o preview.
+- **MSS** captura somente a região selecionada; **Pillow** prepara e anota o preview. **PyAutoGUI** só é carregado para o teste de clique DEMO explicitamente habilitado; durante a calibração ele apenas lê a posição do cursor.
 - **pytesseract** chama o mecanismo Tesseract OCR instalado separadamente no Windows. O OCR roda aproximadamente uma vez por segundo; se a passagem geral não reconhecer o relógio, leituras ampliadas alternativas são restritas ao rodapé/canto inferior direito e exigem o texto HORA ATUAL junto de HH:MM:SS.
 - A confiança do Tesseract **não é uma probabilidade calibrada de acerto**. A palavra pode vir de controles da plataforma; mantenha a região restrita ao gráfico.
 - Um filtro heurístico em Pillow localiza corpos de candles vermelhos/verdes e só libera OCR associado ao mais recente sinal nas duas barras mais à direita. Se não localizar pelo menos duas barras ou não conseguir associar o texto, bloqueia o candidato. Isso reduz sinais históricos, mas não prova identidade de candle.
-- `SimulationWorkflow` impede mais de um sinal pendente, registra entrada somente quando o usuário confirma a próxima vela e bloqueia reutilização aproximada da mesma etiqueta durante a sessão. Se HORA ATUAL avança um minuto após armar um sinal, a interface avisa para conferir N+1 visualmente; esse aviso não confirma a vela nem registra entrada. A identidade espacial é uma proteção de teste, não equivale à identidade real da vela e não persiste após fechar o programa.
-- Não há módulo de automação de mouse/teclado, conexão com corretora ou envio de ordens.
+- `SimulationWorkflow` impede mais de um sinal pendente, registra entradas no modo assistido quando o usuário confirma N+1 e bloqueia reutilização aproximada da mesma etiqueta durante a sessão. No modo manual, a interface avisa quando HORA ATUAL avança um minuto; o usuário ainda precisa conferir N+1 visualmente. A identidade espacial é uma proteção de teste, não equivale à identidade real da vela e não persiste após fechar o programa.
+- O único módulo de mouse é o teste explícito de clique DEMO descrito acima: Windows, desligado por padrão, alvo calibrado a cada inicialização, confirmação de conta DEMO a cada ativação e no máximo um clique por ativação, que expira em 75 s. Não verifica o tipo de conta, stake, expiração, aceitação da ordem ou sobreposição de janelas da corretora.
 
 ## Instalação no Windows
 
@@ -46,11 +48,21 @@ python -m auto_trader_iq.app
 4. Clique **Configurações (pausar)** para parar a captura e voltar à janela completa. Para evitar que o app seja reconhecido como parte do gráfico, a região e o painel compacto não podem se sobrepor.
 5. Confira os candidatos e selecione uma etiqueta na tabela. O rótulo e sua caixa no preview devem coincidir com a etiqueta do indicador.
 6. Clique **Armar candidato selecionado**. O aplicativo fica pendente e não registra uma entrada ainda.
-7. Somente depois de observar que a próxima vela N+1 nasceu, clique **Confirmar abertura da próxima vela**. O resultado continua sendo apenas simulado e é acrescentado ao histórico local `simulation_history.csv`. Use **Cancelar** para descartar o pendente; a mesma etiqueta não será rearmada naquela sessão.
+7. No modo assistido padrão, depois de observar que a próxima vela N+1 nasceu, clique **Confirmar abertura da próxima vela**. O resultado é simulado e acrescentado ao histórico local `simulation_history.csv`. Use **Cancelar** para descartar o pendente; a mesma etiqueta não será rearmada naquela sessão.
+
+### Teste experimental de clique DEMO no Windows
+
+Use exclusivamente em conta DEMO. O app não consegue distinguir DEMO de REAL; em conta real, o clique pode enviar uma ordem. Antes de cada ativação, confira manualmente a conta e os valores/expiração já configurados na plataforma — o AUTO TRADER não lê nem altera esses parâmetros.
+
+1. Com o app pausado e a plataforma visível, na janela completa use **Calibrar COMPRAR** e **Calibrar VENDER**. Em cada etapa, a janela do app some por 5 s: mova o cursor ao centro do botão correto e não clique. A calibração lê apenas a posição atual do cursor. Os pontos devem ficar fora do recorte do gráfico e não são salvos entre inicializações; recalibre ao abrir o app ou se a plataforma/telas mudarem de posição.
+2. Inicie a captura M1 com OCR. Habilite **Ativar cliques DEMO…** e confirme o aviso, somente após conferir novamente a conta DEMO, stake e expiração.
+3. Se houver exatamente um candidato OCR filtrado, o app o arma sozinho. Ao observar o próximo avanço de exatamente um minuto em HORA ATUAL, ele tenta um único clique no botão da direção do sinal, desde que a leitura continue fresca e esteja em M1 +0–30 s. A ativação encerra após esse clique ou após 75 s sem clique; é possível parar antes pelo botão **Parar cliques DEMO** ou **Cancelar**.
+
+Este é um ensaio de integração do mouse, **não uma confirmação automática confiável de N+1**: a virada do relógio serve apenas como aproximação, e o app não verifica visualmente a identidade da vela nem se a plataforma aceitou a ordem. Se houver leitura ambígua, atraso, minuto pulado, alvo coberto ou erro de clique, o app bloqueia ou encerra o teste sem tentar repetir. Verifique a plataforma após o clique.
 
 ## Histórico local de simulações
 
-O aplicativo mantém `%LOCALAPPDATA%\AutoTraderIQ\simulation_history.csv` no Windows (ou `~/.auto_trader_iq/simulation_history.csv` em outros sistemas). O CSV append-only registra metadados de sinais armados, viradas de minuto observadas, entradas simuladas, cancelamentos e expirações: HORA ATUAL quando legível, evento, período, direção, texto OCR, confiança, posição do rótulo, segundos decorridos em M1 e confiança do relógio. A tabela mostra as 20 entradas simuladas mais recentes após reabrir o app.
+O aplicativo mantém `%LOCALAPPDATA%\AutoTraderIQ\simulation_history.csv` no Windows (ou `~/.auto_trader_iq/simulation_history.csv` em outros sistemas). O CSV append-only registra metadados de sinais armados, viradas de minuto observadas, entradas simuladas, cliques DEMO, cancelamentos e expirações: HORA ATUAL quando legível, evento, período, direção, texto OCR, confiança, posição do rótulo, segundos decorridos em M1 e confiança do relógio. A tabela mostra as 20 entradas simuladas/cliques DEMO mais recentes após reabrir o app.
 
 Esse histórico não contém imagens, não é transmitido e não gera ordens. Falhas na gravação são avisadas na interface, mas não interrompem a simulação assistida. A gravação separada de sequências continua opt-in, limitada a 75 segundos e salva imagens localmente, conforme descrito abaixo.
 
