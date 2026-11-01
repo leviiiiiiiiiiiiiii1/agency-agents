@@ -48,6 +48,12 @@ python -m auto_trader_iq.app
 6. Clique **Armar candidato selecionado**. O aplicativo fica pendente e não registra uma entrada ainda.
 7. Somente depois de observar que a próxima vela N+1 nasceu, clique **Confirmar abertura da próxima vela**. O resultado é marcado como entrada simulada em memória. Use **Cancelar** para descartar o pendente; a mesma etiqueta não será rearmada naquela sessão.
 
+## Próxima etapa: validar a virada M1 com capturas reais
+
+Durante uma visualização M1 com OCR ativo, o botão **Gravar sequência de teste (75 s)** fica disponível também no painel compacto. Inicie a gravação cerca de 20–30 s antes da próxima virada de minuto. Ela salva aproximadamente uma imagem por segundo por até 75 s e encerra sozinha; também pode ser parada manualmente. Parar a visualização ou fechar o app encerra a gravação de forma segura.
+
+Após confirmação explícita, as imagens da região selecionada e um `manifest.csv` (hora OCR da plataforma, confiança, contagem heurística de candles e candidatos OCR) são gravados somente em `%LOCALAPPDATA%\AutoTraderIQ\sequences`. A aplicação não envia esses arquivos pela rede. Como as imagens podem conter informação pessoal, confira o recorte e inspecione os arquivos antes de compartilhar. O registro é apenas para validação: não confirma N+1 automaticamente e não envia ordens.
+
 Testes unitários (não precisam de tela gráfica nem do mecanismo Tesseract):
 
 ```powershell

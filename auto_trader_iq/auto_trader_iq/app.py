@@ -17,6 +17,7 @@ from .capture import ScreenCapture, ScreenRegion
 from .candle_monitor import detect_candle_bars, filter_to_recent_candle
 from .candle_timer import PlatformClockReading, m1_entry_window_open
 from .region_selector import RegionSelector
+from .sequence_recorder import SequenceRecorder
 from .signal_detector import SignalCandidate, TesseractSignalDetector
 from .simulation import SimulationWorkflow
 
@@ -79,6 +80,9 @@ class AutoTraderApp(tk.Tk):
         self.last_ocr_at = 0.0
         self.latest_platform_clock: PlatformClockReading | None = None
         self.latest_clock_at: float | None = None
+        self.latest_bar_count = 0
+        self.sequence_recorder = SequenceRecorder(self.data_dir / "sequences")
+        self.sequence_status = tk.StringVar(value="Gravação de teste inativa; nenhuma imagem está sendo salva.")
         self.simulation = SimulationWorkflow()
         self.candidates_by_id: dict[str, SignalCandidate] = {}
         self.simulation_status = tk.StringVar(value="Simulação parada; nenhuma entrada foi registrada.")
@@ -148,30 +152,37 @@ class AutoTraderApp(tk.Tk):
         ttk.Button(controls, text="Salvar captura atual…", command=self._save_snapshot).grid(
             row=14, column=0, sticky="ew", pady=5
         )
+        self.sequence_button = ttk.Button(
+            controls, text="Gravar sequência de teste (75 s)", command=self._toggle_sequence_recording
+        )
+        self.sequence_button.grid(row=15, column=0, sticky="ew", pady=5)
+        ttk.Label(controls, textvariable=self.sequence_status, wraplength=250).grid(
+            row=16, column=0, sticky="w", pady=(0, 4)
+        )
 
         ttk.Checkbutton(
             controls, text="Ativar OCR experimental COMPRA/VENDER", variable=self.ocr_enabled_var
-        ).grid(row=15, column=0, sticky="w", pady=(8, 2))
-        ttk.Label(controls, text="Confiança OCR mínima (0–100)").grid(row=16, column=0, sticky="w")
+        ).grid(row=17, column=0, sticky="w", pady=(8, 2))
+        ttk.Label(controls, text="Confiança OCR mínima (0–100)").grid(row=18, column=0, sticky="w")
         ttk.Spinbox(controls, from_=0, to=100, textvariable=self.confidence_var, width=8).grid(
-            row=17, column=0, sticky="w", pady=(2, 0)
+            row=19, column=0, sticky="w", pady=(2, 0)
         )
 
         ttk.Checkbutton(
             controls, text="Modo compacto ao monitorar (recomendado)",
             variable=self.compact_during_capture_var,
-        ).grid(row=18, column=0, sticky="w", pady=(6, 0))
+        ).grid(row=20, column=0, sticky="w", pady=(6, 0))
 
-        ttk.Label(controls, text="Período do gráfico").grid(row=19, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(controls, text="Período do gráfico").grid(row=21, column=0, sticky="w", pady=(6, 0))
         self.timeframe_combo = ttk.Combobox(
             controls, textvariable=self.timeframe_var, values=("M1", "M5", "M15", "M30"),
             state="readonly", width=10,
         )
-        self.timeframe_combo.grid(row=20, column=0, sticky="w", pady=(2, 0))
+        self.timeframe_combo.grid(row=22, column=0, sticky="w", pady=(2, 0))
         self.timeframe_combo.bind("<<ComboboxSelected>>", self._on_timeframe_change)
 
         info = ttk.LabelFrame(controls, text="Estado", padding=10)
-        info.grid(row=21, column=0, sticky="ew", pady=(8, 0))
+        info.grid(row=23, column=0, sticky="ew", pady=(8, 0))
         ttk.Label(info, textvariable=self.capture_status, wraplength=250).pack(anchor="w")
         ttk.Label(info, textvariable=self.heartbeat_status, wraplength=250).pack(anchor="w", pady=(5, 0))
         ttk.Label(info, textvariable=self.ocr_status, wraplength=250).pack(anchor="w", pady=(5, 0))
@@ -265,6 +276,15 @@ class AutoTraderApp(tk.Tk):
         ttk.Button(
             compact_buttons, text="Configurações (pausar)", command=self._return_to_full_ui
         ).pack(side="right")
+        recorder_row = ttk.Frame(self.compact_frame)
+        recorder_row.pack(fill="x", pady=(4, 0))
+        self.compact_sequence_button = ttk.Button(
+            recorder_row, text="Gravar sequência de teste (75 s)", command=self._toggle_sequence_recording
+        )
+        self.compact_sequence_button.pack(side="left")
+        ttk.Label(recorder_row, textvariable=self.sequence_status, wraplength=350).pack(
+            side="left", padx=(8, 0)
+        )
         ttk.Label(self.compact_frame, textvariable=self.simulation_status, wraplength=520).pack(
             anchor="w", pady=(4, 0)
         )
@@ -366,6 +386,7 @@ class AutoTraderApp(tk.Tk):
         self.last_ocr_at = 0.0
         self.latest_platform_clock = None
         self.latest_clock_at = None
+        self.latest_bar_count = 0
         self._update_timer_status()
         self.running = True
         self.last_frame_hash = None
@@ -386,8 +407,8 @@ class AutoTraderApp(tk.Tk):
         self.full_ui.pack_forget()
         self.compact_frame.pack(fill="both", expand=True)
         self.compact_mode = True
-        self.minsize(420, 300)
-        self.geometry("560x330+0+0")
+        self.minsize(420, 330)
+        self.geometry("560x365+0+0")
         self.update_idletasks()
 
     def _exit_compact_mode(self) -> None:
@@ -404,6 +425,7 @@ class AutoTraderApp(tk.Tk):
         self._stop_capture("Captura pausada para ajustes.")
 
     def _stop_capture(self, reason: str) -> None:
+        self._stop_sequence_recording("captura parada")
         self.running = False
         self.start_button.configure(text="Iniciar visualização")
         self.capture_status.set(reason)
@@ -433,6 +455,7 @@ class AutoTraderApp(tk.Tk):
                     raw_candidates, self.latest_platform_clock = self.detector.detect_frame(image)
                     self.latest_clock_at = now if self.latest_platform_clock is not None else None
                     bars = detect_candle_bars(image)
+                    self.latest_bar_count = len(bars)
                     self.last_candidates = filter_to_recent_candle(raw_candidates, bars)
                     self.last_ocr_at = now
                     self._update_ocr_status(self.last_candidates, len(raw_candidates), len(bars))
@@ -444,6 +467,8 @@ class AutoTraderApp(tk.Tk):
                     self.latest_clock_at = None
                     self.ocr_status.set(f"OCR interrompido por erro: {exc}")
                     self._update_timer_status()
+                    self._stop_sequence_recording("parada por falha de OCR")
+            self._update_sequence_recording(image, now)
             self._show_preview(image)
             self.capture_status.set(f"Captura ativa · {image.width}×{image.height} px · 2 quadros/s")
         except Exception as exc:
@@ -453,6 +478,101 @@ class AutoTraderApp(tk.Tk):
             messagebox.showerror(APP_NAME, f"A captura foi interrompida:\n{exc}", parent=self)
             return
         self.after(POLL_MS, self._capture_tick)
+
+    def _set_sequence_button_text(self, recording: bool) -> None:
+        text = "Parar gravação de teste" if recording else "Gravar sequência de teste (75 s)"
+        for button_name in ("sequence_button", "compact_sequence_button"):
+            button = getattr(self, button_name, None)
+            if button is not None:
+                button.configure(text=text)
+
+    def _toggle_sequence_recording(self) -> None:
+        if self.sequence_recorder.active:
+            self._stop_sequence_recording("parada manual")
+            return
+        if not self.running:
+            messagebox.showinfo(APP_NAME, "Inicie a visualização antes de gravar uma sequência.", parent=self)
+            return
+        if self.timeframe_var.get() != "M1":
+            messagebox.showinfo(APP_NAME, "A gravação de validação desta etapa é para o período M1.", parent=self)
+            return
+        if self.detector is None:
+            messagebox.showinfo(
+                APP_NAME, "Ative o OCR e inicie a visualização para registrar também HORA ATUAL.", parent=self
+            )
+            return
+        consent = messagebox.askyesno(
+            APP_NAME,
+            "Gravar por até 75 segundos as imagens da região selecionada e metadados OCR, somente neste PC?\n\n"
+            "Confira que o recorte mostra o gráfico e HORA ATUAL, sem dados pessoais ou informações da conta. "
+            "Os arquivos não serão enviados pela aplicação.",
+            parent=self,
+        )
+        if not consent:
+            return
+        try:
+            output_dir = self.sequence_recorder.start(time.monotonic())
+        except OSError as exc:
+            messagebox.showerror(APP_NAME, f"Não foi possível iniciar a gravação:\n{exc}", parent=self)
+            return
+        self._set_sequence_button_text(True)
+        self.sequence_status.set(f"Gravando até 75 s · arquivos locais em {output_dir}")
+
+    def _stop_sequence_recording(self, reason: str) -> None:
+        if not self.sequence_recorder.active:
+            return
+        frame_count = self.sequence_recorder.frames_saved
+        output_dir = self.sequence_recorder.stop()
+        self._set_sequence_button_text(False)
+        self.sequence_status.set(
+            f"Sequência encerrada ({reason}): {frame_count} imagem(ns) · {output_dir}"
+        )
+
+    def _update_sequence_recording(self, image: Image.Image, now: float) -> None:
+        recorder = self.sequence_recorder
+        if not recorder.active:
+            return
+        clock = self.latest_platform_clock
+        clock_is_fresh = (
+            clock is not None
+            and self.latest_clock_at is not None
+            and now - self.latest_clock_at <= TIMER_MAX_AGE_SECONDS
+        )
+        clock_text = (
+            f"{clock.hour:02d}:{clock.minute:02d}:{clock.second:02d}" if clock_is_fresh else ""
+        )
+        clock_confidence = clock.confidence if clock_is_fresh else None
+        candidate_labels = [
+            f"{'COMPRA' if item.direction == 'BUY' else 'VENDER'} "
+            f"{item.confidence:.0f}%@{item.left},{item.top}"
+            for item in self.last_candidates
+        ]
+        output_dir = recorder.output_dir
+        try:
+            recorder.record_frame(
+                image,
+                now,
+                platform_clock=clock_text,
+                clock_confidence=clock_confidence,
+                candle_count=self.latest_bar_count,
+                candidates=candidate_labels,
+            )
+        except (OSError, ValueError) as exc:
+            self._stop_sequence_recording("erro ao salvar")
+            self.sequence_status.set(f"Gravação interrompida por erro: {exc} · {output_dir}")
+            return
+
+        if not recorder.active:
+            frame_count = recorder.frames_saved
+            self._set_sequence_button_text(False)
+            self.sequence_status.set(
+                f"Sequência concluída: {frame_count} imagem(ns) · {output_dir}"
+            )
+            return
+        self.sequence_status.set(
+            f"Gravando {recorder.frames_saved} imagem(ns); "
+            f"{max(0, int(recorder.duration_seconds - recorder.elapsed_seconds))} s restantes · {output_dir}"
+        )
 
     def _update_ocr_status(
         self, candidates: list[SignalCandidate], raw_count: int = 0, candle_count: int = 0
@@ -706,6 +826,7 @@ class AutoTraderApp(tk.Tk):
             self.capture_status.set(f"Configuração anterior ignorada ({exc}).")
 
     def _on_close(self) -> None:
+        self._stop_sequence_recording("aplicativo fechado")
         self.running = False
         self.destroy()
 
