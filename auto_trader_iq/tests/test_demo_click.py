@@ -12,10 +12,10 @@ from auto_trader_iq.demo_click import (
 
 
 class DemoClickTests(unittest.TestCase):
-    def test_demo_entry_deadline_allows_at_most_ten_seconds_from_arm(self):
+    def test_demo_entry_deadline_allows_at_most_fifteen_seconds_from_arm(self):
         self.assertTrue(demo_entry_deadline_open(50.0, 50.0))
-        self.assertTrue(demo_entry_deadline_open(50.0, 60.0))
-        self.assertFalse(demo_entry_deadline_open(50.0, 60.001))
+        self.assertTrue(demo_entry_deadline_open(50.0, 65.0))
+        self.assertFalse(demo_entry_deadline_open(50.0, 65.001))
         self.assertFalse(demo_entry_deadline_open(50.0, 49.9))
         self.assertFalse(demo_entry_deadline_open(None, 51.0))
         self.assertFalse(demo_entry_deadline_open(50.0, float("nan")))

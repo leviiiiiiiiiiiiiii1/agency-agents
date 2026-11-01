@@ -24,7 +24,7 @@ class ClickTarget:
 def demo_entry_deadline_open(
     armed_at: float | None,
     now: float,
-    max_delay_seconds: float = 10.0,
+    max_delay_seconds: float = 15.0,
 ) -> bool:
     """Return whether an automatic DEMO entry is still within its arm deadline."""
     if armed_at is None or not math.isfinite(armed_at) or not math.isfinite(now):

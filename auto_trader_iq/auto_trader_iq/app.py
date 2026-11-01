@@ -44,7 +44,7 @@ POLL_MS = 500
 OCR_INTERVAL_SECONDS = 1.0
 TIMER_MAX_AGE_SECONDS = 1.5
 DEMO_ACTIVATION_TIMEOUT_SECONDS = 75
-DEMO_ENTRY_MAX_DELAY_SECONDS = 10.0
+DEMO_ENTRY_MAX_DELAY_SECONDS = 15.0
 
 
 def _enable_windows_dpi_awareness() -> None:
@@ -769,7 +769,7 @@ class AutoTraderApp(tk.Tk):
         )
         self.history_table.insert(
             "", 0, iid=f"demo-{entry.signal_id}",
-            values=(time_text, label, "DEMO · CLIQUE ENVIADO · até 10 s do armamento"),
+            values=(time_text, label, "DEMO · CLIQUE ENVIADO · até 15 s do armamento"),
         )
         self.demo_signal_guard.mark_entered(
             entry.direction, entry.signal_x, entry.signal_y
