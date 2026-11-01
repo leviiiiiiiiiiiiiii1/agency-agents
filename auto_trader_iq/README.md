@@ -9,7 +9,7 @@ Há também um recurso experimental, desligado por padrão, para testar **um cli
 ## Arquitetura e decisões técnicas
 
 - **Python 3.12+** e `tkinter` para a interface local.
-- **MSS** captura somente a região selecionada; **Pillow** prepara e anota o preview. **PyAutoGUI** só é carregado para o teste de clique DEMO explicitamente habilitado; durante a calibração ele apenas lê a posição do cursor.
+- **MSS** captura somente a região selecionada; **Pillow** prepara e anota o preview. Áreas de exclusão opcionais são pintadas de preto imediatamente, antes do OCR, preview, snapshots e gravações; elas evitam reconhecer/registrar botões incluídos no mesmo retângulo para preservar HORA ATUAL. O teste de clique DEMO usa a API nativa do Windows apenas após habilitação explícita; durante a calibração ela só lê a posição do cursor.
 - **pytesseract** chama o mecanismo Tesseract OCR instalado separadamente no Windows. O OCR roda aproximadamente uma vez por segundo; se a passagem geral não reconhecer o relógio, leituras ampliadas alternativas são restritas ao rodapé/canto inferior direito e exigem o texto HORA ATUAL junto de HH:MM:SS.
 - A confiança do Tesseract **não é uma probabilidade calibrada de acerto**. A palavra pode vir de controles da plataforma; mantenha a região restrita ao gráfico.
 - Um filtro heurístico em Pillow localiza corpos de candles vermelhos/verdes e só libera OCR associado ao mais recente sinal nas duas barras mais à direita. Se não localizar pelo menos duas barras ou não conseguir associar o texto, bloqueia o candidato. Isso reduz sinais históricos, mas não prova identidade de candle.
@@ -42,7 +42,7 @@ Dentro da pasta `auto_trader_iq` do projeto:
 python -m auto_trader_iq.app
 ```
 
-1. Selecione toda a área útil do gráfico onde as velas podem se deslocar; não recorte somente a vela atual. Exclua botões da corretora, janela do AUTO TRADER, banners e menus. O filtro procura sinais apenas nas duas barras mais à direita.
+1. Selecione toda a área útil do gráfico onde as velas podem se deslocar; não recorte somente a vela atual. Exclua botões da corretora, janela do AUTO TRADER, banners e menus. Se não for possível excluir o painel de botões sem perder HORA ATUAL, use **Ocultar área dos botões do OCR/capturas…** para mascará-lo; a área fica preta antes do OCR, preview, captura salva e gravação de sequência. O filtro procura sinais apenas nas duas barras mais à direita.
 2. Selecione o período do gráfico (M1 para a janela de 30 s) e inclua no recorte o relógio **HORA ATUAL** no canto inferior direito da plataforma. Marque **Ativar OCR experimental COMPRA/VENDER** antes de iniciar a visualização. **Modo compacto ao monitorar** fica ligado por padrão.
 3. Ao iniciar, o app vira um painel pequeno e continua na frente para permitir armar/confirmar. Arraste-o para uma área que não esteja dentro da região capturada; monitore o gráfico sem que o painel cubra os rótulos.
 4. Clique **Configurações (pausar)** para parar a captura e voltar à janela completa. Para evitar que o app seja reconhecido como parte do gráfico, a região e o painel compacto não podem se sobrepor.
@@ -54,7 +54,7 @@ python -m auto_trader_iq.app
 
 Use exclusivamente em conta DEMO. O app não consegue distinguir DEMO de REAL; em conta real, o clique pode enviar uma ordem. Antes de cada ativação, confira manualmente a conta e os valores/expiração já configurados na plataforma — o AUTO TRADER não lê nem altera esses parâmetros.
 
-1. Com o app pausado e a plataforma visível, na janela completa use **Calibrar COMPRAR** e **Calibrar VENDER**. Em cada etapa, a janela do app some por 5 s: mova o cursor ao centro do botão correto e não clique. A calibração lê apenas a posição atual do cursor. Os pontos devem ficar fora do recorte do gráfico e não são salvos entre inicializações; recalibre ao abrir o app ou se a plataforma/telas mudarem de posição.
+1. Com o app pausado e a plataforma visível, na janela completa use **Calibrar COMPRAR** e **Calibrar VENDER**. Em cada etapa, a janela do app some por 5 s: mova o cursor ao centro do botão correto e não clique. A calibração lê apenas a posição atual do cursor. Se o botão estiver dentro do recorte, marque uma área de ocultação grande o bastante para cobrir todo o botão e uma margem ao redor; os alvos e áreas ocultadas não são salvos entre inicializações. Recalibre/reselecione ao abrir o app ou se a plataforma/telas mudarem de posição.
 2. Inicie a captura M1 com OCR. Habilite **Ativar cliques DEMO…** e confirme o aviso, somente após conferir novamente a conta DEMO, stake e expiração.
 3. Se houver exatamente um candidato OCR filtrado, o app o arma sozinho. Ao observar o próximo avanço de exatamente um minuto em HORA ATUAL, ele tenta um único clique no botão da direção do sinal, desde que a leitura continue fresca e esteja em M1 +0–30 s. A ativação encerra após esse clique ou após 75 s sem clique; é possível parar antes pelo botão **Parar cliques DEMO** ou **Cancelar**.
 
@@ -64,7 +64,7 @@ Este é um ensaio de integração do mouse, **não uma confirmação automática
 
 O aplicativo mantém `%LOCALAPPDATA%\AutoTraderIQ\simulation_history.csv` no Windows (ou `~/.auto_trader_iq/simulation_history.csv` em outros sistemas). O CSV append-only registra metadados de sinais armados, viradas de minuto observadas, entradas simuladas, cliques DEMO, cancelamentos e expirações: HORA ATUAL quando legível, evento, período, direção, texto OCR, confiança, posição do rótulo, segundos decorridos em M1 e confiança do relógio. A tabela mostra as 20 entradas simuladas/cliques DEMO mais recentes após reabrir o app.
 
-Esse histórico não contém imagens, não é transmitido e não gera ordens. Falhas na gravação são avisadas na interface, mas não interrompem a simulação assistida. A gravação separada de sequências continua opt-in, limitada a 75 segundos e salva imagens localmente, conforme descrito abaixo.
+Esse histórico não contém imagens, não é transmitido e não gera ordens. Falhas na gravação são avisadas na interface, mas não interrompem a simulação assistida. A gravação separada de sequências continua opt-in, limitada a 75 segundos e salva imagens localmente, conforme descrito abaixo; qualquer área de exclusão selecionada é pintada de preto antes de OCR, preview, snapshot ou gravação.
 
 ## Validação da virada M1 com capturas reais
 

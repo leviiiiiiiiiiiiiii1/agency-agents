@@ -15,7 +15,7 @@ from tkinter import messagebox, ttk
 from PIL import Image, ImageDraw, ImageTk
 
 from .capture import ScreenCapture, ScreenRegion
-from .demo_click import ClickTarget, click_demo_direction, windows_mouse_click
+from .demo_click import ClickTarget, click_demo_direction, windows_mouse_click, windows_mouse_position
 from .candle_monitor import detect_candle_bars, filter_to_recent_candle
 from .candle_timer import (
     PlatformClockReading,
@@ -25,6 +25,7 @@ from .candle_timer import (
 )
 from .region_selector import RegionSelector
 from .sequence_recorder import SequenceRecorder
+from .screen_mask import mask_screen_regions, point_is_masked_with_margin
 from .signal_detector import SignalCandidate, TesseractSignalDetector
 from .simulation_history import SimulationHistoryStore, append_event_best_effort
 from .simulation import SimulationWorkflow
@@ -104,6 +105,7 @@ class AutoTraderApp(tk.Tk):
         self.demo_clicks_remaining = 0
         self.demo_timeout_after_id: str | None = None
         self.demo_click_targets: dict[str, ClickTarget | None] = {"BUY": None, "SELL": None}
+        self.excluded_regions: list[ScreenRegion] = []
         self.compact_mode = False
 
         self.monitor_var = tk.StringVar()
@@ -118,6 +120,7 @@ class AutoTraderApp(tk.Tk):
         self.heartbeat_status = tk.StringVar(value="Sem captura")
         self.buy_target_status = tk.StringVar(value="não calibrado")
         self.sell_target_status = tk.StringVar(value="não calibrado")
+        self.exclusion_status = tk.StringVar(value="nenhuma área ocultada")
         self._build_ui()
         self._load_persisted_simulation_history()
         self._load_monitors()
@@ -142,7 +145,7 @@ class AutoTraderApp(tk.Tk):
         warning = ttk.Label(
             self.full_ui,
             text="Por padrão, sem cliques. Teste DEMO experimental (desligado por padrão) pode clicar uma vez por ativação; o app não verifica se a conta é DEMO nem se a plataforma aceitou a ordem.",
-            foreground="#8a4b08", background="#fff3cd", padding=9,
+            foreground="#8a4b08", background="#fff3cd", padding=9, wraplength=760,
         )
         warning.pack(fill="x", padx=18, pady=(0, 10))
 
@@ -273,6 +276,16 @@ class AutoTraderApp(tk.Tk):
             demo_target_row, text="Calibrar VENDER", command=lambda: self._calibrate_demo_target("SELL")
         ).pack(side="left", padx=(0, 4))
         ttk.Label(demo_target_row, textvariable=self.sell_target_status).pack(side="left")
+        exclusion_row = ttk.Frame(simulation_box)
+        exclusion_row.pack(fill="x", pady=(3, 0))
+        ttk.Button(
+            exclusion_row, text="Ocultar área dos botões do OCR/capturas…",
+            command=self._open_exclusion_selector,
+        ).pack(side="left", padx=(0, 5))
+        ttk.Button(
+            exclusion_row, text="Limpar áreas ocultas", command=self._clear_excluded_regions
+        ).pack(side="left", padx=(0, 8))
+        ttk.Label(exclusion_row, textvariable=self.exclusion_status).pack(side="left")
         ttk.Label(simulation_box, textvariable=self.demo_status, wraplength=650).pack(anchor="w", pady=(3, 0))
         ttk.Label(simulation_box, textvariable=self.simulation_status, wraplength=650).pack(anchor="w", pady=(4, 0))
 
@@ -399,6 +412,75 @@ class AutoTraderApp(tk.Tk):
             self.region_vars[key].set(str(value))
         self.capture_status.set(f"Região definida: {region.width}×{region.height} px")
 
+    @staticmethod
+    def _regions_intersect(first: ScreenRegion, second: ScreenRegion) -> bool:
+        return (
+            first.left < second.left + second.width
+            and second.left < first.left + first.width
+            and first.top < second.top + second.height
+            and second.top < first.top + first.height
+        )
+
+    def _open_exclusion_selector(self) -> None:
+        if self.demo_automation_enabled:
+            self._toggle_demo_automation()
+        if self.running:
+            self._stop_capture("Captura pausada para ocultar os controles da plataforma.")
+        index = self._selected_monitor_index()
+        if index is None:
+            messagebox.showerror(APP_NAME, "Nenhum monitor disponível para selecionar a área a ocultar.", parent=self)
+            return
+        monitor = self.monitors[index]
+        self.withdraw()
+        self.update_idletasks()
+        self.after(350, lambda: self._show_exclusion_overlay(monitor))
+
+    def _show_exclusion_overlay(self, monitor: dict[str, int]) -> None:
+        try:
+            screenshot = ScreenCapture.capture(ScreenRegion(
+                monitor["left"], monitor["top"], monitor["width"], monitor["height"]
+            ))
+        except Exception as exc:
+            self.deiconify()
+            messagebox.showerror(APP_NAME, f"Falha ao capturar o monitor:\n{exc}", parent=self)
+            return
+
+        def selected(region: ScreenRegion) -> None:
+            self.deiconify()
+            if self.region is None or not self._regions_intersect(region, self.region):
+                messagebox.showinfo(
+                    APP_NAME,
+                    "A área escolhida não cruza a região monitorada. Selecione os botões dentro do recorte atual.",
+                    parent=self,
+                )
+                return
+            self.excluded_regions.append(region)
+            self.exclusion_status.set(f"{len(self.excluded_regions)} área(s) serão ocultadas antes do OCR e da gravação")
+            self.last_pil_image = None
+            self.preview.configure(text="Área de exclusão atualizada. Inicie a visualização para conferir o recorte mascarado.", image="")
+
+        def cancelled(_event: tk.Event | None = None) -> None:
+            if not self.winfo_viewable():
+                self.deiconify()
+
+        overlay = RegionSelector(self, monitor, screenshot, selected)
+        overlay.bind("<Destroy>", lambda event: cancelled() if event.widget is overlay else None, add="+")
+
+    def _clear_excluded_regions(self) -> None:
+        self.excluded_regions.clear()
+        self.exclusion_status.set("nenhuma área ocultada")
+        self.last_pil_image = None
+        self.preview.configure(text="Áreas ocultas removidas. Inicie a visualização para atualizar o recorte.", image="")
+
+    def _mask_excluded_regions(self, image: Image.Image) -> None:
+        if self.region is not None:
+            mask_screen_regions(image, self.region, self.excluded_regions)
+
+    def _target_is_excluded_or_outside_capture(self, target: ClickTarget) -> bool:
+        if not self._inside_capture_region(target):
+            return True
+        return point_is_masked_with_margin(target.x, target.y, self.excluded_regions)
+
     def _set_demo_target_label(self, direction: str, target: ClickTarget | None) -> None:
         label = self.buy_target_status if direction == "BUY" else self.sell_target_status
         label.set("não calibrado" if target is None else f"{target.x}, {target.y}")
@@ -437,9 +519,8 @@ class AutoTraderApp(tk.Tk):
         target: ClickTarget | None = None
         error: Exception | None = None
         try:
-            import pyautogui
-            point = pyautogui.position()
-            target = ClickTarget(int(point.x), int(point.y))
+            x, y = windows_mouse_position()
+            target = ClickTarget(x, y)
         except Exception as exc:
             error = exc
         finally:
@@ -451,19 +532,16 @@ class AutoTraderApp(tk.Tk):
             messagebox.showerror(APP_NAME, f"Não foi possível ler a posição do mouse:\n{error}", parent=self)
             return
         assert target is not None
-        if self._inside_capture_region(target):
-            messagebox.showerror(
-                APP_NAME,
-                "O ponto calibrado está dentro da região do gráfico. Recalibre sobre o botão da corretora; "
-                "a região monitorada deve continuar excluindo os botões.",
-                parent=self,
-            )
-            return
         self.demo_click_targets[direction] = target
         self._set_demo_target_label(direction, target)
-        self._persist_config()
         label = "COMPRAR" if direction == "BUY" else "VENDER"
-        self.demo_status.set(f"Botão {label} calibrado em {target.x}, {target.y}; nenhum clique foi enviado.")
+        if self._inside_capture_region(target) and not self._target_is_excluded_or_outside_capture(target):
+            self.demo_status.set(
+                f"Botão {label} calibrado em {target.x}, {target.y}; marque uma área para ocultar os botões "
+                "antes de ativar cliques DEMO. Nenhum clique foi enviado."
+            )
+        else:
+            self.demo_status.set(f"Botão {label} calibrado em {target.x}, {target.y}; nenhum clique foi enviado.")
 
     def _update_demo_toggle_text(self) -> None:
         text = "Parar cliques DEMO" if self.demo_automation_enabled else "Ativar cliques DEMO…"
@@ -496,13 +574,17 @@ class AutoTraderApp(tk.Tk):
         if buy_target is None or sell_target is None:
             messagebox.showinfo(APP_NAME, "Calibre os centros dos botões COMPRAR e VENDER antes de ativar.", parent=self)
             return
-        if self.region is None or self._inside_capture_region(buy_target) or self._inside_capture_region(sell_target):
-            messagebox.showerror(APP_NAME, "Os botões calibrados precisam ficar fora da região capturada do gráfico.", parent=self)
-            return
-        try:
-            import pyautogui  # noqa: F401 - verify dependency without moving/clicking the mouse
-        except Exception as exc:
-            messagebox.showerror(APP_NAME, f"PyAutoGUI não está disponível:\n{exc}", parent=self)
+        if (
+            self.region is None
+            or not self._target_is_excluded_or_outside_capture(buy_target)
+            or not self._target_is_excluded_or_outside_capture(sell_target)
+        ):
+            messagebox.showerror(
+                APP_NAME,
+                "Cada botão calibrado precisa ficar fora da captura ou dentro de uma área que será ocultada "
+                "antes do OCR e da gravação. Marque a área dos botões e confira que HORA ATUAL permanece visível.",
+                parent=self,
+            )
             return
         consent = messagebox.askyesno(
             APP_NAME,
@@ -596,9 +678,13 @@ class AutoTraderApp(tk.Tk):
             self.demo_status.set("DEMO bloqueado: HORA ATUAL ausente, vencida ou fora de M1 +0–30 s.")
             return
         target = self.demo_click_targets[pending.direction]
-        if target is None or self._inside_capture_region(target) or self._demo_target_is_covered_by_app(target):
+        if (
+            target is None
+            or not self._target_is_excluded_or_outside_capture(target)
+            or self._demo_target_is_covered_by_app(target)
+        ):
             self._deactivate_demo_automation()
-            self.demo_status.set("DEMO bloqueado: alvo inválido, dentro do gráfico ou coberto pela janela do app.")
+            self.demo_status.set("DEMO bloqueado: botão não está fora da captura/ocultado, ou está coberto pela janela do app.")
             self._cancel_pending_simulation()
             return
         try:
@@ -772,6 +858,7 @@ class AutoTraderApp(tk.Tk):
             return
         try:
             image = ScreenCapture.capture(self.region)
+            self._mask_excluded_regions(image)
             self.last_pil_image = image
             digest = hashlib.blake2b(image.tobytes(), digest_size=8).hexdigest()
             now = time.monotonic()

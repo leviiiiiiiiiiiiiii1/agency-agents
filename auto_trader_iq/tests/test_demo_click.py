@@ -1,7 +1,13 @@
+import sys
 import unittest
 from unittest.mock import Mock
 
-from auto_trader_iq.demo_click import ClickTarget, click_demo_direction
+from auto_trader_iq.demo_click import (
+    ClickTarget,
+    click_demo_direction,
+    windows_mouse_click,
+    windows_mouse_position,
+)
 
 
 class DemoClickTests(unittest.TestCase):
@@ -48,6 +54,13 @@ class DemoClickTests(unittest.TestCase):
             with self.subTest(coordinates=coordinates):
                 with self.assertRaises(ValueError):
                     ClickTarget(*coordinates)
+
+    @unittest.skipIf(sys.platform == "win32", "testa apenas o bloqueio fora do Windows")
+    def test_native_mouse_api_is_unavailable_off_windows(self):
+        with self.assertRaisesRegex(RuntimeError, "Windows"):
+            windows_mouse_position()
+        with self.assertRaisesRegex(RuntimeError, "Windows"):
+            windows_mouse_click(100, 100)
 
 
 if __name__ == "__main__":

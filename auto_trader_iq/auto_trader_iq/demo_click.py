@@ -1,7 +1,9 @@
-"""Guarded mouse-click primitives for the user's explicitly selected DEMO test."""
+"""Guarded Windows mouse primitives for the user's explicitly selected DEMO test."""
 
 from __future__ import annotations
 
+import ctypes
+import sys
 from dataclasses import dataclass
 from typing import Callable
 
@@ -46,16 +48,28 @@ def click_demo_direction(
     return target
 
 
-def windows_mouse_click(x: int, y: int) -> None:
-    """Send a single left mouse click using PyAutoGUI on the Windows host."""
-    import sys
+def windows_mouse_position() -> tuple[int, int]:
+    """Read the current cursor coordinates through the Windows API (no click)."""
+    if sys.platform != "win32":
+        raise RuntimeError("A calibração do mouse só pode ser usada no Windows.")
 
+    class Point(ctypes.Structure):
+        _fields_ = (("x", ctypes.c_long), ("y", ctypes.c_long))
+
+    point = Point()
+    if not ctypes.windll.user32.GetCursorPos(ctypes.byref(point)):
+        raise ctypes.WinError()
+    return int(point.x), int(point.y)
+
+
+def windows_mouse_click(x: int, y: int) -> None:
+    """Move the cursor and send exactly one left click using the Windows API."""
     if sys.platform != "win32":
         raise RuntimeError("Cliques da corretora só podem ser usados no Windows.")
-    try:
-        import pyautogui
-    except ImportError as exc:
-        raise RuntimeError(
-            "PyAutoGUI não está instalado. No Windows, instale as dependências atualizadas."
-        ) from exc
-    pyautogui.click(x=x, y=y, clicks=1, interval=0.1)
+    user32 = ctypes.windll.user32
+    if not user32.SetCursorPos(int(x), int(y)):
+        raise ctypes.WinError()
+    down = 0x0002  # MOUSEEVENTF_LEFTDOWN
+    up = 0x0004    # MOUSEEVENTF_LEFTUP
+    user32.mouse_event(down, 0, 0, 0, 0)
+    user32.mouse_event(up, 0, 0, 0, 0)
