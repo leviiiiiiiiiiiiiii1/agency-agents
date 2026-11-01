@@ -72,6 +72,62 @@ def parse_platform_clock(
     return PlatformClockReading(hour, minute, second, -negative_confidence, left, top, text)
 
 
+def parse_platform_clock_line(
+    data: dict[str, Any],
+    *,
+    origin_left: int,
+    origin_top: int,
+    scale: int,
+    min_confidence: float = 55.0,
+) -> PlatformClockReading | None:
+    """Parse a focused OCR pass over the bottom-right HORA ATUAL status line."""
+    if scale <= 0:
+        return None
+    texts = [str(value).strip().upper() for value in data.get("text", []) if str(value).strip()]
+    line = " ".join(texts)
+    normalized = re.sub(r"[^A-Z]", "", line)
+    if "HORA" not in normalized or "ATUAL" not in normalized:
+        return None
+    match = re.search(r"(?<!\d)(\d{1,2}):(\d{2}):(\d{2})(?!\d)", line)
+    if match is None:
+        return None
+
+    hour, minute, second = map(int, match.groups())
+    if not (0 <= hour <= 23 and 0 <= minute <= 59 and 0 <= second <= 59):
+        return None
+
+    try:
+        confidences = data.get("conf", [])
+        lefts = data.get("left", [])
+        tops = data.get("top", [])
+        matched_confidences: list[float] = []
+        positions: list[tuple[int, int]] = []
+        for index, raw in enumerate(data.get("text", [])):
+            token = str(raw).strip().upper()
+            token_match = re.search(r"(?<!\d)(\d{1,2}:\d{2}:\d{2})(?!\d)", token)
+            if token_match is None:
+                continue
+            confidence = float(confidences[index])
+            if confidence >= 0:
+                matched_confidences.append(confidence)
+            positions.append((int(lefts[index]), int(tops[index])))
+        if not matched_confidences or max(matched_confidences) < min_confidence or not positions:
+            return None
+    except (IndexError, TypeError, ValueError):
+        return None
+
+    left, top = positions[0]
+    return PlatformClockReading(
+        hour,
+        minute,
+        second,
+        max(matched_confidences),
+        origin_left + left // scale,
+        origin_top + top // scale,
+        match.group(0),
+    )
+
+
 def m1_entry_window_open(reading: PlatformClockReading | None, max_elapsed_seconds: int = 30) -> bool:
     """M1: permite entrada apenas de 00 a max_elapsed segundos após a virada do minuto."""
     if reading is None or not 0 <= max_elapsed_seconds <= 60:

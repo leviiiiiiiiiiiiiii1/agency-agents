@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from .candle_timer import PlatformClockReading, parse_platform_clock
+from .candle_timer import PlatformClockReading, parse_platform_clock, parse_platform_clock_line
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,10 +84,10 @@ class TesseractSignalDetector:
             ) from exc
 
     def detect_frame(self, image) -> tuple[list[SignalCandidate], PlatformClockReading | None]:
-        """Lê rótulos e relógio HORA ATUAL da plataforma em uma passagem OCR.
+        """Lê sinais e relógio; usa OCR focado no rodapé se a leitura geral falhar.
 
         As coordenadas retornadas são relativas à captura original. O relógio só é
-        aceito perto do rótulo no rodapé/canto direito, não a partir do PC.
+        aceito junto ao rótulo HORA ATUAL no canto inferior direito, nunca pelo PC.
         """
         try:
             import pytesseract
@@ -114,6 +114,27 @@ class TesseractSignalDetector:
             clock = PlatformClockReading(
                 clock.hour, clock.minute, clock.second, clock.confidence,
                 clock.left // scale, clock.top // scale, clock.text,
+            )
+        else:
+            # HORA ATUAL costuma estar em fonte pequena no rodapé. Uma segunda
+            # leitura ampliada e restrita a essa faixa evita diluí-la no gráfico.
+            crop_left = int(image.width * 0.70)
+            crop_top = int(image.height * 0.93)
+            clock_crop = image.crop((crop_left, crop_top, image.width, image.height)).convert("L")
+            clock_scale = 4
+            clock_crop = ImageOps.autocontrast(clock_crop).resize(
+                (clock_crop.width * clock_scale, clock_crop.height * clock_scale),
+                Image.Resampling.LANCZOS,
+            )
+            clock_config = f"--oem 3 --psm 7 -c tessedit_char_whitelist={whitelist}"
+            clock_data = pytesseract.image_to_data(
+                clock_crop, config=clock_config, output_type=pytesseract.Output.DICT
+            )
+            clock = parse_platform_clock_line(
+                clock_data,
+                origin_left=crop_left,
+                origin_top=crop_top,
+                scale=clock_scale,
             )
         return candidates, clock
 

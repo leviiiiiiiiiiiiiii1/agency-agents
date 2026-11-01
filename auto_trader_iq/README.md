@@ -8,7 +8,7 @@ O aplicativo seleciona uma área da tela e reconhece, por OCR, etiquetas COMPRA/
 
 - **Python 3.12+** e `tkinter` para a interface local.
 - **MSS** captura somente a região selecionada; **Pillow** prepara e anota o preview.
-- **pytesseract** chama o mecanismo Tesseract OCR instalado separadamente no Windows. O OCR roda aproximadamente uma vez por segundo.
+- **pytesseract** chama o mecanismo Tesseract OCR instalado separadamente no Windows. O OCR roda aproximadamente uma vez por segundo; se a passagem geral não reconhecer o relógio, uma segunda leitura ampliada é restrita ao rodapé/canto inferior direito e exige o texto HORA ATUAL junto de HH:MM:SS.
 - A confiança do Tesseract **não é uma probabilidade calibrada de acerto**. A palavra pode vir de controles da plataforma; mantenha a região restrita ao gráfico.
 - Um filtro heurístico em Pillow localiza corpos de candles vermelhos/verdes e só libera OCR associado ao mais recente sinal nas duas barras mais à direita. Se não localizar pelo menos duas barras ou não conseguir associar o texto, bloqueia o candidato. Isso reduz sinais históricos, mas não prova identidade de candle.
 - `SimulationWorkflow` impede mais de um sinal pendente, registra entrada somente quando o usuário confirma a próxima vela e bloqueia reutilização aproximada da mesma etiqueta durante a sessão. A identidade espacial é uma proteção de teste, não equivale à identidade real da vela e não persiste após fechar o programa.

@@ -1,6 +1,11 @@
+import sys
 import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
-from auto_trader_iq.signal_detector import parse_ocr_rows
+from PIL import Image
+
+from auto_trader_iq.signal_detector import TesseractSignalDetector, parse_ocr_rows
 
 
 def rows(text, conf, left=None, top=None, width=None, height=None):
@@ -36,6 +41,31 @@ class ParseOcrRowsTests(unittest.TestCase):
     def test_rejects_out_of_range_threshold(self):
         with self.assertRaises(ValueError):
             parse_ocr_rows(rows(["BUY"], [90]), 101)
+
+
+class FocusedClockOcrTests(unittest.TestCase):
+    def test_detect_frame_uses_bottom_right_focused_ocr_when_full_frame_misses_clock(self):
+        line_data = rows(
+            ["HORA", "ATUAL", "31", "OUTUBRO", "21:44:50"],
+            [80, 80, 55, 60, 92],
+            left=[10, 90, 180, 220, 400],
+            top=[10, 10, 10, 10, 10],
+        )
+        ocr = SimpleNamespace(
+            Output=SimpleNamespace(DICT="dict"),
+            pytesseract=SimpleNamespace(),
+            image_to_data=Mock(side_effect=[{"text": []}, line_data]),
+        )
+        with patch.dict(sys.modules, {"pytesseract": ocr}):
+            candidates, clock = TesseractSignalDetector().detect_frame(Image.new("RGB", (1156, 814)))
+
+        self.assertEqual(candidates, [])
+        self.assertIsNotNone(clock)
+        self.assertEqual((clock.hour, clock.minute, clock.second), (21, 44, 50))
+        self.assertEqual(clock.confidence, 92)
+        self.assertEqual(ocr.image_to_data.call_count, 2)
+        focused_config = ocr.image_to_data.call_args.kwargs["config"]
+        self.assertIn("--psm 7", focused_config)
 
 
 if __name__ == "__main__":
