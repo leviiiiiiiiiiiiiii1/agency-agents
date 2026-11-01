@@ -17,7 +17,8 @@ class SequenceRecorderTests(unittest.TestCase):
 
             self.assertTrue(recorder.record_frame(
                 frame, 10.0, platform_clock="21:23:59", clock_confidence=92.5,
-                candle_count=4, candidates=["COMPRA 88%@500,220"],
+                clock_ocr_excerpt="psm7:21:23:59[92]", candle_count=4,
+                candidates=["COMPRA 88%@500,220"],
             ))
             self.assertFalse(recorder.record_frame(frame, 10.5, platform_clock="21:23:59"))
             self.assertTrue(recorder.record_frame(frame, 11.0, platform_clock="21:24:00"))
@@ -32,6 +33,7 @@ class SequenceRecorderTests(unittest.TestCase):
             self.assertEqual(len(rows), 2)
             self.assertEqual(rows[0]["platform_clock"], "21:23:59")
             self.assertEqual(rows[0]["clock_confidence"], "92.5")
+            self.assertEqual(rows[0]["clock_ocr_excerpt"], "psm7:21:23:59[92]")
             self.assertEqual(rows[0]["candle_count"], "4")
             self.assertEqual(rows[0]["candidates"], "COMPRA 88%@500,220")
 

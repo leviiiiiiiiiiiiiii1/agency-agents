@@ -8,7 +8,7 @@ O aplicativo seleciona uma área da tela e reconhece, por OCR, etiquetas COMPRA/
 
 - **Python 3.12+** e `tkinter` para a interface local.
 - **MSS** captura somente a região selecionada; **Pillow** prepara e anota o preview.
-- **pytesseract** chama o mecanismo Tesseract OCR instalado separadamente no Windows. O OCR roda aproximadamente uma vez por segundo; se a passagem geral não reconhecer o relógio, uma segunda leitura ampliada é restrita ao rodapé/canto inferior direito e exige o texto HORA ATUAL junto de HH:MM:SS.
+- **pytesseract** chama o mecanismo Tesseract OCR instalado separadamente no Windows. O OCR roda aproximadamente uma vez por segundo; se a passagem geral não reconhecer o relógio, leituras ampliadas alternativas são restritas ao rodapé/canto inferior direito e exigem o texto HORA ATUAL junto de HH:MM:SS.
 - A confiança do Tesseract **não é uma probabilidade calibrada de acerto**. A palavra pode vir de controles da plataforma; mantenha a região restrita ao gráfico.
 - Um filtro heurístico em Pillow localiza corpos de candles vermelhos/verdes e só libera OCR associado ao mais recente sinal nas duas barras mais à direita. Se não localizar pelo menos duas barras ou não conseguir associar o texto, bloqueia o candidato. Isso reduz sinais históricos, mas não prova identidade de candle.
 - `SimulationWorkflow` impede mais de um sinal pendente, registra entrada somente quando o usuário confirma a próxima vela e bloqueia reutilização aproximada da mesma etiqueta durante a sessão. A identidade espacial é uma proteção de teste, não equivale à identidade real da vela e não persiste após fechar o programa.
@@ -52,7 +52,7 @@ python -m auto_trader_iq.app
 
 Durante uma visualização M1 com OCR ativo, o botão **Gravar sequência de teste (75 s)** fica disponível também no painel compacto. Inicie a gravação cerca de 20–30 s antes da próxima virada de minuto. Ela salva aproximadamente uma imagem por segundo por até 75 s e encerra sozinha; também pode ser parada manualmente. Parar a visualização ou fechar o app encerra a gravação de forma segura.
 
-Após confirmação explícita, as imagens da região selecionada e um `manifest.csv` (hora OCR da plataforma, confiança, contagem heurística de candles e candidatos OCR) são gravados somente em `%LOCALAPPDATA%\AutoTraderIQ\sequences`. A aplicação não envia esses arquivos pela rede. Como as imagens podem conter informação pessoal, confira o recorte e inspecione os arquivos antes de compartilhar. O registro é apenas para validação: não confirma N+1 automaticamente e não envia ordens.
+Após confirmação explícita, as imagens da região selecionada e um `manifest.csv` (hora e confiança do OCR, trecho diagnóstico da leitura HORA ATUAL, contagem heurística de candles e candidatos OCR) são gravados somente em `%LOCALAPPDATA%\AutoTraderIQ\sequences`. A aplicação não envia esses arquivos pela rede. Como as imagens podem conter informação pessoal, confira o recorte e inspecione os arquivos antes de compartilhar. O registro é apenas para validação: não confirma N+1 automaticamente e não envia ordens.
 
 Testes unitários (não precisam de tela gráfica nem do mecanismo Tesseract):
 

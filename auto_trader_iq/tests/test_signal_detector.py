@@ -56,16 +56,41 @@ class FocusedClockOcrTests(unittest.TestCase):
             pytesseract=SimpleNamespace(),
             image_to_data=Mock(side_effect=[{"text": []}, line_data]),
         )
+        detector = TesseractSignalDetector()
         with patch.dict(sys.modules, {"pytesseract": ocr}):
-            candidates, clock = TesseractSignalDetector().detect_frame(Image.new("RGB", (1156, 814)))
+            candidates, clock = detector.detect_frame(Image.new("RGB", (1156, 814)))
 
         self.assertEqual(candidates, [])
         self.assertIsNotNone(clock)
         self.assertEqual((clock.hour, clock.minute, clock.second), (21, 44, 50))
         self.assertEqual(clock.confidence, 92)
         self.assertEqual(ocr.image_to_data.call_count, 2)
+        self.assertIn("psm7:", detector.last_clock_ocr_text)
         focused_config = ocr.image_to_data.call_args.kwargs["config"]
         self.assertIn("--psm 7", focused_config)
+
+    def test_retries_focused_clock_ocr_with_psm6_if_psm7_cannot_parse(self):
+        line_data = rows(
+            ["HORA", "ATUAL", "31", "OUTUBRO", "22", "50", "29"],
+            [80, 80, 70, 65, 92, 90, 88],
+            left=[10, 40, 90, 120, 280, 330, 370],
+            top=[10] * 7,
+        )
+        empty_data = {"text": []}
+        ocr = SimpleNamespace(
+            Output=SimpleNamespace(DICT="dict"),
+            pytesseract=SimpleNamespace(),
+            image_to_data=Mock(side_effect=[empty_data, empty_data, line_data]),
+        )
+        detector = TesseractSignalDetector()
+        with patch.dict(sys.modules, {"pytesseract": ocr}):
+            _candidates, clock = detector.detect_frame(Image.new("RGB", (1156, 814)))
+
+        self.assertIsNotNone(clock)
+        self.assertEqual((clock.hour, clock.minute, clock.second), (22, 50, 29))
+        self.assertEqual(ocr.image_to_data.call_count, 3)
+        self.assertIn("--psm 6", ocr.image_to_data.call_args.kwargs["config"])
+        self.assertIn("psm6:", detector.last_clock_ocr_text)
 
 
 if __name__ == "__main__":

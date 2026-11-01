@@ -83,12 +83,24 @@ def parse_platform_clock_line(
     """Parse a focused OCR pass over the bottom-right HORA ATUAL status line."""
     if scale <= 0:
         return None
-    texts = [str(value).strip().upper() for value in data.get("text", []) if str(value).strip()]
-    line = " ".join(texts)
+    raw_texts = data.get("text", [])
+    line_parts: list[str] = []
+    token_spans: list[tuple[int, int, int]] = []
+    for index, raw in enumerate(raw_texts):
+        token = str(raw).strip().upper()
+        if not token:
+            continue
+        if line_parts:
+            line_parts.append(" ")
+        start = sum(len(part) for part in line_parts)
+        line_parts.append(token)
+        token_spans.append((start, start + len(token), index))
+    line = "".join(line_parts)
     normalized = re.sub(r"[^A-Z]", "", line)
     if "HORA" not in normalized or "ATUAL" not in normalized:
         return None
-    match = re.search(r"(?<!\d)(\d{1,2}):(\d{2}):(\d{2})(?!\d)", line)
+    # Permite OCR que separa os dois-pontos ou os componentes numéricos em palavras.
+    match = re.search(r"(?<!\d)(\d{1,2})[ :.,;|]{1,4}(\d{2})[ :.,;|]{1,4}(\d{2})(?!\d)", line)
     if match is None:
         return None
 
@@ -100,28 +112,31 @@ def parse_platform_clock_line(
         confidences = data.get("conf", [])
         lefts = data.get("left", [])
         tops = data.get("top", [])
-        matched_confidences: list[float] = []
-        positions: list[tuple[int, int]] = []
-        for index, raw in enumerate(data.get("text", [])):
-            token = str(raw).strip().upper()
-            token_match = re.search(r"(?<!\d)(\d{1,2}:\d{2}:\d{2})(?!\d)", token)
-            if token_match is None:
+        time_tokens: list[tuple[float, int, int]] = []
+        for start, end, index in token_spans:
+            if end <= match.start() or start >= match.end():
+                continue
+            token = str(raw_texts[index]).strip()
+            if not any(character.isdigit() for character in token):
                 continue
             confidence = float(confidences[index])
-            if confidence >= 0:
-                matched_confidences.append(confidence)
-            positions.append((int(lefts[index]), int(tops[index])))
-        if not matched_confidences or max(matched_confidences) < min_confidence or not positions:
+            if confidence < 0:
+                continue
+            time_tokens.append((confidence, int(lefts[index]), int(tops[index])))
+        if not time_tokens:
+            return None
+        confidence = min(item[0] for item in time_tokens)
+        if confidence < min_confidence:
             return None
     except (IndexError, TypeError, ValueError):
         return None
 
-    left, top = positions[0]
+    left, top = min(time_tokens, key=lambda item: item[1])[1:]
     return PlatformClockReading(
         hour,
         minute,
         second,
-        max(matched_confidences),
+        confidence,
         origin_left + left // scale,
         origin_top + top // scale,
         match.group(0),

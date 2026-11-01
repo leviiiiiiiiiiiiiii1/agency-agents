@@ -67,7 +67,7 @@ class SequenceRecorder:
         writer = csv.writer(manifest_file)
         writer.writerow((
             "frame", "elapsed_seconds", "platform_clock", "clock_confidence",
-            "candle_count", "candidates",
+            "clock_ocr_excerpt", "candle_count", "candidates",
         ))
         manifest_file.flush()
 
@@ -87,6 +87,7 @@ class SequenceRecorder:
         *,
         platform_clock: str = "",
         clock_confidence: float | None = None,
+        clock_ocr_excerpt: str = "",
         candle_count: int | None = None,
         candidates: Iterable[str] = (),
     ) -> bool:
@@ -110,6 +111,7 @@ class SequenceRecorder:
             f"{elapsed:.3f}",
             platform_clock,
             "" if clock_confidence is None else f"{clock_confidence:.1f}",
+            clock_ocr_excerpt[:360],
             "" if candle_count is None else int(candle_count),
             candidate_summary,
         ))

@@ -58,6 +58,23 @@ def parse_ocr_rows(data: dict[str, Any], min_confidence: float = 70.0) -> list[S
     return candidates
 
 
+def _summarize_clock_ocr(data: dict[str, Any], limit: int = 180) -> str:
+    """Short local diagnostic of tokens from the bottom-right clock-only crop."""
+    snippets: list[str] = []
+    texts = data.get("text", [])
+    confidences = data.get("conf", [])
+    for index, raw in enumerate(texts):
+        token = str(raw).strip()
+        if not token:
+            continue
+        try:
+            confidence = float(confidences[index])
+            snippets.append(f"{token}[{confidence:.0f}]")
+        except (IndexError, TypeError, ValueError):
+            snippets.append(token)
+    return " ".join(snippets)[:limit]
+
+
 class TesseractSignalDetector:
     """Detector configurável; requer o pacote pytesseract e o executável Tesseract OCR."""
 
@@ -66,6 +83,7 @@ class TesseractSignalDetector:
             raise ValueError("A confiança mínima deve estar entre 0 e 100.")
         self.min_confidence = min_confidence
         self.executable = executable
+        self.last_clock_ocr_text = ""
 
     def check_ready(self) -> None:
         try:
@@ -97,6 +115,7 @@ class TesseractSignalDetector:
 
         if self.executable:
             pytesseract.pytesseract.tesseract_cmd = self.executable
+        self.last_clock_ocr_text = ""
         scale = 2
         prepared = ImageOps.autocontrast(image.convert("L"))
         prepared = prepared.resize((image.width * scale, image.height * scale), Image.Resampling.LANCZOS)
@@ -115,9 +134,10 @@ class TesseractSignalDetector:
                 clock.hour, clock.minute, clock.second, clock.confidence,
                 clock.left // scale, clock.top // scale, clock.text,
             )
+            self.last_clock_ocr_text = f"full:{clock.text}"
         else:
-            # HORA ATUAL costuma estar em fonte pequena no rodapé. Uma segunda
-            # leitura ampliada e restrita a essa faixa evita diluí-la no gráfico.
+            # HORA ATUAL costuma estar em fonte pequena no rodapé. Leia apenas
+            # essa faixa ampliada; tente um segundo layout se o primeiro não bastar.
             crop_left = int(image.width * 0.70)
             crop_top = int(image.height * 0.93)
             clock_crop = image.crop((crop_left, crop_top, image.width, image.height)).convert("L")
@@ -126,16 +146,27 @@ class TesseractSignalDetector:
                 (clock_crop.width * clock_scale, clock_crop.height * clock_scale),
                 Image.Resampling.LANCZOS,
             )
-            clock_config = f"--oem 3 --psm 7 -c tessedit_char_whitelist={whitelist}"
-            clock_data = pytesseract.image_to_data(
-                clock_crop, config=clock_config, output_type=pytesseract.Output.DICT
-            )
-            clock = parse_platform_clock_line(
-                clock_data,
-                origin_left=crop_left,
-                origin_top=crop_top,
-                scale=clock_scale,
-            )
+            clock = None
+            diagnostics: list[str] = []
+            for page_segmentation in (7, 6):
+                clock_config = (
+                    f"--oem 3 --psm {page_segmentation} "
+                    f"-c tessedit_char_whitelist={whitelist}"
+                )
+                clock_data = pytesseract.image_to_data(
+                    clock_crop, config=clock_config, output_type=pytesseract.Output.DICT
+                )
+                diagnostic = _summarize_clock_ocr(clock_data)
+                diagnostics.append(f"psm{page_segmentation}:{diagnostic}")
+                clock = parse_platform_clock_line(
+                    clock_data,
+                    origin_left=crop_left,
+                    origin_top=crop_top,
+                    scale=clock_scale,
+                )
+                if clock is not None:
+                    break
+            self.last_clock_ocr_text = " | ".join(diagnostics)[:360]
         return candidates, clock
 
     def detect(self, image) -> list[SignalCandidate]:

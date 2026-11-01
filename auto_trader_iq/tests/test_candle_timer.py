@@ -53,6 +53,19 @@ class PlatformClockTests(unittest.TestCase):
         self.assertEqual((reading.left, reading.top), (902, 725))
         self.assertEqual(reading.confidence, 91)
 
+    def test_focused_parser_accepts_time_split_into_separate_numeric_tokens(self):
+        data = {
+            "text": ["HORA", "ATUAL", "31", "OUTUBRO", "22", "50", "29"],
+            "conf": [85, 82, 70, 68, 91, 84, 88],
+            "left": [10, 40, 110, 150, 300, 350, 390],
+            "top": [10] * 7,
+        }
+        reading = parse_platform_clock_line(data, origin_left=800, origin_top=720, scale=4)
+        self.assertIsNotNone(reading)
+        self.assertEqual((reading.hour, reading.minute, reading.second), (22, 50, 29))
+        self.assertEqual(reading.confidence, 84)
+        self.assertEqual(reading.left, 875)
+
     def test_focused_parser_fails_closed_without_anchor_or_confident_valid_time(self):
         base = {
             "text": ["HORA", "ATUAL", "21:44:50"],

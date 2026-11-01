@@ -554,6 +554,7 @@ class AutoTraderApp(tk.Tk):
                 now,
                 platform_clock=clock_text,
                 clock_confidence=clock_confidence,
+                clock_ocr_excerpt=(self.detector.last_clock_ocr_text if self.detector is not None else ""),
                 candle_count=self.latest_bar_count,
                 candidates=candidate_labels,
             )
