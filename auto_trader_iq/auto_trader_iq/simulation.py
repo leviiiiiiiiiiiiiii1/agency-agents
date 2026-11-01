@@ -34,6 +34,7 @@ class SimulatedEntry:
     signal_y: int
     signal_detected_at: datetime
     next_candle_confirmed_at: datetime
+    elapsed_seconds_after_open: int | None = None
 
 
 class SimulationWorkflow:
@@ -85,7 +86,11 @@ class SimulationWorkflow:
         self._processed_fingerprints.add(fingerprint)
         return pending
 
-    def confirm_next_candle(self, confirmed_at: datetime | None = None) -> SimulatedEntry:
+    def confirm_next_candle(
+        self,
+        confirmed_at: datetime | None = None,
+        elapsed_seconds_after_open: int | None = None,
+    ) -> SimulatedEntry:
         if self.pending is None:
             raise ValueError("Não há sinal armado para confirmar.")
         pending = self.pending
@@ -98,6 +103,7 @@ class SimulationWorkflow:
             signal_y=pending.y,
             signal_detected_at=pending.detected_at,
             next_candle_confirmed_at=confirmed_at or self._now(),
+            elapsed_seconds_after_open=elapsed_seconds_after_open,
         )
         self.entries.append(entry)
         self.pending = None

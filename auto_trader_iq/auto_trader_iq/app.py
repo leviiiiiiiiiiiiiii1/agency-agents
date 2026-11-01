@@ -15,6 +15,7 @@ from PIL import Image, ImageDraw, ImageTk
 
 from .capture import ScreenCapture, ScreenRegion
 from .candle_monitor import detect_candle_bars, filter_to_recent_candle
+from .candle_timer import CandleTimerReading, m1_entry_window_open
 from .region_selector import RegionSelector
 from .signal_detector import SignalCandidate, TesseractSignalDetector
 from .simulation import SimulationWorkflow
@@ -23,6 +24,7 @@ from .simulation import SimulationWorkflow
 APP_NAME = "AUTO TRADER IQ"
 POLL_MS = 500
 OCR_INTERVAL_SECONDS = 1.0
+TIMER_MAX_AGE_SECONDS = 1.5
 
 
 def _enable_windows_dpi_awareness() -> None:
@@ -75,12 +77,16 @@ class AutoTraderApp(tk.Tk):
         self.detector: TesseractSignalDetector | None = None
         self.last_candidates: list[SignalCandidate] = []
         self.last_ocr_at = 0.0
+        self.latest_candle_timer: CandleTimerReading | None = None
+        self.latest_timer_at: float | None = None
         self.simulation = SimulationWorkflow()
         self.candidates_by_id: dict[str, SignalCandidate] = {}
         self.simulation_status = tk.StringVar(value="Simulação parada; nenhuma entrada foi registrada.")
         self.compact_mode = False
 
         self.monitor_var = tk.StringVar()
+        self.timeframe_var = tk.StringVar(value="M1")
+        self.timer_status = tk.StringVar(value="M1: aguardando leitura do contador da plataforma.")
         self.compact_during_capture_var = tk.BooleanVar(value=True)
         self.ocr_enabled_var = tk.BooleanVar(value=False)
         self.confidence_var = tk.StringVar(value="70")
@@ -156,11 +162,20 @@ class AutoTraderApp(tk.Tk):
             variable=self.compact_during_capture_var,
         ).grid(row=18, column=0, sticky="w", pady=(6, 0))
 
+        ttk.Label(controls, text="Período do gráfico").grid(row=19, column=0, sticky="w", pady=(6, 0))
+        self.timeframe_combo = ttk.Combobox(
+            controls, textvariable=self.timeframe_var, values=("M1", "M5", "M15", "M30"),
+            state="readonly", width=10,
+        )
+        self.timeframe_combo.grid(row=20, column=0, sticky="w", pady=(2, 0))
+        self.timeframe_combo.bind("<<ComboboxSelected>>", self._on_timeframe_change)
+
         info = ttk.LabelFrame(controls, text="Estado", padding=10)
-        info.grid(row=19, column=0, sticky="ew", pady=(8, 0))
+        info.grid(row=21, column=0, sticky="ew", pady=(8, 0))
         ttk.Label(info, textvariable=self.capture_status, wraplength=250).pack(anchor="w")
         ttk.Label(info, textvariable=self.heartbeat_status, wraplength=250).pack(anchor="w", pady=(5, 0))
         ttk.Label(info, textvariable=self.ocr_status, wraplength=250).pack(anchor="w", pady=(5, 0))
+        ttk.Label(info, textvariable=self.timer_status, wraplength=250).pack(anchor="w", pady=(5, 0))
         controls.columnconfigure(0, weight=1)
 
         preview_box = ttk.LabelFrame(body, text="Pré-visualização da região", padding=8)
@@ -220,7 +235,8 @@ class AutoTraderApp(tk.Tk):
             text="Mantenha este painel fora da região monitorada. A captura continua enquanto você arma/confirma.",
             wraplength=520,
         ).pack(anchor="w", pady=(2, 4))
-        ttk.Label(self.compact_frame, textvariable=self.ocr_status, wraplength=520).pack(anchor="w", pady=(0, 4))
+        ttk.Label(self.compact_frame, textvariable=self.ocr_status, wraplength=520).pack(anchor="w", pady=(0, 2))
+        ttk.Label(self.compact_frame, textvariable=self.timer_status, wraplength=520).pack(anchor="w", pady=(0, 4))
         self.compact_candidate_table = ttk.Treeview(
             self.compact_frame, columns=("label", "confidence", "position"),
             show="headings", height=4, selectmode="browse",
@@ -348,6 +364,9 @@ class AutoTraderApp(tk.Tk):
             self.ocr_status.set("OCR desligado; nenhuma operação é executada.")
         self.last_candidates = []
         self.last_ocr_at = 0.0
+        self.latest_candle_timer = None
+        self.latest_timer_at = None
+        self._update_timer_status()
         self.running = True
         self.last_frame_hash = None
         self.last_change_at = time.monotonic()
@@ -411,15 +430,20 @@ class AutoTraderApp(tk.Tk):
                 )
             if self.detector is not None and now - self.last_ocr_at >= OCR_INTERVAL_SECONDS:
                 try:
-                    raw_candidates = self.detector.detect(image)
+                    raw_candidates, self.latest_candle_timer = self.detector.detect_frame(image)
+                    self.latest_timer_at = now if self.latest_candle_timer is not None else None
                     bars = detect_candle_bars(image)
                     self.last_candidates = filter_to_recent_candle(raw_candidates, bars)
                     self.last_ocr_at = now
                     self._update_ocr_status(self.last_candidates, len(raw_candidates), len(bars))
+                    self._update_timer_status(now)
                 except Exception as exc:
                     # Falha do OCR não encerra a captura visual, mas interrompe novas leituras.
                     self.detector = None
+                    self.latest_candle_timer = None
+                    self.latest_timer_at = None
                     self.ocr_status.set(f"OCR interrompido por erro: {exc}")
+                    self._update_timer_status()
             self._show_preview(image)
             self.capture_status.set(f"Captura ativa · {image.width}×{image.height} px · 2 quadros/s")
         except Exception as exc:
@@ -521,25 +545,36 @@ class AutoTraderApp(tk.Tk):
             f"Pendente: {label} ({pending.confidence:.0f}%). Aguarde a próxima vela nascer; "
             "confirme manualmente apenas quando isso estiver visível. Nenhuma ordem será enviada."
         )
-        for button in (self.confirm_candle_button, self.compact_confirm_button):
-            button.configure(state="normal")
-        for button in (self.cancel_sim_button, self.compact_cancel_button):
-            button.configure(state="normal")
+        self._refresh_simulation_buttons()
 
     def _confirm_next_candle(self) -> None:
+        elapsed_seconds = None
+        if self.timeframe_var.get() == "M1":
+            if not self._m1_window_valid():
+                self.simulation_status.set(
+                    "Entrada M1 bloqueada: o timer HORA DE COMPRA não foi lido ou já passou de 30 s."
+                )
+                self._refresh_simulation_buttons()
+                return
+            assert self.latest_candle_timer is not None
+            elapsed_seconds = self.latest_candle_timer.elapsed_seconds
         try:
-            entry = self.simulation.confirm_next_candle()
+            entry = self.simulation.confirm_next_candle(elapsed_seconds_after_open=elapsed_seconds)
         except ValueError as exc:
             self.simulation_status.set(str(exc))
             return
         label = "COMPRA" if entry.direction == "BUY" else "VENDER"
         confirmed = entry.next_candle_confirmed_at.astimezone().strftime("%H:%M:%S")
+        elapsed_text = (
+            f" · M1 +{entry.elapsed_seconds_after_open}s"
+            if entry.elapsed_seconds_after_open is not None else ""
+        )
         self.history_table.insert(
             "", "end", iid=entry.signal_id,
-            values=(confirmed, label, "SIMULADA · N+1 confirmada"),
+            values=(confirmed, label, f"SIMULADA · N+1{elapsed_text}"),
         )
         self.simulation_status.set(
-            f"ENTRADA SIMULADA: {label} às {confirmed}; abertura da próxima vela confirmada manualmente. "
+            f"ENTRADA SIMULADA: {label} às {confirmed}; N+1 confirmada manualmente{elapsed_text}. "
             f"Histórico desta sessão: {len(self.simulation.entries)} entrada(s)."
         )
         for button in (self.confirm_candle_button, self.compact_confirm_button):
@@ -560,6 +595,54 @@ class AutoTraderApp(tk.Tk):
             button.configure(state="disabled")
         for button in (self.cancel_sim_button, self.compact_cancel_button):
             button.configure(state="disabled")
+
+    def _m1_window_valid(self) -> bool:
+        if self.latest_candle_timer is None or self.latest_timer_at is None:
+            return False
+        if time.monotonic() - self.latest_timer_at > TIMER_MAX_AGE_SECONDS:
+            return False
+        return m1_entry_window_open(self.latest_candle_timer, max_elapsed_seconds=30)
+
+    def _refresh_simulation_buttons(self) -> None:
+        pending = self.simulation.pending is not None
+        confirm_allowed = pending and (
+            self.timeframe_var.get() != "M1" or self._m1_window_valid()
+        )
+        for button in (self.confirm_candle_button, self.compact_confirm_button):
+            button.configure(state="normal" if confirm_allowed else "disabled")
+        for button in (self.cancel_sim_button, self.compact_cancel_button):
+            button.configure(state="normal" if pending else "disabled")
+
+    def _update_timer_status(self, now: float | None = None) -> None:
+        if self.timeframe_var.get() != "M1":
+            self.timer_status.set(
+                f"{self.timeframe_var.get()}: limite temporal de entrada ainda não configurado; "
+                "confirmação manual."
+            )
+            self._refresh_simulation_buttons()
+            return
+        timer = self.latest_candle_timer
+        fresh = self.latest_timer_at is not None and (now or time.monotonic()) - self.latest_timer_at <= TIMER_MAX_AGE_SECONDS
+        if timer is None or not fresh:
+            self.timer_status.set("M1: timer HORA DE COMPRA não legível/atual; confirmação bloqueada.")
+            self._refresh_simulation_buttons()
+            return
+        elapsed = timer.elapsed_seconds
+        if 0 <= elapsed <= 30:
+            self.timer_status.set(f"M1: vela com {elapsed}s decorridos; janela de 0–30s aberta.")
+        else:
+            self.timer_status.set(f"M1: {elapsed}s decorridos; janela de 30s expirada.")
+            if self.simulation.pending is not None:
+                expired = self.simulation.cancel_pending()
+                label = "COMPRA" if expired.direction == "BUY" else "VENDER"
+                self.simulation_status.set(
+                    f"Sinal {label} expirado: ultrapassou 30s de M1; descartado sem entrada."
+                )
+        self._refresh_simulation_buttons()
+
+    def _on_timeframe_change(self, _event: tk.Event | None = None) -> None:
+        self._persist_config()
+        self._update_timer_status()
 
     def _show_preview(self, image: Image.Image) -> None:
         max_width = max(200, self.preview.winfo_width() - 20)
@@ -594,7 +677,11 @@ class AutoTraderApp(tk.Tk):
     def _persist_config(self) -> None:
         if self.region is None:
             return
-        payload = {"region": self.region.as_mss_dict(), "monitor_index": self._selected_monitor_index()}
+        payload = {
+            "region": self.region.as_mss_dict(),
+            "monitor_index": self._selected_monitor_index(),
+            "timeframe": self.timeframe_var.get(),
+        }
         try:
             self.config_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         except OSError as exc:
@@ -607,6 +694,9 @@ class AutoTraderApp(tk.Tk):
             index = config.get("monitor_index")
             if isinstance(index, int) and 0 <= index < len(self.monitors):
                 self.monitor_combo.current(index)
+            timeframe = config.get("timeframe")
+            if timeframe in {"M1", "M5", "M15", "M30"}:
+                self.timeframe_var.set(timeframe)
         except FileNotFoundError:
             pass
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:

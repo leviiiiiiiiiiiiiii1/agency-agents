@@ -9,6 +9,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from .candle_timer import CandleTimerReading, parse_platform_candle_timer
+
 
 @dataclass(frozen=True, slots=True)
 class SignalCandidate:
@@ -81,8 +83,12 @@ class TesseractSignalDetector:
                 "defina TESSERACT_CMD com o caminho completo para tesseract.exe."
             ) from exc
 
-    def detect(self, image) -> list[SignalCandidate]:
-        """Executa uma leitura OCR sobre a captura. Coordenadas retornadas são da captura original."""
+    def detect_frame(self, image) -> tuple[list[SignalCandidate], CandleTimerReading | None]:
+        """Lê rótulos e timer da plataforma em uma passagem OCR.
+
+        As coordenadas retornadas são relativas à captura original. O timer só é
+        aceito quando aparece junto ao texto HORA, para evitar confundir preço/eixo.
+        """
         try:
             import pytesseract
             from PIL import Image, ImageOps
@@ -94,11 +100,24 @@ class TesseractSignalDetector:
         scale = 2
         prepared = ImageOps.autocontrast(image.convert("L"))
         prepared = prepared.resize((image.width * scale, image.height * scale), Image.Resampling.LANCZOS)
-        config = "--oem 3 --psm 11 -c tessedit_char_whitelist=BUYSELLCOMPRAVENDER"
+        whitelist = "BUYSELLCOMPRAVENDERHORADE0123456789:"
+        config = f"--oem 3 --psm 11 -c tessedit_char_whitelist={whitelist}"
         data = pytesseract.image_to_data(prepared, config=config, output_type=pytesseract.Output.DICT)
         candidates = parse_ocr_rows(data, self.min_confidence)
-        return [
+        candidates = [
             SignalCandidate(c.direction, c.confidence, c.left // scale, c.top // scale,
                             max(1, c.width // scale), max(1, c.height // scale), c.observed_text)
             for c in candidates
         ]
+        timer = parse_platform_candle_timer(data, prepared.width, prepared.height)
+        if timer is not None:
+            timer = CandleTimerReading(
+                timer.remaining_seconds, timer.confidence, timer.left // scale,
+                timer.top // scale, timer.text,
+            )
+        return candidates, timer
+
+    def detect(self, image) -> list[SignalCandidate]:
+        """Compatibilidade: retorna apenas os candidatos de sinal."""
+        candidates, _timer = self.detect_frame(image)
+        return candidates
