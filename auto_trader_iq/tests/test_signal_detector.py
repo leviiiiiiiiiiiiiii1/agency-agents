@@ -68,6 +68,7 @@ class FocusedClockOcrTests(unittest.TestCase):
         self.assertIn("psm7:", detector.last_clock_ocr_text)
         focused_config = ocr.image_to_data.call_args.kwargs["config"]
         self.assertIn("--psm 7", focused_config)
+        self.assertNotIn("tessedit_char_whitelist", focused_config)
 
     def test_retries_focused_clock_ocr_with_psm6_if_psm7_cannot_parse(self):
         line_data = rows(

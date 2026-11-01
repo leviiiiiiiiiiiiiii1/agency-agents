@@ -149,10 +149,9 @@ class TesseractSignalDetector:
             clock = None
             diagnostics: list[str] = []
             for page_segmentation in (7, 6):
-                clock_config = (
-                    f"--oem 3 --psm {page_segmentation} "
-                    f"-c tessedit_char_whitelist={whitelist}"
-                )
+                # Não use whitelist na faixa do relógio: ela elimina os espaços,
+                # cola HORA/ATUAL/data em uma única palavra e derruba a confiança.
+                clock_config = f"--oem 3 --psm {page_segmentation}"
                 clock_data = pytesseract.image_to_data(
                     clock_crop, config=clock_config, output_type=pytesseract.Output.DICT
                 )
