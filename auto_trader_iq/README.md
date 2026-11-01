@@ -46,9 +46,15 @@ python -m auto_trader_iq.app
 4. Clique **Configurações (pausar)** para parar a captura e voltar à janela completa. Para evitar que o app seja reconhecido como parte do gráfico, a região e o painel compacto não podem se sobrepor.
 5. Confira os candidatos e selecione uma etiqueta na tabela. O rótulo e sua caixa no preview devem coincidir com a etiqueta do indicador.
 6. Clique **Armar candidato selecionado**. O aplicativo fica pendente e não registra uma entrada ainda.
-7. Somente depois de observar que a próxima vela N+1 nasceu, clique **Confirmar abertura da próxima vela**. O resultado é marcado como entrada simulada em memória. Use **Cancelar** para descartar o pendente; a mesma etiqueta não será rearmada naquela sessão.
+7. Somente depois de observar que a próxima vela N+1 nasceu, clique **Confirmar abertura da próxima vela**. O resultado continua sendo apenas simulado e é acrescentado ao histórico local `simulation_history.csv`. Use **Cancelar** para descartar o pendente; a mesma etiqueta não será rearmada naquela sessão.
 
-## Próxima etapa: validar a virada M1 com capturas reais
+## Histórico local de simulações
+
+O aplicativo mantém `%LOCALAPPDATA%\AutoTraderIQ\simulation_history.csv` no Windows (ou `~/.auto_trader_iq/simulation_history.csv` em outros sistemas). O CSV append-only registra metadados de sinais armados, viradas de minuto observadas, entradas simuladas, cancelamentos e expirações: HORA ATUAL quando legível, evento, período, direção, texto OCR, confiança, posição do rótulo, segundos decorridos em M1 e confiança do relógio. A tabela mostra as 20 entradas simuladas mais recentes após reabrir o app.
+
+Esse histórico não contém imagens, não é transmitido e não gera ordens. Falhas na gravação são avisadas na interface, mas não interrompem a simulação assistida. A gravação separada de sequências continua opt-in, limitada a 75 segundos e salva imagens localmente, conforme descrito abaixo.
+
+## Validação da virada M1 com capturas reais
 
 Durante uma visualização M1 com OCR ativo, o botão **Gravar sequência de teste (75 s)** fica disponível também no painel compacto. Inicie a gravação cerca de 20–30 s antes da próxima virada de minuto. Ela salva aproximadamente uma imagem por segundo por até 75 s e encerra sozinha; também pode ser parada manualmente. Parar a visualização ou fechar o app encerra a gravação de forma segura.
 
@@ -64,6 +70,6 @@ python -m unittest discover -s tests -v
 
 - O filtro de barras é uma heurística baseada em cor/largura/altura e mantém apenas candidatos alinhados às duas barras mais recentes; zoom, temas, doji, velas muito estreitas, rolagem e overlays podem causar falso bloqueio ou associação errada. Confira visualmente cada candidato; a seleção manual continua necessária.
 - A confirmação da abertura da próxima vela é manual porque ainda não foi validado um método visual confiável para detectar vela/candle identity, rolagem do gráfico e período configurado.
-- O histórico da simulação é apenas em memória; não mede lucro, não verifica aceitação de ordem e não usa dados de mercado.
+- O histórico local é um registro técnico, não mede lucro, não verifica aceitação de ordem e não usa dados de mercado. A prevenção de duplicatas continua limitada à sessão atual.
 - Antes de automatizar essa confirmação, será necessário validar capturas sequenciais reais com o ativo e o período gráfico usados. Em qualquer incerteza, a ação segura é não simular/operar.
 - Operações financeiras envolvem risco e podem estar sujeitas às regras da plataforma. Execução real continua fora do escopo.

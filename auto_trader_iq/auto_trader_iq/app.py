@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
 import os
@@ -23,6 +24,7 @@ from .candle_timer import (
 from .region_selector import RegionSelector
 from .sequence_recorder import SequenceRecorder
 from .signal_detector import SignalCandidate, TesseractSignalDetector
+from .simulation_history import SimulationHistoryStore, append_event_best_effort
 from .simulation import SimulationWorkflow
 
 
@@ -72,6 +74,7 @@ class AutoTraderApp(tk.Tk):
 
         self.data_dir = _data_dir()
         self.config_path = self.data_dir / "config.json"
+        self.simulation_history = SimulationHistoryStore(self.data_dir / "simulation_history.csv")
         self.monitors: list[dict[str, int]] = []
         self.region: ScreenRegion | None = None
         self.running = False
@@ -105,6 +108,7 @@ class AutoTraderApp(tk.Tk):
         self.capture_status = tk.StringVar(value="Captura parada")
         self.heartbeat_status = tk.StringVar(value="Sem captura")
         self._build_ui()
+        self._load_persisted_simulation_history()
         self._load_monitors()
         self._load_config()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -214,9 +218,9 @@ class AutoTraderApp(tk.Tk):
         self.candidate_table.column("confidence", width=100, anchor="center")
         self.candidate_table.column("position", width=150, anchor="center")
         self.candidate_table.pack(fill="x")
-        ttk.Label(simulation_box, text="Entradas simuladas nesta sessão").pack(anchor="w", pady=(5, 0))
+        ttk.Label(simulation_box, text="Histórico local de entradas simuladas (mais recentes)").pack(anchor="w", pady=(5, 0))
         self.history_table = ttk.Treeview(
-            simulation_box, columns=("time", "direction", "status"), show="headings", height=2
+            simulation_box, columns=("time", "direction", "status"), show="headings", height=4
         )
         self.history_table.heading("time", text="Horário")
         self.history_table.heading("direction", text="Direção")
@@ -224,7 +228,10 @@ class AutoTraderApp(tk.Tk):
         self.history_table.column("time", width=90, anchor="center")
         self.history_table.column("direction", width=100, anchor="center")
         self.history_table.column("status", width=200, anchor="w")
-        self.history_table.pack(fill="x")
+        history_scrollbar = ttk.Scrollbar(simulation_box, orient="vertical", command=self.history_table.yview)
+        self.history_table.configure(yscrollcommand=history_scrollbar.set)
+        self.history_table.pack(side="left", fill="x", expand=True)
+        history_scrollbar.pack(side="right", fill="y")
         sim_buttons = ttk.Frame(simulation_box)
         sim_buttons.pack(fill="x", pady=(5, 0))
         ttk.Button(sim_buttons, text="Armar candidato selecionado", command=self._arm_selected_candidate).pack(
@@ -241,7 +248,7 @@ class AutoTraderApp(tk.Tk):
         self.cancel_sim_button.pack(side="left", padx=6)
         ttk.Label(simulation_box, textvariable=self.simulation_status, wraplength=650).pack(anchor="w", pady=(4, 0))
 
-        footer = ttk.Label(self.full_ui, text=f"Configuração e imagens locais: {self.data_dir}", padding=(18, 0, 18, 12))
+        footer = ttk.Label(self.full_ui, text=f"Configuração, imagens e histórico locais: {self.data_dir}", padding=(18, 0, 18, 12))
         footer.pack(fill="x")
 
         self.compact_frame = ttk.Frame(self, padding=10)
@@ -644,6 +651,64 @@ class AutoTraderApp(tk.Tk):
         if compact_id in self.candidates_by_id:
             self.compact_candidate_table.selection_set(compact_id)
 
+    def _load_persisted_simulation_history(self) -> None:
+        try:
+            rows = self.simulation_history.load_recent_entries(limit=20)
+        except (OSError, UnicodeError, csv.Error, ValueError) as exc:
+            self.simulation_status.set(
+                f"Histórico local indisponível; simulação continua sem persistência: {exc}"
+            )
+            return
+        for index, row in enumerate(rows):
+            direction = "COMPRA" if row.get("direction") == "BUY" else "VENDER"
+            elapsed = row.get("elapsed_seconds_m1", "")
+            elapsed_text = f" · M1 +{elapsed}s" if elapsed else ""
+            self.history_table.insert(
+                "", 0, iid=f"persisted-{index}",
+                values=(row.get("platform_clock") or "—", direction,
+                        f"SIMULADA · N+1{elapsed_text}"),
+            )
+        if rows:
+            self.simulation_status.set(
+                f"Histórico local carregado: {len(rows)} entrada(s) simulada(s) recente(s). "
+                "Nenhuma ordem real é enviada."
+            )
+
+    def _record_simulation_event(
+        self,
+        event: str,
+        *,
+        direction: str,
+        observed_text: str,
+        confidence: float,
+        signal_x: int,
+        signal_y: int,
+        elapsed_seconds_m1: int | None = None,
+    ) -> str | None:
+        now = time.monotonic()
+        clock_is_fresh = (
+            self.latest_platform_clock is not None
+            and self.latest_clock_at is not None
+            and now - self.latest_clock_at <= TIMER_MAX_AGE_SECONDS
+        )
+        clock = self.latest_platform_clock if clock_is_fresh else None
+        # Persistência é best-effort: nunca deve bloquear confirmação assistida.
+        return append_event_best_effort(
+            self.simulation_history,
+            platform_clock=(
+                f"{clock.hour:02d}:{clock.minute:02d}:{clock.second:02d}" if clock else ""
+            ),
+            event=event,
+            timeframe=self.timeframe_var.get(),
+            direction=direction,
+            observed_text=observed_text,
+            ocr_confidence=confidence,
+            signal_x=signal_x,
+            signal_y=signal_y,
+            elapsed_seconds_m1=elapsed_seconds_m1,
+            clock_confidence=clock.confidence if clock else None,
+        )
+
     def _arm_selected_candidate(self) -> None:
         selection = self.candidate_table.selection()
         if not selection:
@@ -676,9 +741,15 @@ class AutoTraderApp(tk.Tk):
         )
         self.pending_rollover_notified = False
         label = "COMPRA" if pending.direction == "BUY" else "VENDER"
+        log_error = self._record_simulation_event(
+            "sinal_armado", direction=pending.direction, observed_text=pending.observed_text,
+            confidence=pending.confidence, signal_x=pending.x, signal_y=pending.y,
+        )
+        persistence_note = f" Histórico local não gravado: {log_error}" if log_error else ""
         self.simulation_status.set(
             f"Pendente: {label} ({pending.confidence:.0f}%). Aguarde a próxima vela nascer; "
             "confirme manualmente apenas quando isso estiver visível. Nenhuma ordem será enviada."
+            f"{persistence_note}"
         )
         self._refresh_simulation_buttons()
 
@@ -693,10 +764,18 @@ class AutoTraderApp(tk.Tk):
         self.pending_rollover_notified = True
         clock = self.latest_platform_clock
         assert clock is not None
-        label = "COMPRA" if self.simulation.pending.direction == "BUY" else "VENDER"
+        pending = self.simulation.pending
+        label = "COMPRA" if pending.direction == "BUY" else "VENDER"
+        log_error = self._record_simulation_event(
+            "virada_minuto_observada", direction=pending.direction,
+            observed_text=pending.observed_text, confidence=pending.confidence,
+            signal_x=pending.x, signal_y=pending.y,
+        )
+        persistence_note = f" Histórico local não gravado: {log_error}" if log_error else ""
         self.simulation_status.set(
             f"HORA ATUAL avançou para {clock.hour:02d}:{clock.minute:02d} após armar {label}. "
             "Confira visualmente se N+1 nasceu; a confirmação continua manual."
+            f"{persistence_note}"
         )
 
     def _clear_pending_clock_observation(self) -> None:
@@ -721,18 +800,40 @@ class AutoTraderApp(tk.Tk):
             return
         self._clear_pending_clock_observation()
         label = "COMPRA" if entry.direction == "BUY" else "VENDER"
-        confirmed = entry.next_candle_confirmed_at.astimezone().strftime("%H:%M:%S")
+        clock_is_fresh = (
+            self.latest_platform_clock is not None
+            and self.latest_clock_at is not None
+            and time.monotonic() - self.latest_clock_at <= TIMER_MAX_AGE_SECONDS
+        )
+        if clock_is_fresh:
+            clock = self.latest_platform_clock
+            assert clock is not None
+            confirmed = f"{clock.hour:02d}:{clock.minute:02d}:{clock.second:02d}"
+            clock_source = "HORA ATUAL"
+        else:
+            confirmed = entry.next_candle_confirmed_at.astimezone().strftime("%H:%M:%S")
+            clock_source = "relógio do PC"
         elapsed_text = (
             f" · M1 +{entry.elapsed_seconds_after_open}s"
             if entry.elapsed_seconds_after_open is not None else ""
         )
+        log_error = self._record_simulation_event(
+            "entrada_simulada", direction=entry.direction, observed_text=entry.signal_text,
+            confidence=entry.confidence, signal_x=entry.signal_x, signal_y=entry.signal_y,
+            elapsed_seconds_m1=entry.elapsed_seconds_after_open,
+        )
+        persistence_note = (
+            f" A entrada continua simulada, mas não foi salva no histórico local: {log_error}"
+            if log_error else ""
+        )
         self.history_table.insert(
-            "", "end", iid=entry.signal_id,
+            "", 0, iid=entry.signal_id,
             values=(confirmed, label, f"SIMULADA · N+1{elapsed_text}"),
         )
         self.simulation_status.set(
-            f"ENTRADA SIMULADA: {label} às {confirmed}; N+1 confirmada manualmente{elapsed_text}. "
-            f"Histórico desta sessão: {len(self.simulation.entries)} entrada(s)."
+            f"ENTRADA SIMULADA: {label} às {confirmed} ({clock_source}); "
+            f"N+1 confirmada manualmente{elapsed_text}. "
+            f"Histórico desta sessão: {len(self.simulation.entries)} entrada(s).{persistence_note}"
         )
         for button in (self.confirm_candle_button, self.compact_confirm_button):
             button.configure(state="disabled")
@@ -746,8 +847,15 @@ class AutoTraderApp(tk.Tk):
             self.simulation_status.set(str(exc))
             return
         self._clear_pending_clock_observation()
+        log_error = self._record_simulation_event(
+            "simulacao_cancelada", direction=pending.direction,
+            observed_text=pending.observed_text, confidence=pending.confidence,
+            signal_x=pending.x, signal_y=pending.y,
+        )
+        persistence_note = f" Histórico local não gravado: {log_error}" if log_error else ""
         self.simulation_status.set(
             f"Simulação pendente cancelada ({pending.observed_text}); o mesmo rótulo não será rearmado nesta sessão."
+            f"{persistence_note}"
         )
         for button in (self.confirm_candle_button, self.compact_confirm_button):
             button.configure(state="disabled")
@@ -797,8 +905,15 @@ class AutoTraderApp(tk.Tk):
                 expired = self.simulation.cancel_pending()
                 self._clear_pending_clock_observation()
                 label = "COMPRA" if expired.direction == "BUY" else "VENDER"
+                log_error = self._record_simulation_event(
+                    "sinal_expirado", direction=expired.direction,
+                    observed_text=expired.observed_text, confidence=expired.confidence,
+                    signal_x=expired.x, signal_y=expired.y,
+                )
+                persistence_note = f" Histórico local não gravado: {log_error}" if log_error else ""
                 self.simulation_status.set(
                     f"Sinal {label} expirado: ultrapassou 30s de M1; descartado sem entrada."
+                    f"{persistence_note}"
                 )
         self._refresh_simulation_buttons()
 
