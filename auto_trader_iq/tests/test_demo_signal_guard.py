@@ -16,18 +16,19 @@ class DemoSignalRepeatGuardTests(unittest.TestCase):
         self.assertTrue(guard.blocks(self.candidate(left=385, top=245)))
         self.assertFalse(guard.blocks(self.candidate("SELL", left=300, top=200)))
 
-    def test_releases_only_after_three_consecutive_missing_recent_candidates(self):
+    def test_requires_thirty_seconds_and_three_missing_reads_before_release(self):
         guard = DemoSignalRepeatGuard()
         entered = self.candidate()
-        guard.mark_entered(entered.direction, entered.left, entered.top)
+        guard.mark_entered(entered.direction, entered.left, entered.top, entered_at=100.0)
 
-        guard.observe([])
-        guard.observe([self.candidate(left=310, top=205)])
+        guard.observe([], now=101.0)
+        guard.observe([self.candidate(left=310, top=205)], now=102.0)
         self.assertTrue(guard.blocks(entered))
-        guard.observe([])
-        guard.observe([])
+        guard.observe([], now=103.0)
+        guard.observe([], now=104.0)
+        guard.observe([], now=129.0)
         self.assertTrue(guard.blocks(entered))
-        guard.observe([])
+        guard.observe([], now=130.0)
         self.assertFalse(guard.blocks(entered))
 
     def test_a_distinct_direction_or_distant_signal_is_not_blocked(self):
@@ -41,6 +42,7 @@ class DemoSignalRepeatGuardTests(unittest.TestCase):
         for options in (
             {"tolerance_x": -1},
             {"tolerance_y": -1},
+            {"minimum_lock_seconds": -1},
             {"missing_observations_to_release": 0},
         ):
             with self.subTest(options=options):

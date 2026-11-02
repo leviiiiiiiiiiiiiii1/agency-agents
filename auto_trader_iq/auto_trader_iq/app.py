@@ -652,8 +652,8 @@ class AutoTraderApp(tk.Tk):
         if self.demo_signal_guard.blocks(candidate):
             self._deactivate_demo_automation()
             self.demo_status.set(
-                "DEMO desligado: este sinal já recebeu uma entrada. Aguarde o rótulo desaparecer "
-                "por 3 leituras OCR antes de reativar."
+                "DEMO desligado: este sinal já recebeu uma entrada. Aguarde 30 s e o rótulo desaparecer "
+                "por 3 leituras OCR consecutivas antes de reativar."
             )
             return
         try:
@@ -779,7 +779,8 @@ class AutoTraderApp(tk.Tk):
         persistence_note = f" Histórico local não gravado: {log_error}" if log_error else ""
         self.demo_status.set(
             f"Clique {label} enviado às {time_text}, dentro de {DEMO_ENTRY_MAX_DELAY_SECONDS:.0f} s do armamento; "
-            "aceitação pela plataforma não verificada. Esse rótulo não será reutilizado até sumir por 3 leituras OCR. "
+            "aceitação pela plataforma não verificada. Esse rótulo fica bloqueado por pelo menos 30 s e até sumir "
+            "por 3 leituras OCR consecutivas. "
             f"Ativação encerrada após um clique.{persistence_note}"
         )
         self.simulation_status.set(
