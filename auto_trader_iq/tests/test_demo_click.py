@@ -5,7 +5,9 @@ from unittest.mock import Mock
 from auto_trader_iq.demo_click import (
     ClickTarget,
     click_demo_direction,
+    windows_last_input_idle_seconds,
     windows_mouse_click,
+    windows_mouse_move,
     windows_mouse_position,
     windows_window_at_point,
 )
@@ -60,6 +62,10 @@ class DemoClickTests(unittest.TestCase):
     def test_native_mouse_api_is_unavailable_off_windows(self):
         with self.assertRaisesRegex(RuntimeError, "Windows"):
             windows_mouse_position()
+        with self.assertRaisesRegex(RuntimeError, "Windows"):
+            windows_mouse_move(100, 100)
+        with self.assertRaisesRegex(RuntimeError, "Windows"):
+            windows_last_input_idle_seconds()
         with self.assertRaisesRegex(RuntimeError, "Windows"):
             windows_mouse_click(100, 100)
         with self.assertRaisesRegex(RuntimeError, "Windows"):

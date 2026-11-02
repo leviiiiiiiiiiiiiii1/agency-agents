@@ -18,7 +18,9 @@ from .capture import ScreenCapture, ScreenRegion
 from .demo_click import (
     ClickTarget,
     click_demo_direction,
+    windows_last_input_idle_seconds,
     windows_mouse_click,
+    windows_mouse_move,
     windows_mouse_position,
     windows_window_at_point,
 )
@@ -53,6 +55,12 @@ MAX_DEMO_ACTIVATION_TIMEOUT_SECONDS = 3600
 DEFAULT_DEMO_ENTRY_DEADLINE_SECONDS = 15
 MIN_DEMO_ENTRY_DEADLINE_SECONDS = 1
 MAX_DEMO_ENTRY_DEADLINE_SECONDS = 15
+DEFAULT_DEMO_MOUSE_KEEPALIVE_SECONDS = 60
+MIN_DEMO_MOUSE_KEEPALIVE_SECONDS = 30
+MAX_DEMO_MOUSE_KEEPALIVE_SECONDS = 600
+DEMO_MOUSE_KEEPALIVE_POLL_MS = 5000
+DEMO_MOUSE_KEEPALIVE_CLEARANCE_PX = 100
+DEMO_MOUSE_KEEPALIVE_NUDGE_PX = 4
 
 
 def _enable_windows_dpi_awareness() -> None:
@@ -135,6 +143,12 @@ class AutoTraderApp(tk.Tk):
         self.last_demo_entry_candle_id: int | None = None
         self.demo_click_targets: dict[str, ClickTarget | None] = {"BUY": None, "SELL": None}
         self.demo_click_target_windows: dict[str, int | None] = {"BUY": None, "SELL": None}
+        self.demo_mouse_keepalive_target: ClickTarget | None = None
+        self.demo_mouse_keepalive_alternate: ClickTarget | None = None
+        self.demo_mouse_keepalive_window: int | None = None
+        self.demo_mouse_keepalive_after_id: str | None = None
+        self.demo_mouse_keepalive_last_move_at = 0.0
+        self.demo_mouse_keepalive_use_alternate = False
         self.excluded_regions: list[ScreenRegion] = []
         self.compact_mode = False
 
@@ -146,6 +160,13 @@ class AutoTraderApp(tk.Tk):
         self.keep_awake_active = False
         self.keep_awake_status = tk.StringVar(
             value="Economia de energia normal; prevenção de suspensão desligada."
+        )
+        self.demo_mouse_keepalive_var = tk.BooleanVar(value=False)
+        self.demo_mouse_keepalive_interval_var = tk.StringVar(
+            value=str(DEFAULT_DEMO_MOUSE_KEEPALIVE_SECONDS)
+        )
+        self.demo_mouse_keepalive_status = tk.StringVar(
+            value="Movimento automático do cursor desligado; nenhum movimento será feito."
         )
         self.ocr_enabled_var = tk.BooleanVar(value=False)
         self.confidence_var = tk.StringVar(value="70")
@@ -443,6 +464,36 @@ class AutoTraderApp(tk.Tk):
             demo_target_row, text="Calibrar VENDER", command=lambda: self._calibrate_demo_target("SELL")
         ).pack(side="left", padx=(0, 4))
         ttk.Label(demo_target_row, textvariable=self.sell_target_status).pack(side="left")
+        demo_mouse_keepalive_target_row = ttk.Frame(simulation_box)
+        demo_mouse_keepalive_target_row.pack(fill="x", pady=(4, 0))
+        ttk.Button(
+            demo_mouse_keepalive_target_row,
+            text="Calibrar ponto neutro (sem clique)",
+            command=self._calibrate_demo_mouse_keepalive_target,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Label(demo_mouse_keepalive_target_row, textvariable=self.demo_mouse_keepalive_status).pack(
+            side="left", fill="x", expand=True
+        )
+        demo_mouse_keepalive_options = ttk.Frame(simulation_box)
+        demo_mouse_keepalive_options.pack(fill="x", pady=(3, 0))
+        self.demo_mouse_keepalive_checkbutton = ttk.Checkbutton(
+            demo_mouse_keepalive_options,
+            text="Movimentar cursor sem clicar após inatividade (somente DEMO)",
+            variable=self.demo_mouse_keepalive_var,
+            command=self._on_demo_mouse_keepalive_toggle,
+            state="normal" if sys.platform == "win32" else "disabled",
+        )
+        self.demo_mouse_keepalive_checkbutton.pack(side="left")
+        ttk.Label(demo_mouse_keepalive_options, text="intervalo ocioso (s):").pack(side="left", padx=(8, 3))
+        self.demo_mouse_keepalive_spinbox = ttk.Spinbox(
+            demo_mouse_keepalive_options,
+            from_=MIN_DEMO_MOUSE_KEEPALIVE_SECONDS,
+            to=MAX_DEMO_MOUSE_KEEPALIVE_SECONDS,
+            increment=30,
+            textvariable=self.demo_mouse_keepalive_interval_var,
+            width=5,
+        )
+        self.demo_mouse_keepalive_spinbox.pack(side="left")
         demo_timeout_row = ttk.Frame(simulation_box)
         demo_timeout_row.pack(fill="x", pady=(3, 0))
         ttk.Label(
@@ -594,6 +645,18 @@ class AutoTraderApp(tk.Tk):
             state="disabled",
         )
         self.compact_cancel_button.pack(side="left", padx=5)
+
+        self.compact_demo_mouse_keepalive_checkbutton = ttk.Checkbutton(
+            self.compact_frame,
+            text="Movimentar cursor sem clicar após inatividade (DEMO)",
+            variable=self.demo_mouse_keepalive_var,
+            command=self._on_demo_mouse_keepalive_toggle,
+            state="normal" if sys.platform == "win32" else "disabled",
+        )
+        self.compact_demo_mouse_keepalive_checkbutton.pack(anchor="w", pady=(3, 0))
+        ttk.Label(
+            self.compact_frame, textvariable=self.demo_mouse_keepalive_status, wraplength=640
+        ).pack(anchor="w", pady=(0, 2))
 
         compact_controls = ttk.Frame(self.compact_frame)
         compact_controls.pack(fill="x", pady=(2, 2))
@@ -783,6 +846,11 @@ class AutoTraderApp(tk.Tk):
             return
         self.demo_click_targets[direction] = None
         self.demo_click_target_windows[direction] = None
+        self.demo_mouse_keepalive_target = None
+        self.demo_mouse_keepalive_alternate = None
+        self.demo_mouse_keepalive_window = None
+        self.demo_mouse_keepalive_var.set(False)
+        self.demo_mouse_keepalive_status.set("Recalibre o ponto neutro após recalibrar botões.")
         self._set_demo_target_label(direction, None)
         self.demo_status.set(f"Calibração {label}: janela oculta por 5 s; posicione o cursor no centro do botão.")
         self.withdraw()
@@ -820,6 +888,244 @@ class AutoTraderApp(tk.Tk):
             )
         else:
             self.demo_status.set(f"Botão {label} calibrado em {target.x}, {target.y}; nenhum clique foi enviado.")
+
+    def _demo_mouse_keepalive_geometry_is_safe(
+        self,
+        target: ClickTarget,
+        alternate: ClickTarget,
+        target_window: int,
+        *,
+        check_frontmost: bool = True,
+    ) -> bool:
+        buy_target = self.demo_click_targets["BUY"]
+        sell_target = self.demo_click_targets["SELL"]
+        expected_windows = {
+            self.demo_click_target_windows["BUY"],
+            self.demo_click_target_windows["SELL"],
+        }
+        if None in expected_windows or expected_windows != {target_window}:
+            return False
+        for point in (target, alternate):
+            if not self._target_is_excluded_or_outside_capture(point):
+                return False
+            for button_target in (buy_target, sell_target):
+                if button_target is None:
+                    return False
+                dx = point.x - button_target.x
+                dy = point.y - button_target.y
+                if dx * dx + dy * dy < DEMO_MOUSE_KEEPALIVE_CLEARANCE_PX ** 2:
+                    return False
+            if check_frontmost:
+                try:
+                    if windows_window_at_point(point.x, point.y) != target_window:
+                        return False
+                except Exception:
+                    return False
+        return True
+
+    def _calibrate_demo_mouse_keepalive_target(self) -> None:
+        if sys.platform != "win32":
+            messagebox.showerror(APP_NAME, "A calibração do cursor só funciona no Windows.", parent=self)
+            return
+        if self.demo_automation_enabled:
+            messagebox.showinfo(APP_NAME, "Desative os cliques DEMO antes de calibrar o ponto neutro.", parent=self)
+            return
+        if any(self.demo_click_targets[direction] is None for direction in ("BUY", "SELL")):
+            messagebox.showinfo(APP_NAME, "Calibre COMPRAR e VENDER antes de calibrar o ponto neutro.", parent=self)
+            return
+        if self.running:
+            self._stop_capture("Captura pausada para calibrar o ponto neutro do cursor.")
+        consent = messagebox.askyesno(
+            APP_NAME,
+            "Calibrar um ponto neutro sem clique. A janela AUTO TRADER ficará oculta por 5 segundos. "
+            "Mova o cursor para uma área vazia da janela da corretora, longe dos botões de ordem e etiquetas; "
+            "não clique. O ponto e uma posição adjacente serão usados apenas quando DEMO estiver autorizado.",
+            parent=self,
+        )
+        if not consent:
+            return
+        self.demo_mouse_keepalive_target = None
+        self.demo_mouse_keepalive_alternate = None
+        self.demo_mouse_keepalive_window = None
+        self.demo_mouse_keepalive_status.set("Calibração: posicione no ponto neutro, sem clicar.")
+        self.withdraw()
+        self.after(5000, self._finish_demo_mouse_keepalive_calibration)
+
+    def _finish_demo_mouse_keepalive_calibration(self) -> None:
+        try:
+            x, y = windows_mouse_position()
+            target = ClickTarget(x, y)
+            target_window = windows_window_at_point(x, y)
+            if target_window is None:
+                raise RuntimeError("Não foi possível identificar a janela sob o ponto escolhido.")
+            alternates: list[ClickTarget] = []
+            for delta_x in (DEMO_MOUSE_KEEPALIVE_NUDGE_PX, -DEMO_MOUSE_KEEPALIVE_NUDGE_PX):
+                try:
+                    alternates.append(ClickTarget(x + delta_x, y))
+                except ValueError:
+                    continue
+            alternate = next((
+                candidate for candidate in alternates
+                if windows_window_at_point(candidate.x, candidate.y) == target_window
+                and self._demo_mouse_keepalive_geometry_is_safe(target, candidate, target_window)
+            ), None)
+            if alternate is None or not self._demo_mouse_keepalive_geometry_is_safe(
+                target, alternate, target_window
+            ):
+                raise RuntimeError(
+                    "Escolha uma área neutra fora da captura ou mascarada, dentro da mesma janela da corretora "
+                    "e a pelo menos 100 px dos botões calibrados."
+                )
+        except Exception as exc:
+            self.deiconify()
+            self.demo_mouse_keepalive_status.set("Ponto neutro não calibrado.")
+            messagebox.showerror(APP_NAME, f"Calibração do ponto neutro recusada:\n{exc}", parent=self)
+            return
+        self.deiconify()
+        self.demo_mouse_keepalive_target = target
+        self.demo_mouse_keepalive_alternate = alternate
+        self.demo_mouse_keepalive_window = target_window
+        self.demo_mouse_keepalive_use_alternate = False
+        self.demo_mouse_keepalive_status.set(
+            f"Ponto neutro calibrado em {target.x},{target.y}; sem clique."
+        )
+
+    def _demo_mouse_keepalive_interval(self) -> int | None:
+        try:
+            interval = int(self.demo_mouse_keepalive_interval_var.get())
+        except (TypeError, ValueError):
+            return None
+        if not MIN_DEMO_MOUSE_KEEPALIVE_SECONDS <= interval <= MAX_DEMO_MOUSE_KEEPALIVE_SECONDS:
+            return None
+        return interval
+
+    def _on_demo_mouse_keepalive_toggle(self) -> None:
+        if not self.demo_mouse_keepalive_var.get():
+            self._cancel_demo_mouse_keepalive()
+            self.demo_mouse_keepalive_status.set(
+                "Movimento automático do cursor desligado; nenhum movimento será feito."
+            )
+            return
+        if self.demo_mouse_keepalive_target is None or self.demo_mouse_keepalive_alternate is None:
+            self.demo_mouse_keepalive_var.set(False)
+            messagebox.showinfo(
+                APP_NAME,
+                "Calibre primeiro o ponto neutro. O movimento não envia cliques e só funciona durante DEMO ativo.",
+                parent=self,
+            )
+            return
+        if self._demo_mouse_keepalive_interval() is None:
+            self.demo_mouse_keepalive_var.set(False)
+            messagebox.showerror(
+                APP_NAME,
+                f"O intervalo ocioso deve estar entre {MIN_DEMO_MOUSE_KEEPALIVE_SECONDS} e "
+                f"{MAX_DEMO_MOUSE_KEEPALIVE_SECONDS} segundos.",
+                parent=self,
+            )
+            return
+        if self.demo_automation_enabled:
+            self.demo_mouse_keepalive_last_move_at = time.monotonic()
+            self._schedule_demo_mouse_keepalive()
+            self.demo_mouse_keepalive_status.set(
+                "Movimento DEMO sem clique habilitado; aguardando inatividade do usuário."
+            )
+        else:
+            self.demo_mouse_keepalive_status.set(
+                "Ativado; só movimentará o cursor durante uma ativação DEMO autorizada."
+            )
+
+    def _schedule_demo_mouse_keepalive(self) -> None:
+        if (
+            self.demo_mouse_keepalive_after_id is None
+            and self.running
+            and self.demo_automation_enabled
+            and self.demo_account_confirmed
+            and self.demo_mouse_keepalive_var.get()
+        ):
+            self.demo_mouse_keepalive_after_id = self.after(
+                DEMO_MOUSE_KEEPALIVE_POLL_MS, self._demo_mouse_keepalive_tick
+            )
+
+    def _cancel_demo_mouse_keepalive(self) -> None:
+        if self.demo_mouse_keepalive_after_id is not None:
+            try:
+                self.after_cancel(self.demo_mouse_keepalive_after_id)
+            except tk.TclError:
+                pass
+            self.demo_mouse_keepalive_after_id = None
+
+    def _demo_mouse_keepalive_tick(self) -> None:
+        self.demo_mouse_keepalive_after_id = None
+        if (
+            not self.running
+            or not self.demo_automation_enabled
+            or not self.demo_account_confirmed
+            or not self.demo_mouse_keepalive_var.get()
+        ):
+            return
+        interval = self._demo_mouse_keepalive_interval()
+        target = (
+            self.demo_mouse_keepalive_alternate
+            if self.demo_mouse_keepalive_use_alternate
+            else self.demo_mouse_keepalive_target
+        )
+        neutral_target = self.demo_mouse_keepalive_target
+        alternate = self.demo_mouse_keepalive_alternate
+        safe_window = self.demo_mouse_keepalive_window
+        if (
+            interval is None
+            or target is None
+            or neutral_target is None
+            or alternate is None
+            or safe_window is None
+        ):
+            self.demo_mouse_keepalive_status.set("Movimento suspenso: calibre o ponto e confira o intervalo.")
+            self._schedule_demo_mouse_keepalive()
+            return
+        now = time.monotonic()
+        try:
+            idle_seconds = windows_last_input_idle_seconds()
+            if (
+                idle_seconds >= interval
+                and now - self.demo_mouse_keepalive_last_move_at >= interval
+            ):
+                if not self._demo_mouse_keepalive_geometry_is_safe(
+                    neutral_target, alternate, safe_window
+                ):
+                    self.demo_mouse_keepalive_status.set(
+                        "Movimento suspenso: ponto neutro coberto ou fora da janela calibrada."
+                    )
+                else:
+                    if windows_window_at_point(target.x, target.y) != safe_window:
+                        self.demo_mouse_keepalive_status.set(
+                            "Movimento suspenso: a janela calibrada da corretora não está visível no ponto neutro."
+                        )
+                    else:
+                        cursor_x, cursor_y = windows_mouse_position()
+                        if (cursor_x, cursor_y) == (target.x, target.y):
+                            target = neutral_target if target == alternate else alternate
+                        if windows_window_at_point(target.x, target.y) != safe_window:
+                            self.demo_mouse_keepalive_status.set(
+                                "Movimento suspenso: ponto neutro não está na janela calibrada."
+                            )
+                            self._schedule_demo_mouse_keepalive()
+                            return
+                        windows_mouse_move(target.x, target.y)
+                        self.demo_mouse_keepalive_use_alternate = (
+                            target == self.demo_mouse_keepalive_target
+                        )
+                        self.demo_mouse_keepalive_last_move_at = now
+                        self.demo_mouse_keepalive_status.set(
+                            f"Cursor movido sem clique às {time.strftime('%H:%M:%S')}; "
+                            f"próxima verificação em {interval} s de inatividade."
+                        )
+            elif idle_seconds < interval:
+                self.demo_mouse_keepalive_status.set(
+                    f"Movimento DEMO sem clique aguardando {interval} s de inatividade do usuário."
+                )
+        except Exception as exc:
+            self.demo_mouse_keepalive_status.set(f"Movimento DEMO suspenso por erro: {exc}")
+        self._schedule_demo_mouse_keepalive()
 
     def _update_demo_toggle_text(self) -> None:
         text = "Parar cliques DEMO" if self.demo_automation_enabled else "Ativar cliques DEMO…"
@@ -904,6 +1210,39 @@ class AutoTraderApp(tk.Tk):
                 parent=self,
             )
             return
+        mouse_keepalive_note = ""
+        if self.demo_mouse_keepalive_var.get():
+            interval = self._demo_mouse_keepalive_interval()
+            target = self.demo_mouse_keepalive_target
+            alternate = self.demo_mouse_keepalive_alternate
+            safe_window = self.demo_mouse_keepalive_window
+            if interval is None:
+                messagebox.showerror(
+                    APP_NAME,
+                    f"O intervalo do movimento deve ficar entre {MIN_DEMO_MOUSE_KEEPALIVE_SECONDS} e "
+                    f"{MAX_DEMO_MOUSE_KEEPALIVE_SECONDS} segundos.",
+                    parent=self,
+                )
+                return
+            if (
+                target is None
+                or alternate is None
+                or safe_window is None
+                or not self._demo_mouse_keepalive_geometry_is_safe(
+                    target, alternate, safe_window, check_frontmost=False
+                )
+            ):
+                messagebox.showerror(
+                    APP_NAME,
+                    "O movimento sem clique exige um ponto neutro calibrado na mesma janela dos botões, "
+                    "longe dos alvos e fora da região capturada ou dentro de uma área mascarada.",
+                    parent=self,
+                )
+                return
+            mouse_keepalive_note = (
+                f" Se não houver atividade do usuário por {interval} s, o cursor alternará entre "
+                "dois pontos neutros calibrados, sem clicar; a posição mudará."
+            )
         consent = messagebox.askyesno(
             APP_NAME,
             "ATENÇÃO — cliques automáticos somente em conta DEMO.\n\n"
@@ -915,6 +1254,7 @@ class AutoTraderApp(tk.Tk):
             "Esse prazo não é uma espera antes da entrada. Não espera N+1. "
             f"Ficará ativa por {activation_timeout} s ou até você pará-la; sinais repetidos na mesma vela são bloqueados. "
             "A identidade da vela e a aceitação da ordem não são verificadas visualmente.\n\n"
+            f"{mouse_keepalive_note}\n\n"
             "Se a conta não estiver em DEMO, o clique poderá enviar uma ordem real. Ativar agora?",
             parent=self,
         )
@@ -928,6 +1268,13 @@ class AutoTraderApp(tk.Tk):
         self.demo_timeout_after_id = self.after(
             activation_timeout * 1000, self._expire_demo_activation
         )
+        if self.demo_mouse_keepalive_var.get():
+            self.demo_mouse_keepalive_last_move_at = time.monotonic()
+            self.demo_mouse_keepalive_use_alternate = False
+            self._schedule_demo_mouse_keepalive()
+            self.demo_mouse_keepalive_status.set(
+                "Keep-alive DEMO sem clique ativo; aguardando intervalo de inatividade."
+            )
         self._persist_config()
         self._update_demo_toggle_text()
         self.demo_status.set(
@@ -1145,8 +1492,13 @@ class AutoTraderApp(tk.Tk):
         )
 
     def _deactivate_demo_automation(self) -> None:
+        self._cancel_demo_mouse_keepalive()
         self.demo_automation_enabled = False
         self.demo_account_confirmed = False
+        if self.demo_mouse_keepalive_var.get():
+            self.demo_mouse_keepalive_status.set(
+                "Keep-alive sem clique parado porque a ativação DEMO terminou."
+            )
         if self.demo_timeout_after_id is not None:
             try:
                 self.after_cancel(self.demo_timeout_after_id)
@@ -1263,8 +1615,8 @@ class AutoTraderApp(tk.Tk):
         self.full_ui.pack_forget()
         self.compact_frame.pack(fill="both", expand=True)
         self.compact_mode = True
-        self.minsize(640, 560)
-        self.geometry("700x620+0+0")
+        self.minsize(640, 600)
+        self.geometry("700x660+0+0")
         self.update_idletasks()
 
     def _exit_compact_mode(self) -> None:

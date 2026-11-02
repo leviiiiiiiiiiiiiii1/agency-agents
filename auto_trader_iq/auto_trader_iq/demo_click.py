@@ -80,6 +80,40 @@ def windows_window_at_point(x: int, y: int) -> int | None:
     return int(root_window or window)
 
 
+def windows_mouse_move(x: int, y: int) -> None:
+    """Move the Windows cursor without pressing any mouse button."""
+    if sys.platform != "win32":
+        raise RuntimeError("Movimentos do mouse só podem ser usados no Windows.")
+    user32 = ctypes.windll.user32
+    user32.SetCursorPos.argtypes = (ctypes.c_int, ctypes.c_int)
+    user32.SetCursorPos.restype = ctypes.c_bool
+    if not user32.SetCursorPos(int(x), int(y)):
+        raise ctypes.WinError()
+
+
+def windows_last_input_idle_seconds() -> float:
+    """Return seconds since the last input in the Windows session."""
+    if sys.platform != "win32":
+        raise RuntimeError("A leitura de inatividade só funciona no Windows.")
+    from ctypes import wintypes
+
+    class LastInputInfo(ctypes.Structure):
+        _fields_ = (("cbSize", wintypes.UINT), ("dwTime", wintypes.DWORD))
+
+    info = LastInputInfo()
+    info.cbSize = ctypes.sizeof(LastInputInfo)
+    user32 = ctypes.windll.user32
+    user32.GetLastInputInfo.argtypes = (ctypes.POINTER(LastInputInfo),)
+    user32.GetLastInputInfo.restype = wintypes.BOOL
+    if not user32.GetLastInputInfo(ctypes.byref(info)):
+        raise ctypes.WinError()
+    kernel32 = ctypes.windll.kernel32
+    kernel32.GetTickCount.restype = wintypes.DWORD
+    now = int(kernel32.GetTickCount())
+    elapsed_ms = (now - int(info.dwTime)) & 0xFFFFFFFF
+    return elapsed_ms / 1000.0
+
+
 def windows_mouse_click(x: int, y: int) -> None:
     """Move the cursor and send exactly one left click using the Windows API."""
     if sys.platform != "win32":
