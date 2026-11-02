@@ -15,7 +15,7 @@ class SimulationHistoryStoreTests(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def append(self, event, direction="BUY", elapsed=None):
+    def append(self, event, direction="BUY", elapsed=None, armed_clock="", entry_delay=None):
         self.store.append_event(
             platform_clock="23:44:21",
             event=event,
@@ -27,6 +27,8 @@ class SimulationHistoryStoreTests(unittest.TestCase):
             signal_y=200,
             elapsed_seconds_m1=elapsed,
             clock_confidence=91.0,
+            armed_platform_clock=armed_clock,
+            entry_delay_platform_seconds=entry_delay,
         )
 
     def test_append_creates_csv_with_metadata_only(self):
@@ -41,6 +43,47 @@ class SimulationHistoryStoreTests(unittest.TestCase):
         self.assertEqual(rows[1]["elapsed_seconds_m1"], "15")
         self.assertEqual(rows[1]["ocr_confidence"], "94.5")
         self.assertNotIn("image", " ".join(rows[1].keys()).lower())
+
+    def test_records_platform_arm_clock_and_zero_second_entry_delay(self):
+        self.append(
+            "entrada_demo_clicada",
+            armed_clock="16:13:25",
+            entry_delay=0,
+        )
+
+        row = self.store.load_recent_entries()[0]
+
+        self.assertEqual(row["armed_platform_clock"], "16:13:25")
+        self.assertEqual(row["entry_delay_platform_seconds"], "0")
+
+    def test_migrates_legacy_header_and_preserves_existing_rows(self):
+        legacy_fields = list(self.store.FIELDNAMES[:-2])
+        old_row = {
+            "platform_clock": "15:58:07",
+            "event": "entrada_demo_clicada",
+            "timeframe": "M1",
+            "direction": "SELL",
+            "observed_text": "VENDA",
+            "ocr_confidence": "96.0",
+            "signal_x": "544",
+            "signal_y": "244",
+            "elapsed_seconds_m1": "",
+            "clock_confidence": "96.0",
+        }
+        with self.path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=legacy_fields)
+            writer.writeheader()
+            writer.writerow(old_row)
+
+        self.append("entrada_demo_clicada", armed_clock="16:00:01", entry_delay=0)
+
+        with self.path.open("r", newline="", encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["platform_clock"], "15:58:07")
+        self.assertEqual(rows[0]["armed_platform_clock"], "")
+        self.assertEqual(rows[1]["armed_platform_clock"], "16:00:01")
+        self.assertEqual(rows[1]["entry_delay_platform_seconds"], "0")
 
     def test_recent_entries_filters_events_and_returns_latest_limit(self):
         self.append("entrada_simulada", elapsed=10)

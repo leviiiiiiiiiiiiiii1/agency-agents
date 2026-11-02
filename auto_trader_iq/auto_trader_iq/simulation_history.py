@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import os
 from pathlib import Path
 
 
@@ -29,10 +30,30 @@ class SimulationHistoryStore:
         "signal_y",
         "elapsed_seconds_m1",
         "clock_confidence",
+        "armed_platform_clock",
+        "entry_delay_platform_seconds",
     )
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
+
+    def _upgrade_schema_if_needed(self) -> None:
+        if not self.path.exists() or self.path.stat().st_size == 0:
+            return
+        with self.path.open("r", newline="", encoding="utf-8") as handle:
+            reader = csv.DictReader(handle)
+            old_fields = reader.fieldnames or []
+            if all(name in old_fields for name in self.FIELDNAMES):
+                return
+            rows = list(reader)
+        fieldnames = list(dict.fromkeys([*old_fields, *self.FIELDNAMES]))
+        temporary = self.path.with_name(f"{self.path.name}.tmp")
+        with temporary.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({name: row.get(name, "") or "" for name in fieldnames})
+        os.replace(temporary, self.path)
 
     def append_event(
         self,
@@ -47,8 +68,11 @@ class SimulationHistoryStore:
         signal_y: int,
         elapsed_seconds_m1: int | None = None,
         clock_confidence: float | None = None,
+        armed_platform_clock: str = "",
+        entry_delay_platform_seconds: int | None = None,
     ) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._upgrade_schema_if_needed()
         write_header = not self.path.exists() or self.path.stat().st_size == 0
         with self.path.open("a", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=self.FIELDNAMES)
@@ -68,6 +92,11 @@ class SimulationHistoryStore:
                 ),
                 "clock_confidence": (
                     "" if clock_confidence is None else f"{clock_confidence:.1f}"
+                ),
+                "armed_platform_clock": armed_platform_clock,
+                "entry_delay_platform_seconds": (
+                    "" if entry_delay_platform_seconds is None
+                    else int(entry_delay_platform_seconds)
                 ),
             })
 

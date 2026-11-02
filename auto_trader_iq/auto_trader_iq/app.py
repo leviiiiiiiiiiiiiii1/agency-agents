@@ -44,7 +44,7 @@ from .simulation import SimulationWorkflow
 
 APP_NAME = "AUTO TRADER IQ"
 POLL_MS = 500
-OCR_INTERVAL_SECONDS = 1.0
+OCR_INTERVAL_SECONDS = 0.5
 TIMER_MAX_AGE_SECONDS = 1.5
 DEFAULT_DEMO_ACTIVATION_TIMEOUT_SECONDS = 75
 MIN_DEMO_ACTIVATION_TIMEOUT_SECONDS = 15
@@ -975,6 +975,7 @@ class AutoTraderApp(tk.Tk):
         error = self._record_simulation_event(
             "sinal_armado_demo", direction=pending.direction, observed_text=pending.observed_text,
             confidence=pending.confidence, signal_x=pending.x, signal_y=pending.y,
+            armed_platform_clock=clock,
         )
         persistence_note = f" Histórico não gravado: {error}" if error else ""
         self.demo_status.set(
@@ -1086,6 +1087,8 @@ class AutoTraderApp(tk.Tk):
         log_error = self._record_simulation_event(
             "entrada_demo_clicada", direction=entry.direction, observed_text=entry.signal_text,
             confidence=entry.confidence, signal_x=entry.signal_x, signal_y=entry.signal_y,
+            armed_platform_clock=self.pending_armed_clock,
+            entry_delay_platform_seconds=elapsed,
         )
         self.history_table.insert(
             "", 0, iid=f"demo-{entry.signal_id}",
@@ -1520,6 +1523,8 @@ class AutoTraderApp(tk.Tk):
         signal_x: int,
         signal_y: int,
         elapsed_seconds_m1: int | None = None,
+        armed_platform_clock: PlatformClockReading | None = None,
+        entry_delay_platform_seconds: int | None = None,
     ) -> str | None:
         now = time.monotonic()
         clock_is_fresh = (
@@ -1543,6 +1548,12 @@ class AutoTraderApp(tk.Tk):
             signal_y=signal_y,
             elapsed_seconds_m1=elapsed_seconds_m1,
             clock_confidence=clock.confidence if clock else None,
+            armed_platform_clock=(
+                f"{armed_platform_clock.hour:02d}:{armed_platform_clock.minute:02d}:"
+                f"{armed_platform_clock.second:02d}"
+                if armed_platform_clock is not None else ""
+            ),
+            entry_delay_platform_seconds=entry_delay_platform_seconds,
         )
 
     def _arm_selected_candidate(self) -> None:
