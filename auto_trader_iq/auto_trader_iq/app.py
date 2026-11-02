@@ -180,8 +180,33 @@ class AutoTraderApp(tk.Tk):
 
         body = ttk.Frame(self.full_ui, padding=(18, 0, 18, 18))
         body.pack(fill="both", expand=True)
-        controls = ttk.LabelFrame(body, text="Região monitorada", padding=12)
-        controls.pack(side="left", fill="y", padx=(0, 14))
+        controls_pane = ttk.Frame(body, width=292)
+        controls_pane.pack(side="left", fill="y", padx=(0, 14))
+        controls_pane.pack_propagate(False)
+        controls_canvas = tk.Canvas(
+            controls_pane,
+            highlightthickness=0,
+            borderwidth=0,
+            background=style.lookup("TFrame", "background") or self.cget("background"),
+        )
+        controls_scrollbar = ttk.Scrollbar(
+            controls_pane, orient="vertical", command=controls_canvas.yview
+        )
+        controls_canvas.configure(yscrollcommand=controls_scrollbar.set)
+        controls_canvas.pack(side="left", fill="both", expand=True)
+        controls_scrollbar.pack(side="right", fill="y")
+        controls = ttk.LabelFrame(controls_canvas, text="Região monitorada", padding=12)
+        controls_canvas_window = controls_canvas.create_window(
+            (0, 0), window=controls, anchor="nw"
+        )
+        controls.bind(
+            "<Configure>",
+            lambda _event: controls_canvas.configure(scrollregion=controls_canvas.bbox("all")),
+        )
+        controls_canvas.bind(
+            "<Configure>",
+            lambda event: controls_canvas.itemconfigure(controls_canvas_window, width=event.width),
+        )
         ttk.Label(controls, text="Monitor").grid(row=0, column=0, sticky="w")
         self.monitor_combo = ttk.Combobox(controls, textvariable=self.monitor_var,
                                           state="readonly", width=27)
@@ -265,6 +290,31 @@ class AutoTraderApp(tk.Tk):
         ttk.Label(info, textvariable=self.ocr_status, wraplength=250).pack(anchor="w", pady=(5, 0))
         ttk.Label(info, textvariable=self.timer_status, wraplength=250).pack(anchor="w", pady=(5, 0))
         controls.columnconfigure(0, weight=1)
+
+        def scroll_controls(event: tk.Event) -> str:
+            number = getattr(event, "num", None)
+            if number == 4:
+                controls_canvas.yview_scroll(-1, "units")
+            elif number == 5:
+                controls_canvas.yview_scroll(1, "units")
+            else:
+                delta = int(getattr(event, "delta", 0))
+                units = int(-delta / 120) if abs(delta) >= 120 else (-1 if delta > 0 else 1)
+                if units:
+                    controls_canvas.yview_scroll(units, "units")
+            return "break"
+
+        def bind_control_wheel(widget: tk.Widget) -> None:
+            widget.bind("<MouseWheel>", scroll_controls, add="+")
+            widget.bind("<Button-4>", scroll_controls, add="+")
+            widget.bind("<Button-5>", scroll_controls, add="+")
+            for child in widget.winfo_children():
+                bind_control_wheel(child)
+
+        bind_control_wheel(controls)
+        controls_canvas.bind("<MouseWheel>", scroll_controls, add="+")
+        controls_canvas.bind("<Button-4>", scroll_controls, add="+")
+        controls_canvas.bind("<Button-5>", scroll_controls, add="+")
 
         preview_box = ttk.LabelFrame(body, text="Pré-visualização da região", padding=8)
         preview_box.pack(side="left", fill="both", expand=True)
