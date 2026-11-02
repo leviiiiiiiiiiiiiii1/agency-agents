@@ -415,14 +415,15 @@ class AutoTraderApp(tk.Tk):
 
         compact_preview_box = ttk.LabelFrame(self.compact_frame, text="Prévia ao vivo da região", padding=4)
         compact_preview_box.pack(fill="x", pady=(0, 5))
+        self.compact_preview_viewport = ttk.Frame(compact_preview_box, height=230)
+        self.compact_preview_viewport.pack(fill="x", expand=False)
+        self.compact_preview_viewport.pack_propagate(False)
         self.compact_preview_label = ttk.Label(
-            compact_preview_box,
+            self.compact_preview_viewport,
             text="Aguardando a primeira imagem…",
             anchor="center",
-            width=90,
-            height=12,
         )
-        self.compact_preview_label.pack(fill="x", expand=True)
+        self.compact_preview_label.pack(fill="both", expand=True)
 
         self.compact_candidate_table = ttk.Treeview(
             self.compact_frame, columns=("label", "confidence", "position"),
