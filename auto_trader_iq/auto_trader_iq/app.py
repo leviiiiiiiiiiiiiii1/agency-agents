@@ -34,6 +34,7 @@ from .candle_timer import (
 from .region_selector import RegionSelector
 from .sequence_recorder import SequenceRecorder
 from .screen_mask import mask_screen_regions, point_is_masked_with_margin
+from .settings import find_tesseract_executable, load_settings, save_settings
 from .demo_signal_guard import DemoSignalRepeatGuard
 from .signal_detector import SignalCandidate, TesseractSignalDetector
 from .simulation_history import SimulationHistoryStore, append_event_best_effort
@@ -134,6 +135,7 @@ class AutoTraderApp(tk.Tk):
         self.compact_during_capture_var = tk.BooleanVar(value=True)
         self.ocr_enabled_var = tk.BooleanVar(value=False)
         self.confidence_var = tk.StringVar(value="70")
+        self.tesseract_path_var = tk.StringVar(value=find_tesseract_executable())
         self.ocr_status = tk.StringVar(value="OCR desligado; nenhuma operação é executada.")
         self.region_vars = {key: tk.StringVar() for key in ("left", "top", "width", "height")}
         self.capture_status = tk.StringVar(value="Captura parada")
@@ -164,7 +166,7 @@ class AutoTraderApp(tk.Tk):
 
         warning = ttk.Label(
             self.full_ui,
-            text="Por padrão, sem cliques. Teste DEMO experimental (desligado por padrão) pode clicar uma vez por ativação; o app não verifica se a conta é DEMO nem se a plataforma aceitou a ordem.",
+            text="Cliques automáticos são experimentais e desligados por padrão. A ativação DEMO pode tratar vários sinais, no máximo uma tentativa por vela M1; o app não verifica tipo de conta nem aceitação da ordem.",
             foreground="#8a4b08", background="#fff3cd", padding=9, wraplength=760,
         )
         warning.pack(fill="x", padx=18, pady=(0, 10))
@@ -177,6 +179,7 @@ class AutoTraderApp(tk.Tk):
         self.monitor_combo = ttk.Combobox(controls, textvariable=self.monitor_var,
                                           state="readonly", width=27)
         self.monitor_combo.grid(row=1, column=0, sticky="ew", pady=(4, 10))
+        self.monitor_combo.bind("<<ComboboxSelected>>", lambda _event: self._persist_config())
 
         ttk.Button(controls, text="Selecionar com o mouse…", command=self._open_selector).grid(
             row=2, column=0, sticky="ew", pady=(0, 12)
@@ -205,28 +208,51 @@ class AutoTraderApp(tk.Tk):
         )
 
         ttk.Checkbutton(
-            controls, text="Ativar OCR experimental COMPRA/VENDER", variable=self.ocr_enabled_var
+            controls,
+            text="Ativar OCR experimental COMPRA/VENDER",
+            variable=self.ocr_enabled_var,
+            command=self._persist_config,
         ).grid(row=17, column=0, sticky="w", pady=(8, 2))
         ttk.Label(controls, text="Confiança OCR mínima (0–100)").grid(row=18, column=0, sticky="w")
-        ttk.Spinbox(controls, from_=0, to=100, textvariable=self.confidence_var, width=8).grid(
-            row=19, column=0, sticky="w", pady=(2, 0)
+        self.confidence_spinbox = ttk.Spinbox(
+            controls, from_=0, to=100, textvariable=self.confidence_var, width=8,
+            command=self._persist_config,
         )
+        self.confidence_spinbox.grid(row=19, column=0, sticky="w", pady=(2, 0))
+        self.confidence_spinbox.bind("<FocusOut>", lambda _event: self._persist_config())
+        self.confidence_spinbox.bind("<Return>", lambda _event: self._persist_config())
+
+        ttk.Label(controls, text="Executável Tesseract (opcional)").grid(
+            row=20, column=0, sticky="w", pady=(6, 0)
+        )
+        tesseract_row = ttk.Frame(controls)
+        tesseract_row.grid(row=21, column=0, sticky="ew", pady=(2, 0))
+        ttk.Entry(tesseract_row, textvariable=self.tesseract_path_var, width=22).pack(
+            side="left", fill="x", expand=True
+        )
+        ttk.Button(tesseract_row, text="…", width=3, command=self._browse_tesseract).pack(
+            side="left", padx=(4, 0)
+        )
+        for widget in tesseract_row.winfo_children():
+            if isinstance(widget, ttk.Entry):
+                widget.bind("<FocusOut>", lambda _event: self._persist_config())
+                widget.bind("<Return>", lambda _event: self._persist_config())
 
         ttk.Checkbutton(
             controls, text="Modo compacto ao monitorar (recomendado)",
-            variable=self.compact_during_capture_var,
-        ).grid(row=20, column=0, sticky="w", pady=(6, 0))
+            variable=self.compact_during_capture_var, command=self._persist_config,
+        ).grid(row=22, column=0, sticky="w", pady=(6, 0))
 
-        ttk.Label(controls, text="Período do gráfico").grid(row=21, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(controls, text="Período do gráfico").grid(row=23, column=0, sticky="w", pady=(6, 0))
         self.timeframe_combo = ttk.Combobox(
             controls, textvariable=self.timeframe_var, values=("M1", "M5", "M15", "M30"),
             state="readonly", width=10,
         )
-        self.timeframe_combo.grid(row=22, column=0, sticky="w", pady=(2, 0))
+        self.timeframe_combo.grid(row=24, column=0, sticky="w", pady=(2, 0))
         self.timeframe_combo.bind("<<ComboboxSelected>>", self._on_timeframe_change)
 
         info = ttk.LabelFrame(controls, text="Estado", padding=10)
-        info.grid(row=23, column=0, sticky="ew", pady=(8, 0))
+        info.grid(row=25, column=0, sticky="ew", pady=(8, 0))
         ttk.Label(info, textvariable=self.capture_status, wraplength=250).pack(anchor="w")
         ttk.Label(info, textvariable=self.heartbeat_status, wraplength=250).pack(anchor="w", pady=(5, 0))
         ttk.Label(info, textvariable=self.ocr_status, wraplength=250).pack(anchor="w", pady=(5, 0))
@@ -892,6 +918,16 @@ class AutoTraderApp(tk.Tk):
         self._set_region(region)
         self._persist_config()
 
+    def _browse_tesseract(self) -> None:
+        selected = filedialog.askopenfilename(
+            parent=self,
+            title="Selecione tesseract.exe",
+            filetypes=(("Executável Tesseract", "tesseract.exe"), ("Executáveis", "*.exe"), ("Todos", "*.*")),
+        )
+        if selected:
+            self.tesseract_path_var.set(selected)
+            self._persist_config()
+
     def _toggle_capture(self) -> None:
         if self.running:
             self._stop_capture("Captura parada pelo usuário.")
@@ -900,12 +936,13 @@ class AutoTraderApp(tk.Tk):
             self._apply_coordinates()
             if self.region is None:
                 return
+        self._persist_config()
         self.detector = None
         if self.ocr_enabled_var.get():
             try:
                 confidence = float(self.confidence_var.get())
-                executable = os.environ.get("TESSERACT_CMD")
-                detector = TesseractSignalDetector(confidence, executable)
+                executable = self.tesseract_path_var.get().strip().strip('"') or find_tesseract_executable()
+                detector = TesseractSignalDetector(confidence, executable or None)
                 detector.check_ready()
                 self.detector = detector
                 self.ocr_status.set(f"OCR ativo · confiança mínima {confidence:.0f}% · apenas candidatos visuais")
@@ -1587,7 +1624,13 @@ class AutoTraderApp(tk.Tk):
             messagebox.showerror(APP_NAME, f"Não foi possível salvar a imagem:\n{exc}", parent=self)
 
     def _persist_config(self) -> None:
-        payload = {"timeframe": self.timeframe_var.get()}
+        payload: dict[str, object] = {
+            "timeframe": self.timeframe_var.get(),
+            "confidence": self.confidence_var.get(),
+            "ocr_enabled": self.ocr_enabled_var.get(),
+            "compact_during_capture": self.compact_during_capture_var.get(),
+            "tesseract_executable": self.tesseract_path_var.get().strip().strip('"'),
+        }
         try:
             timeout_seconds = int(self.demo_activation_timeout_var.get())
             if MIN_DEMO_ACTIVATION_TIMEOUT_SECONDS <= timeout_seconds <= MAX_DEMO_ACTIVATION_TIMEOUT_SECONDS:
@@ -1600,13 +1643,13 @@ class AutoTraderApp(tk.Tk):
         if monitor_index is not None:
             payload["monitor_index"] = monitor_index
         try:
-            self.config_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        except OSError as exc:
+            save_settings(self.config_path, payload)
+        except (OSError, TypeError, ValueError) as exc:
             self.capture_status.set(f"Configuração aplicada, mas não foi possível salvar: {exc}")
 
     def _load_config(self) -> None:
         try:
-            config = json.loads(self.config_path.read_text(encoding="utf-8"))
+            config = load_settings(self.config_path)
             if "region" in config:
                 self._set_region(ScreenRegion.from_dict(config["region"]))
             index = config.get("monitor_index")
@@ -1620,6 +1663,16 @@ class AutoTraderApp(tk.Tk):
             ))
             if MIN_DEMO_ACTIVATION_TIMEOUT_SECONDS <= timeout_seconds <= MAX_DEMO_ACTIVATION_TIMEOUT_SECONDS:
                 self.demo_activation_timeout_var.set(str(timeout_seconds))
+            confidence = config.get("confidence")
+            if confidence is not None:
+                self.confidence_var.set(str(confidence))
+            if isinstance(config.get("ocr_enabled"), bool):
+                self.ocr_enabled_var.set(config["ocr_enabled"])
+            if isinstance(config.get("compact_during_capture"), bool):
+                self.compact_during_capture_var.set(config["compact_during_capture"])
+            tesseract_executable = config.get("tesseract_executable")
+            if isinstance(tesseract_executable, str) and tesseract_executable.strip():
+                self.tesseract_path_var.set(tesseract_executable.strip().strip('"'))
         except FileNotFoundError:
             pass
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
@@ -1629,6 +1682,7 @@ class AutoTraderApp(tk.Tk):
         self._stop_sequence_recording("aplicativo fechado")
         if self.demo_automation_enabled:
             self._toggle_demo_automation()
+        self._persist_config()
         self.running = False
         self.destroy()
 

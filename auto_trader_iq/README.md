@@ -28,10 +28,12 @@ py -3.12 -m venv .venv
 python -m pip install -r .\requirements.txt
 ```
 
-Se a venv já estiver ativa, não crie outra. Caso o Tesseract não esteja no PATH, configure antes de iniciar:
+Crie essa venv uma vez e reutilize-a; não reinstale os pacotes a cada execução. O app detecta automaticamente o caminho padrão `C:\Program Files\Tesseract-OCR\tesseract.exe`. Se a instalação estiver em outro local, informe o executável no campo **Executável Tesseract** da janela; esse caminho e as demais preferências são salvos em `%LOCALAPPDATA%\AutoTraderIQ\config.json` ao alterar as opções, iniciar ou fechar o app. O OCR continua desligado até você habilitá-lo.
+
+O comando `$env:TESSERACT_CMD = ...` vale apenas para a janela atual do PowerShell. Se preferir configurar essa variável permanentemente no usuário, execute uma vez e reinicie o PowerShell/app:
 
 ```powershell
-$env:TESSERACT_CMD = "C:\Program Files\Tesseract-OCR\tesseract.exe"
+[Environment]::SetEnvironmentVariable("TESSERACT_CMD", "C:\Program Files\Tesseract-OCR\tesseract.exe", "User")
 ```
 
 ## Executar e testar
