@@ -1682,7 +1682,9 @@ class AutoTraderApp(tk.Tk):
                     self.last_ocr_at = now
                     self._update_ocr_status(self.last_candidates, len(raw_candidates), len(bars))
                     self._maybe_auto_arm_demo_signal()
-                    self._update_timer_status(now)
+                    # OCR may be slower than one frame; assess freshness after processing,
+                    # not against the frame-start timestamp captured before the OCR work.
+                    self._update_timer_status()
                 except Exception as exc:
                     # Falha do OCR encerra também qualquer modo que poderia clicar.
                     if self.demo_automation_enabled:
