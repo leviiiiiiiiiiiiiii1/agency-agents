@@ -316,13 +316,50 @@ class AutoTraderApp(tk.Tk):
         controls_canvas.bind("<Button-4>", scroll_controls, add="+")
         controls_canvas.bind("<Button-5>", scroll_controls, add="+")
 
-        preview_box = ttk.LabelFrame(body, text="Pré-visualização da região", padding=8)
-        preview_box.pack(side="left", fill="both", expand=True)
-        self.preview = ttk.Label(preview_box, text="Selecione uma região e inicie a visualização.",
-                                 anchor="center")
+        right_pane = ttk.Frame(body)
+        right_pane.pack(side="left", fill="both", expand=True)
+        right_canvas = tk.Canvas(
+            right_pane,
+            highlightthickness=0,
+            borderwidth=0,
+            background=style.lookup("TFrame", "background") or self.cget("background"),
+        )
+        right_scrollbar = ttk.Scrollbar(
+            right_pane, orient="vertical", command=right_canvas.yview
+        )
+        right_canvas.configure(yscrollcommand=right_scrollbar.set)
+        right_canvas.pack(side="left", fill="both", expand=True)
+        right_scrollbar.pack(side="right", fill="y")
+        right_content = ttk.Frame(right_canvas)
+        right_canvas_window = right_canvas.create_window(
+            (0, 0), window=right_content, anchor="nw"
+        )
+        right_content.bind(
+            "<Configure>",
+            lambda _event: right_canvas.configure(scrollregion=right_canvas.bbox("all")),
+        )
+        right_canvas.bind(
+            "<Configure>",
+            lambda event: right_canvas.itemconfigure(right_canvas_window, width=event.width),
+        )
+
+        preview_box = ttk.LabelFrame(right_content, text="Pré-visualização da região", padding=8)
+        preview_box.pack(fill="x")
+        self.preview_viewport = ttk.Frame(preview_box, height=340)
+        self.preview_viewport.pack(fill="x", expand=False)
+        self.preview_viewport.pack_propagate(False)
+        self.preview = ttk.Label(
+            self.preview_viewport,
+            text="Selecione uma região e inicie a visualização.",
+            anchor="center",
+        )
         self.preview.pack(fill="both", expand=True)
 
-        simulation_box = ttk.LabelFrame(preview_box, text="Simulação assistida · cliques experimentais apenas em DEMO", padding=6)
+        simulation_box = ttk.LabelFrame(
+            right_content,
+            text="Simulação assistida · cliques experimentais apenas em DEMO",
+            padding=6,
+        )
         simulation_box.pack(fill="x", pady=(8, 0))
         self.candidate_table = ttk.Treeview(
             simulation_box, columns=("label", "confidence", "position"), show="headings", height=3,
@@ -441,6 +478,33 @@ class AutoTraderApp(tk.Tk):
         ttk.Label(exclusion_row, textvariable=self.exclusion_status).pack(side="left")
         ttk.Label(simulation_box, textvariable=self.demo_status, wraplength=650).pack(anchor="w", pady=(3, 0))
         ttk.Label(simulation_box, textvariable=self.simulation_status, wraplength=650).pack(anchor="w", pady=(4, 0))
+
+        def scroll_right(event: tk.Event) -> str:
+            number = getattr(event, "num", None)
+            if number == 4:
+                right_canvas.yview_scroll(-1, "units")
+            elif number == 5:
+                right_canvas.yview_scroll(1, "units")
+            else:
+                delta = int(getattr(event, "delta", 0))
+                units = int(-delta / 120) if abs(delta) >= 120 else (-1 if delta > 0 else 1)
+                if units:
+                    right_canvas.yview_scroll(units, "units")
+            return "break"
+
+        def bind_right_wheel(widget: tk.Widget) -> None:
+            if isinstance(widget, (ttk.Treeview, ttk.Scrollbar)):
+                return
+            widget.bind("<MouseWheel>", scroll_right, add="+")
+            widget.bind("<Button-4>", scroll_right, add="+")
+            widget.bind("<Button-5>", scroll_right, add="+")
+            for child in widget.winfo_children():
+                bind_right_wheel(child)
+
+        bind_right_wheel(right_content)
+        right_canvas.bind("<MouseWheel>", scroll_right, add="+")
+        right_canvas.bind("<Button-4>", scroll_right, add="+")
+        right_canvas.bind("<Button-5>", scroll_right, add="+")
 
         footer = ttk.Label(self.full_ui, text=f"Configuração, imagens e histórico locais: {self.data_dir}", padding=(18, 0, 18, 12))
         footer.pack(fill="x")
