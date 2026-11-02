@@ -32,6 +32,16 @@ class SimulationWorkflowTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "duplicata"):
             self.workflow.arm(near_duplicate)
 
+    def test_scoped_fingerprint_allows_same_chart_position_in_a_new_m1_candle(self):
+        first = self.workflow.arm(self.candidate, dedupe_scope="23:17")
+        self.workflow.confirm_next_candle()
+        second = self.workflow.arm(self.candidate, dedupe_scope="23:18")
+        self.assertNotEqual(first.fingerprint, second.fingerprint)
+
+        self.workflow.cancel_pending()
+        with self.assertRaisesRegex(ValueError, "duplicata"):
+            self.workflow.arm(self.candidate, dedupe_scope="23:18")
+
     def test_only_one_signal_can_be_pending(self):
         self.workflow.arm(self.candidate)
         sell = SignalCandidate("SELL", 93.0, 300, 200, 40, 18, "VENDER")

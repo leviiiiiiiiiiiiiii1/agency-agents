@@ -143,6 +143,30 @@ def parse_platform_clock_line(
     )
 
 
+def platform_minute_key(reading: PlatformClockReading | None) -> tuple[int, int] | None:
+    """Return the platform-clock M1 candle key, or None for an unreadable clock."""
+    if reading is None:
+        return None
+    return reading.hour, reading.minute
+
+
+class PlatformMinuteTracker:
+    """Assign a session-unique sequence to each observed platform-clock minute."""
+
+    def __init__(self) -> None:
+        self._last_key: tuple[int, int] | None = None
+        self._sequence = -1
+
+    def update(self, reading: PlatformClockReading | None) -> int | None:
+        key = platform_minute_key(reading)
+        if key is None:
+            return None
+        if key != self._last_key:
+            self._last_key = key
+            self._sequence += 1
+        return self._sequence
+
+
 def platform_minute_offset(
     previous: PlatformClockReading | None,
     current: PlatformClockReading | None,

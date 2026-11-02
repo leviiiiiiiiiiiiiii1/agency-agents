@@ -10,7 +10,7 @@ import sys
 import time
 import tkinter as tk
 from pathlib import Path
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageDraw, ImageTk
 
@@ -25,6 +25,7 @@ from .demo_click import (
 from .candle_monitor import detect_candle_bars, filter_to_recent_candle
 from .candle_timer import (
     PlatformClockReading,
+    PlatformMinuteTracker,
     m1_entry_window_open,
     m1_next_candle_entry_window_open,
     platform_minute_advanced,
@@ -43,7 +44,9 @@ APP_NAME = "AUTO TRADER IQ"
 POLL_MS = 500
 OCR_INTERVAL_SECONDS = 1.0
 TIMER_MAX_AGE_SECONDS = 1.5
-DEMO_ACTIVATION_TIMEOUT_SECONDS = 75
+DEFAULT_DEMO_ACTIVATION_TIMEOUT_SECONDS = 75
+MIN_DEMO_ACTIVATION_TIMEOUT_SECONDS = 15
+MAX_DEMO_ACTIVATION_TIMEOUT_SECONDS = 3600
 DEMO_ENTRY_MAX_DELAY_SECONDS = 15.0
 
 
@@ -113,8 +116,14 @@ class AutoTraderApp(tk.Tk):
         self.demo_status = tk.StringVar(value="Cliques DEMO desligados; esta opção nunca é reativada automaticamente.")
         self.demo_automation_enabled = False
         self.demo_account_confirmed = False
-        self.demo_clicks_remaining = 0
         self.demo_timeout_after_id: str | None = None
+        self.demo_activation_timeout_var = tk.StringVar(
+            value=str(DEFAULT_DEMO_ACTIVATION_TIMEOUT_SECONDS)
+        )
+        self.demo_activation_timeout_active = DEFAULT_DEMO_ACTIVATION_TIMEOUT_SECONDS
+        self.demo_entries_this_activation = 0
+        self.demo_minute_tracker = PlatformMinuteTracker()
+        self.last_demo_entry_candle_id: int | None = None
         self.demo_click_targets: dict[str, ClickTarget | None] = {"BUY": None, "SELL": None}
         self.excluded_regions: list[ScreenRegion] = []
         self.compact_mode = False
@@ -259,6 +268,14 @@ class AutoTraderApp(tk.Tk):
         self.history_table.configure(yscrollcommand=history_scrollbar.set)
         self.history_table.pack(side="left", fill="x", expand=True)
         history_scrollbar.pack(side="right", fill="y")
+        history_actions = ttk.Frame(simulation_box)
+        history_actions.pack(fill="x", pady=(3, 0))
+        ttk.Button(
+            history_actions, text="Salvar todas as entradas…", command=self._export_entry_history
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            history_actions, text="Limpar log…", command=self._clear_entry_history
+        ).pack(side="left")
         sim_buttons = ttk.Frame(simulation_box)
         sim_buttons.pack(fill="x", pady=(5, 0))
         ttk.Button(sim_buttons, text="Armar candidato selecionado", command=self._arm_selected_candidate).pack(
@@ -287,6 +304,26 @@ class AutoTraderApp(tk.Tk):
             demo_target_row, text="Calibrar VENDER", command=lambda: self._calibrate_demo_target("SELL")
         ).pack(side="left", padx=(0, 4))
         ttk.Label(demo_target_row, textvariable=self.sell_target_status).pack(side="left")
+        demo_timeout_row = ttk.Frame(simulation_box)
+        demo_timeout_row.pack(fill="x", pady=(3, 0))
+        ttk.Label(
+            demo_timeout_row,
+            text=f"Limite da ativação contínua DEMO ({MIN_DEMO_ACTIVATION_TIMEOUT_SECONDS}–"
+                 f"{MAX_DEMO_ACTIVATION_TIMEOUT_SECONDS} s):",
+        ).pack(side="left", padx=(0, 6))
+        self.demo_timeout_spinbox = ttk.Spinbox(
+            demo_timeout_row,
+            from_=MIN_DEMO_ACTIVATION_TIMEOUT_SECONDS,
+            to=MAX_DEMO_ACTIVATION_TIMEOUT_SECONDS,
+            increment=15,
+            textvariable=self.demo_activation_timeout_var,
+            width=8,
+            command=self._persist_config,
+        )
+        self.demo_timeout_spinbox.pack(side="left")
+        self.demo_timeout_spinbox.bind("<FocusOut>", lambda _event: self._persist_config())
+        self.demo_timeout_spinbox.bind("<Return>", lambda _event: self._persist_config())
+        ttk.Label(demo_timeout_row, text="padrão: 75 s").pack(side="left", padx=(6, 0))
         exclusion_row = ttk.Frame(simulation_box)
         exclusion_row.pack(fill="x", pady=(3, 0))
         ttk.Button(
@@ -575,7 +612,20 @@ class AutoTraderApp(tk.Tk):
             messagebox.showinfo(APP_NAME, "Inicie a captura com OCR ativo antes de habilitar cliques DEMO.", parent=self)
             return
         if self.timeframe_var.get() != "M1":
-            messagebox.showinfo(APP_NAME, "O teste automático de clique desta etapa está limitado ao período M1.", parent=self)
+            messagebox.showinfo(APP_NAME, "A automação contínua de clique DEMO está limitada ao período M1.", parent=self)
+            return
+        try:
+            activation_timeout = int(self.demo_activation_timeout_var.get())
+        except (TypeError, ValueError):
+            messagebox.showerror(APP_NAME, "Informe o limite da ativação DEMO em segundos.", parent=self)
+            return
+        if not MIN_DEMO_ACTIVATION_TIMEOUT_SECONDS <= activation_timeout <= MAX_DEMO_ACTIVATION_TIMEOUT_SECONDS:
+            messagebox.showerror(
+                APP_NAME,
+                f"O limite precisa estar entre {MIN_DEMO_ACTIVATION_TIMEOUT_SECONDS} e "
+                f"{MAX_DEMO_ACTIVATION_TIMEOUT_SECONDS} segundos.",
+                parent=self,
+            )
             return
         if self.simulation.pending is not None:
             messagebox.showinfo(APP_NAME, "Cancele o sinal pendente antes de habilitar cliques DEMO.", parent=self)
@@ -599,30 +649,30 @@ class AutoTraderApp(tk.Tk):
             return
         consent = messagebox.askyesno(
             APP_NAME,
-            "ATENÇÃO — cliques experimentais em conta DEMO.\n\n"
-            "Confirme que a plataforma está na conta DEMO e que valor/expiração já foram conferidos. "
-            "O AUTO TRADER não consegue verificar o tipo de conta nem os valores configurados.\n\n"
-            "Nesta ativação, o OCR arma automaticamente apenas um candidato inequívoco e o app tenta clicar "
-            f"imediatamente, em até {DEMO_ENTRY_MAX_DELAY_SECONDS:.0f} s do armamento, somente se HORA ATUAL estiver "
-            "em 00–30 s. Não espera a virada para N+1; a entrada pode ocorrer ainda na vela N. "
-            "A identidade da vela não é verificada visualmente. "
-            f"O modo desliga após um clique ou após {DEMO_ACTIVATION_TIMEOUT_SECONDS} s. "
-            "Se a conta não estiver em DEMO, o clique poderá enviar uma ordem real.\n\n"
-            "Ativar este teste agora?",
+            "ATENÇÃO — cliques automáticos somente em conta DEMO.\n\n"
+            "Confirme que a plataforma está na conta DEMO e que valor/expiração foram conferidos. "
+            "O app não consegue verificar o tipo de conta nem os valores.\n\n"
+            "A ativação contínua pode enviar no máximo uma entrada por vela M1, somente até HORA ATUAL :30. "
+            f"Cada sinal único tenta clicar em até {DEMO_ENTRY_MAX_DELAY_SECONDS:.0f} s do armamento, sem esperar N+1. "
+            f"Ficará ativa por {activation_timeout} s ou até você pará-la; sinais repetidos na mesma vela são bloqueados. "
+            "A identidade da vela e a aceitação da ordem não são verificadas visualmente.\n\n"
+            "Se a conta não estiver em DEMO, o clique poderá enviar uma ordem real. Ativar agora?",
             parent=self,
         )
         if not consent:
             return
         self.demo_automation_enabled = True
         self.demo_account_confirmed = True
-        self.demo_clicks_remaining = 1
+        self.demo_activation_timeout_active = activation_timeout
+        self.demo_entries_this_activation = 0
         self.demo_timeout_after_id = self.after(
-            DEMO_ACTIVATION_TIMEOUT_SECONDS * 1000, self._expire_demo_activation
+            activation_timeout * 1000, self._expire_demo_activation
         )
+        self._persist_config()
         self._update_demo_toggle_text()
         self.demo_status.set(
-            f"CLIQUE DEMO ATIVO por até {DEMO_ACTIVATION_TIMEOUT_SECONDS} s: aguardando um candidato OCR inequívoco; "
-            f"após armamento, tentará clicar em até {DEMO_ENTRY_MAX_DELAY_SECONDS:.0f} s se HORA ATUAL ≤30 s, sem esperar N+1."
+            f"CLIQUE DEMO CONTÍNUO ATIVO por {activation_timeout} s: no máximo uma entrada por vela M1; "
+            f"cada clique exige sinal único, limite de {DEMO_ENTRY_MAX_DELAY_SECONDS:.0f} s e HORA ATUAL ≤:30."
         )
 
     def _maybe_auto_arm_demo_signal(self) -> None:
@@ -631,36 +681,56 @@ class AutoTraderApp(tk.Tk):
             or not self.running
             or self.detector is None
             or self.timeframe_var.get() != "M1"
-            or self.demo_clicks_remaining <= 0
             or self.simulation.pending is not None
         ):
             return
         now = time.monotonic()
+        clock = self.latest_platform_clock
         if (
-            self.latest_platform_clock is None
+            clock is None
             or self.latest_clock_at is None
             or now - self.latest_clock_at > TIMER_MAX_AGE_SECONDS
         ):
             self.demo_status.set("DEMO aguardando leitura recente e confiável de HORA ATUAL; nenhum clique será feito.")
             return
+        current_candle_id = self.demo_minute_tracker.update(clock)
+        if current_candle_id is None:
+            return
         candidates = list(self.candidates_by_id.values())
         if len(candidates) != 1:
             if len(candidates) > 1:
-                self.demo_status.set("DEMO bloqueado: há mais de um candidato OCR; revise o gráfico.")
+                self.demo_status.set("DEMO contínuo pausado nesta leitura: há mais de um candidato OCR.")
             return
         candidate = candidates[0]
-        if self.demo_signal_guard.blocks(candidate):
-            self._deactivate_demo_automation()
+        if self.last_demo_entry_candle_id == current_candle_id:
+            self.demo_signal_guard.mark_consumed(
+                candidate.direction, candidate.left, candidate.top
+            )
             self.demo_status.set(
-                "DEMO desligado: este sinal já recebeu uma entrada. Aguarde 30 s e o rótulo desaparecer "
-                "por 3 leituras OCR consecutivas antes de reativar."
+                f"DEMO ativo: já houve uma entrada na vela {clock.hour:02d}:{clock.minute:02d}; "
+                "aguardando a próxima vela M1."
+            )
+            return
+        if not m1_entry_window_open(clock, max_elapsed_seconds=30):
+            self.demo_signal_guard.mark_consumed(
+                candidate.direction, candidate.left, candidate.top
+            )
+            self.demo_status.set(
+                f"DEMO ativo: HORA ATUAL {clock.hour:02d}:{clock.minute:02d}:{clock.second:02d} passou de :30; "
+                "este sinal foi descartado sem clique, aguardando um próximo sinal elegível."
+            )
+            return
+        if self.demo_signal_guard.blocks(candidate):
+            self.demo_status.set(
+                "DEMO ativo: este sinal já foi consumido; aguardando outro sinal. "
+                "A trava por sinal evita reentradas."
             )
             return
         try:
-            pending = self.simulation.arm(candidate)
+            pending = self.simulation.arm(candidate, dedupe_scope=str(current_candle_id))
         except ValueError:
             return
-        self.pending_armed_clock = self.latest_platform_clock
+        self.pending_armed_clock = clock
         self.pending_rollover_notified = False
         self.demo_signal_armed_at = time.monotonic()
         label = "COMPRA" if pending.direction == "BUY" else "VENDER"
@@ -670,8 +740,8 @@ class AutoTraderApp(tk.Tk):
         )
         persistence_note = f" Histórico não gravado: {error}" if error else ""
         self.demo_status.set(
-            f"DEMO: {label} armado automaticamente ({pending.confidence:.0f}%). Tentando clicar agora; "
-            f"limite de {DEMO_ENTRY_MAX_DELAY_SECONDS:.0f} s e HORA ATUAL ≤30 s, sem esperar N+1.{persistence_note}"
+            f"DEMO: {label} armado automaticamente ({pending.confidence:.0f}%). Tentando clicar em até "
+            f"{DEMO_ENTRY_MAX_DELAY_SECONDS:.0f} s; no máximo uma entrada nesta vela M1.{persistence_note}"
         )
         self._refresh_simulation_buttons()
         self._execute_demo_click()
@@ -688,17 +758,17 @@ class AutoTraderApp(tk.Tk):
     def _execute_demo_click(self) -> None:
         pending = self.simulation.pending
         clock = self.latest_platform_clock
-        if not self.demo_automation_enabled or self.demo_clicks_remaining <= 0 or pending is None:
+        if not self.demo_automation_enabled or pending is None:
             return
         now = time.monotonic()
         if not demo_entry_deadline_open(
             self.demo_signal_armed_at, now, DEMO_ENTRY_MAX_DELAY_SECONDS
         ):
-            self._deactivate_demo_automation()
+            self.demo_signal_guard.mark_consumed(pending.direction, pending.x, pending.y)
             self._cancel_pending_simulation()
             self.demo_status.set(
-                f"DEMO cancelado: passou o limite de {DEMO_ENTRY_MAX_DELAY_SECONDS:.0f} s desde o armamento; "
-                "nenhum clique foi tentado."
+                f"Sinal descartado: passou o limite de {DEMO_ENTRY_MAX_DELAY_SECONDS:.0f} s sem clique; "
+                "modo contínuo segue aguardando outro sinal."
             )
             return
         if (
@@ -708,13 +778,14 @@ class AutoTraderApp(tk.Tk):
         ):
             self._deactivate_demo_automation()
             self._cancel_pending_simulation()
-            self.demo_status.set("DEMO bloqueado: HORA ATUAL ausente ou desatualizada; nenhum clique foi tentado.")
+            self.demo_status.set("DEMO pausado: HORA ATUAL ausente ou desatualizada; nenhum clique foi tentado.")
             return
         if not m1_entry_window_open(clock, max_elapsed_seconds=30):
-            self._deactivate_demo_automation()
+            self.demo_signal_guard.mark_consumed(pending.direction, pending.x, pending.y)
             self._cancel_pending_simulation()
             self.demo_status.set(
-                "DEMO bloqueado: HORA ATUAL passou de 30 s; nenhuma entrada será enviada."
+                "Sinal descartado porque HORA ATUAL passou de :30; nenhum clique. "
+                "Modo contínuo segue ativo para um sinal novo elegível."
             )
             return
         target = self.demo_click_targets[pending.direction]
@@ -727,6 +798,8 @@ class AutoTraderApp(tk.Tk):
             self.demo_status.set("DEMO bloqueado: botão não está fora da captura/ocultado, ou está coberto pela janela do app.")
             self._cancel_pending_simulation()
             return
+        self.demo_entries_this_activation += 1
+        self.last_demo_entry_candle_id = self.demo_minute_tracker.update(clock)
         try:
             click_demo_direction(
                 pending.direction,
@@ -739,13 +812,11 @@ class AutoTraderApp(tk.Tk):
             entry = self.simulation.confirm_next_candle()
         except Exception as exc:
             # A falha pode ter ocorrido depois de o sistema operacional enviar o clique;
-            # nunca tentar novamente automaticamente para não duplicar uma operação.
+            # nunca repetir ou seguir clicando após um resultado incerto.
             if self.simulation.pending is not None:
                 try:
                     failed = self.simulation.cancel_pending()
-                    self.demo_signal_guard.mark_entered(
-                        failed.direction, failed.x, failed.y
-                    )
+                    self.demo_signal_guard.mark_consumed(failed.direction, failed.x, failed.y)
                     self._record_simulation_event(
                         "clique_demo_inconclusivo", direction=failed.direction,
                         observed_text=failed.observed_text, confidence=failed.confidence,
@@ -756,7 +827,8 @@ class AutoTraderApp(tk.Tk):
             self._clear_pending_clock_observation()
             self._deactivate_demo_automation()
             self.demo_status.set(
-                f"Resultado do clique DEMO incerto ({exc}); não houve nova tentativa. Verifique a plataforma."
+                f"Resultado do clique DEMO incerto ({exc}); automação encerrada para evitar repetição. "
+                "Verifique a plataforma antes de reativar."
             )
             self._refresh_simulation_buttons()
             return
@@ -771,21 +843,19 @@ class AutoTraderApp(tk.Tk):
             "", 0, iid=f"demo-{entry.signal_id}",
             values=(time_text, label, "DEMO · CLIQUE ENVIADO · até 15 s do armamento"),
         )
-        self.demo_signal_guard.mark_entered(
+        self.demo_signal_guard.mark_consumed(
             entry.direction, entry.signal_x, entry.signal_y
         )
         self._clear_pending_clock_observation()
-        self._deactivate_demo_automation()
         persistence_note = f" Histórico local não gravado: {log_error}" if log_error else ""
         self.demo_status.set(
-            f"Clique {label} enviado às {time_text}, dentro de {DEMO_ENTRY_MAX_DELAY_SECONDS:.0f} s do armamento; "
-            "aceitação pela plataforma não verificada. Esse rótulo fica bloqueado por pelo menos 30 s e até sumir "
-            "por 3 leituras OCR consecutivas. "
-            f"Ativação encerrada após um clique.{persistence_note}"
+            f"Clique {label} enviado às {time_text}; uma entrada nesta vela M1. "
+            "O modo continua ativo para novos sinais, mas este sinal fica bloqueado. "
+            f"Prazo restante: até {self.demo_activation_timeout_active} s desde a ativação.{persistence_note}"
         )
         self.simulation_status.set(
-            "Tentativa DEMO registrada após clique; identidade da vela e aceitação pela plataforma não verificadas. "
-            f"Histórico desta sessão: {len(self.simulation.entries)} tentativa(s)."
+            "Tentativa DEMO registrada; identidade da vela e aceitação pela plataforma não verificadas. "
+            f"Entradas nesta ativação: {self.demo_entries_this_activation}."
         )
         self._refresh_simulation_buttons()
 
@@ -793,18 +863,18 @@ class AutoTraderApp(tk.Tk):
         self.demo_timeout_after_id = None
         if not self.demo_automation_enabled:
             return
+        timeout = self.demo_activation_timeout_active
+        entries = self.demo_entries_this_activation
         self._deactivate_demo_automation()
         if self.simulation.pending is not None:
             self._cancel_pending_simulation()
         self.demo_status.set(
-            f"Teste DEMO expirou após {DEMO_ACTIVATION_TIMEOUT_SECONDS} s sem clique; "
-            "nenhuma nova tentativa será feita."
+            f"Ativação DEMO encerrada pelo limite de {timeout} s; {entries} entrada(s) tentada(s)."
         )
 
     def _deactivate_demo_automation(self) -> None:
         self.demo_automation_enabled = False
         self.demo_account_confirmed = False
-        self.demo_clicks_remaining = 0
         if self.demo_timeout_after_id is not None:
             try:
                 self.after_cancel(self.demo_timeout_after_id)
@@ -919,6 +989,8 @@ class AutoTraderApp(tk.Tk):
                 try:
                     raw_candidates, self.latest_platform_clock = self.detector.detect_frame(image)
                     self.latest_clock_at = now if self.latest_platform_clock is not None else None
+                    if self.latest_platform_clock is not None:
+                        self.demo_minute_tracker.update(self.latest_platform_clock)
                     self._observe_pending_platform_minute()
                     bars = detect_candle_bars(image)
                     self.latest_bar_count = len(bars)
@@ -1106,6 +1178,51 @@ class AutoTraderApp(tk.Tk):
             self.candidate_table.selection_set(main_id)
         if compact_id in self.candidates_by_id:
             self.compact_candidate_table.selection_set(compact_id)
+
+    def _export_entry_history(self) -> None:
+        destination = filedialog.asksaveasfilename(
+            parent=self,
+            title="Salvar todas as entradas",
+            defaultextension=".csv",
+            initialfile="auto_trader_iq_entries.csv",
+            filetypes=(("CSV", "*.csv"), ("Todos os arquivos", "*.*")),
+        )
+        if not destination:
+            return
+        try:
+            count = self.simulation_history.export_entries_csv(Path(destination))
+        except (OSError, UnicodeError, csv.Error, ValueError) as exc:
+            messagebox.showerror(APP_NAME, f"Não foi possível exportar as entradas:\n{exc}", parent=self)
+            return
+        messagebox.showinfo(
+            APP_NAME,
+            f"{count} entrada(s) exportada(s) para:\n{destination}",
+            parent=self,
+        )
+
+    def _clear_entry_history(self) -> None:
+        if self.demo_automation_enabled:
+            messagebox.showinfo(
+                APP_NAME, "Pare os cliques DEMO antes de limpar o log.", parent=self
+            )
+            return
+        if not messagebox.askyesno(
+            APP_NAME,
+            "Isso apagará permanentemente o CSV local com entradas e eventos. "
+            "Use ‘Salvar todas as entradas’ antes, se quiser manter uma cópia. Continuar?",
+            parent=self,
+        ):
+            return
+        try:
+            self.simulation_history.clear()
+        except OSError as exc:
+            messagebox.showerror(APP_NAME, f"Não foi possível apagar o log:\n{exc}", parent=self)
+            return
+        for item_id in self.history_table.get_children():
+            self.history_table.delete(item_id)
+        self.simulation_status.set(
+            "Log local apagado. As travas de segurança contra sinal repetido continuam ativas."
+        )
 
     def _load_persisted_simulation_history(self) -> None:
         try:
@@ -1404,7 +1521,7 @@ class AutoTraderApp(tk.Tk):
         elif self.demo_automation_enabled:
             self.timer_status.set(
                 f"M1: HORA ATUAL {platform_clock.hour:02d}:{platform_clock.minute:02d}:"
-                f"{platform_clock.second:02d}; clique DEMO até {DEMO_ENTRY_MAX_DELAY_SECONDS:.0f} s após armar, só até +30 s."
+                f"{platform_clock.second:02d}; contínuo: no máximo uma entrada nesta vela, só até :30."
             )
         elif 0 <= elapsed <= 30:
             self.timer_status.set(
@@ -1471,6 +1588,12 @@ class AutoTraderApp(tk.Tk):
 
     def _persist_config(self) -> None:
         payload = {"timeframe": self.timeframe_var.get()}
+        try:
+            timeout_seconds = int(self.demo_activation_timeout_var.get())
+            if MIN_DEMO_ACTIVATION_TIMEOUT_SECONDS <= timeout_seconds <= MAX_DEMO_ACTIVATION_TIMEOUT_SECONDS:
+                payload["demo_activation_timeout_seconds"] = timeout_seconds
+        except (AttributeError, TypeError, ValueError):
+            pass
         if self.region is not None:
             payload["region"] = self.region.as_mss_dict()
         monitor_index = self._selected_monitor_index()
@@ -1492,6 +1615,11 @@ class AutoTraderApp(tk.Tk):
             timeframe = config.get("timeframe")
             if timeframe in {"M1", "M5", "M15", "M30"}:
                 self.timeframe_var.set(timeframe)
+            timeout_seconds = int(config.get(
+                "demo_activation_timeout_seconds", DEFAULT_DEMO_ACTIVATION_TIMEOUT_SECONDS
+            ))
+            if MIN_DEMO_ACTIVATION_TIMEOUT_SECONDS <= timeout_seconds <= MAX_DEMO_ACTIVATION_TIMEOUT_SECONDS:
+                self.demo_activation_timeout_var.set(str(timeout_seconds))
         except FileNotFoundError:
             pass
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:

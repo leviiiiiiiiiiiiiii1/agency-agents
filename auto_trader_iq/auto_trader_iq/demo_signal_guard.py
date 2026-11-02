@@ -15,7 +15,7 @@ class _ConsumedSignal:
     direction: str
     left: int
     top: int
-    entered_at: float
+    consumed_at: float
     missing_observations: int = 0
 
     def matches(self, candidate: SignalCandidate, tolerance_x: int, tolerance_y: int) -> bool:
@@ -27,7 +27,7 @@ class _ConsumedSignal:
 
 
 class DemoSignalRepeatGuard:
-    """Latch a successfully entered signal until its OCR tag disappears.
+    """Latch a consumed signal until its OCR tag disappears.
 
     OCR coordinate jitter is tolerated. A consumed signal stays locked for at
     least 30 seconds, and also until several consecutive OCR updates no longer
@@ -56,20 +56,20 @@ class DemoSignalRepeatGuard:
         self.missing_observations_to_release = missing_observations_to_release
         self._consumed: list[_ConsumedSignal] = []
 
-    def mark_entered(
-        self, direction: str, left: int, top: int, *, entered_at: float | None = None
+    def mark_consumed(
+        self, direction: str, left: int, top: int, *, consumed_at: float | None = None
     ) -> None:
-        """Remember a signal only after its DEMO click was sent."""
-        observed_at = time.monotonic() if entered_at is None else entered_at
+        """Remember a signal after entry or after it expires without an entry."""
+        observed_at = time.monotonic() if consumed_at is None else consumed_at
         if not math.isfinite(observed_at):
-            raise ValueError("O instante de entrada precisa ser finito.")
+            raise ValueError("O instante de consumo precisa ser finito.")
         for signal in self._consumed:
             if (
                 signal.direction == direction
                 and abs(signal.left - left) <= self.tolerance_x
                 and abs(signal.top - top) <= self.tolerance_y
             ):
-                signal.entered_at = max(signal.entered_at, observed_at)
+                signal.consumed_at = max(signal.consumed_at, observed_at)
                 signal.missing_observations = 0
                 return
         self._consumed.append(_ConsumedSignal(direction, left, top, observed_at))
@@ -89,7 +89,7 @@ class DemoSignalRepeatGuard:
                 retained.append(signal)
                 continue
             signal.missing_observations += 1
-            lock_elapsed = observed_at - signal.entered_at
+            lock_elapsed = observed_at - signal.consumed_at
             can_release = (
                 signal.missing_observations >= self.missing_observations_to_release
                 and lock_elapsed >= self.minimum_lock_seconds

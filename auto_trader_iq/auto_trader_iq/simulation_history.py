@@ -1,4 +1,4 @@
-"""Local-only append-only audit log for assisted simulation events."""
+"""Local-only CSV audit log for assisted simulation events and entries."""
 
 from __future__ import annotations
 
@@ -70,6 +70,29 @@ class SimulationHistoryStore:
                     "" if clock_confidence is None else f"{clock_confidence:.1f}"
                 ),
             })
+
+    def export_entries_csv(self, destination: Path) -> int:
+        """Write all persisted entry rows to a separate CSV file and return their count."""
+        target = Path(destination)
+        if target.resolve() == self.path.resolve():
+            raise ValueError("A exportação não pode sobrescrever o histórico original.")
+        rows: list[dict[str, str]] = []
+        if self.path.exists():
+            with self.path.open("r", newline="", encoding="utf-8") as handle:
+                rows = [
+                    row for row in csv.DictReader(handle)
+                    if row.get("event") in {"entrada_simulada", "entrada_demo_clicada"}
+                ]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=self.FIELDNAMES)
+            writer.writeheader()
+            writer.writerows(rows)
+        return len(rows)
+
+    def clear(self) -> None:
+        """Permanently remove the local event log if it exists."""
+        self.path.unlink(missing_ok=True)
 
     def load_recent_entries(self, limit: int = 20) -> list[dict[str, str]]:
         """Return the latest persisted simulated entries for the UI table."""

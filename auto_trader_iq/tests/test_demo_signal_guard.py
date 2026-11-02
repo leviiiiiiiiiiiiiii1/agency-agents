@@ -9,9 +9,9 @@ class DemoSignalRepeatGuardTests(unittest.TestCase):
     def candidate(direction="BUY", left=300, top=200):
         return SignalCandidate(direction, 95.0, left, top, 40, 20, "COMPRA")
 
-    def test_blocks_same_entered_signal_with_small_ocr_coordinate_jitter(self):
+    def test_blocks_same_consumed_signal_with_small_ocr_coordinate_jitter(self):
         guard = DemoSignalRepeatGuard()
-        guard.mark_entered("BUY", 300, 200)
+        guard.mark_consumed("BUY", 300, 200)
 
         self.assertTrue(guard.blocks(self.candidate(left=385, top=245)))
         self.assertFalse(guard.blocks(self.candidate("SELL", left=300, top=200)))
@@ -19,7 +19,7 @@ class DemoSignalRepeatGuardTests(unittest.TestCase):
     def test_requires_thirty_seconds_and_three_missing_reads_before_release(self):
         guard = DemoSignalRepeatGuard()
         entered = self.candidate()
-        guard.mark_entered(entered.direction, entered.left, entered.top, entered_at=100.0)
+        guard.mark_consumed(entered.direction, entered.left, entered.top, consumed_at=100.0)
 
         guard.observe([], now=101.0)
         guard.observe([self.candidate(left=310, top=205)], now=102.0)
@@ -33,7 +33,7 @@ class DemoSignalRepeatGuardTests(unittest.TestCase):
 
     def test_a_distinct_direction_or_distant_signal_is_not_blocked(self):
         guard = DemoSignalRepeatGuard()
-        guard.mark_entered("BUY", 300, 200)
+        guard.mark_consumed("BUY", 300, 200)
 
         self.assertFalse(guard.blocks(self.candidate("SELL", 300, 200)))
         self.assertFalse(guard.blocks(self.candidate("BUY", 500, 200)))

@@ -65,6 +65,36 @@ class SimulationHistoryStoreTests(unittest.TestCase):
             rows = list(csv.DictReader(handle))
         self.assertEqual(len(rows), 2)
 
+    def test_export_writes_all_entry_events_without_intermediate_events(self):
+        self.append("sinal_armado")
+        self.append("entrada_simulada", direction="BUY")
+        self.append("entrada_demo_clicada", direction="SELL")
+        self.append("simulacao_cancelada")
+        destination = Path(self.temp_dir.name) / "exports" / "entries.csv"
+
+        count = self.store.export_entries_csv(destination)
+
+        with destination.open("r", newline="", encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+        self.assertEqual(count, 2)
+        self.assertEqual(
+            [row["event"] for row in rows],
+            ["entrada_simulada", "entrada_demo_clicada"],
+        )
+
+    def test_export_refuses_to_overwrite_original_history(self):
+        self.append("entrada_demo_clicada")
+        with self.assertRaisesRegex(ValueError, "sobrescrever"):
+            self.store.export_entries_csv(self.path)
+        self.assertEqual(len(self.store.load_recent_entries()), 1)
+
+    def test_clear_removes_persisted_history_and_is_idempotent(self):
+        self.append("entrada_demo_clicada")
+        self.store.clear()
+        self.store.clear()
+        self.assertFalse(self.path.exists())
+        self.assertEqual(self.store.load_recent_entries(), [])
+
     def test_recent_entries_includes_demo_click_but_ignores_other_events(self):
         self.append("sinal_armado_demo")
         self.append("entrada_demo_clicada", direction="SELL", elapsed=15)
