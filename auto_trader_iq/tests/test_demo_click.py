@@ -5,7 +5,6 @@ from unittest.mock import Mock
 from auto_trader_iq.demo_click import (
     ClickTarget,
     click_demo_direction,
-    demo_entry_deadline_open,
     windows_mouse_click,
     windows_mouse_position,
     windows_window_at_point,
@@ -13,19 +12,6 @@ from auto_trader_iq.demo_click import (
 
 
 class DemoClickTests(unittest.TestCase):
-    def test_demo_entry_deadline_allows_at_most_fifteen_seconds_from_arm(self):
-        self.assertTrue(demo_entry_deadline_open(50.0, 50.0))
-        self.assertTrue(demo_entry_deadline_open(50.0, 65.0))
-        self.assertFalse(demo_entry_deadline_open(50.0, 65.001))
-        self.assertFalse(demo_entry_deadline_open(50.0, 49.9))
-        self.assertFalse(demo_entry_deadline_open(None, 51.0))
-        self.assertFalse(demo_entry_deadline_open(50.0, float("nan")))
-
-    def test_configurable_deadline_can_be_shorter_than_the_default(self):
-        self.assertTrue(demo_entry_deadline_open(20.0, 24.0, max_delay_seconds=5.0))
-        self.assertTrue(demo_entry_deadline_open(20.0, 25.0, max_delay_seconds=5.0))
-        self.assertFalse(demo_entry_deadline_open(20.0, 25.001, max_delay_seconds=5.0))
-
     def test_direction_maps_only_to_calibrated_target(self):
         clicker = Mock()
         buy = ClickTarget(100, 200)

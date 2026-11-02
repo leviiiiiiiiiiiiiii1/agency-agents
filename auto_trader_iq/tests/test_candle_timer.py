@@ -7,6 +7,7 @@ from auto_trader_iq.candle_timer import (
     m1_next_candle_entry_window_open,
     parse_platform_clock,
     parse_platform_clock_line,
+    platform_clock_elapsed_seconds,
     platform_minute_advanced,
     platform_minute_key,
     platform_minute_offset,
@@ -132,6 +133,30 @@ class PlatformMinuteTransitionTests(unittest.TestCase):
         # A repeated HH:MM after a full platform-clock cycle is still a new candle.
         self.assertEqual(tracker.update(self.clock(23, 59, 0)), 3)
         self.assertEqual(tracker.update(self.clock(23, 59, 59)), 3)
+
+    def test_platform_clock_elapsed_seconds_uses_platform_readings(self):
+        self.assertEqual(
+            platform_clock_elapsed_seconds(self.clock(12, 0, 10), self.clock(12, 0, 15)),
+            5,
+        )
+        self.assertEqual(
+            platform_clock_elapsed_seconds(self.clock(12, 0, 58), self.clock(12, 1, 3)),
+            5,
+        )
+        self.assertEqual(
+            platform_clock_elapsed_seconds(self.clock(23, 59, 58), self.clock(0, 0, 2)),
+            4,
+        )
+
+    def test_platform_clock_elapsed_seconds_rejects_invalid_clock_progression(self):
+        self.assertIsNone(
+            platform_clock_elapsed_seconds(self.clock(12, 0, 20), self.clock(12, 0, 19))
+        )
+        self.assertIsNone(
+            platform_clock_elapsed_seconds(self.clock(12, 0, 58), self.clock(12, 2, 3))
+        )
+        self.assertIsNone(platform_clock_elapsed_seconds(None, self.clock(12, 0, 21)))
+        self.assertIsNone(platform_clock_elapsed_seconds(self.clock(12, 0, 20), None))
 
     def test_minute_offset_distinguishes_waiting_from_n_plus_one_and_skips(self):
         armed = self.clock(23, 14, 40)

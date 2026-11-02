@@ -179,6 +179,20 @@ def platform_minute_offset(
     return (current_minute - previous_minute) % (24 * 60)
 
 
+def platform_clock_elapsed_seconds(
+    previous: PlatformClockReading | None,
+    current: PlatformClockReading | None,
+) -> int | None:
+    """Return elapsed whole seconds between HORA ATUAL readings, or None on a jump/backstep."""
+    offset = platform_minute_offset(previous, current)
+    if previous is None or current is None or offset not in {0, 1}:
+        return None
+    if offset == 0:
+        elapsed = current.second - previous.second
+        return elapsed if elapsed >= 0 else None
+    return 60 - previous.second + current.second
+
+
 def platform_minute_advanced(
     previous: PlatformClockReading | None,
     current: PlatformClockReading | None,

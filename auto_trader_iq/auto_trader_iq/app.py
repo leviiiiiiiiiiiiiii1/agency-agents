@@ -18,7 +18,6 @@ from .capture import ScreenCapture, ScreenRegion
 from .demo_click import (
     ClickTarget,
     click_demo_direction,
-    demo_entry_deadline_open,
     windows_mouse_click,
     windows_mouse_position,
     windows_window_at_point,
@@ -29,6 +28,7 @@ from .candle_timer import (
     PlatformMinuteTracker,
     m1_entry_window_open,
     m1_next_candle_entry_window_open,
+    platform_clock_elapsed_seconds,
     platform_minute_advanced,
     platform_minute_offset,
 )
@@ -110,7 +110,6 @@ class AutoTraderApp(tk.Tk):
         self.latest_clock_at: float | None = None
         self.pending_armed_clock: PlatformClockReading | None = None
         self.pending_rollover_notified = False
-        self.demo_signal_armed_at: float | None = None
         self.latest_bar_count = 0
         self.sequence_recorder = SequenceRecorder(self.data_dir / "sequences")
         self.sequence_status = tk.StringVar(value="Gravação de teste inativa; nenhuma imagem está sendo salva.")
@@ -890,7 +889,8 @@ class AutoTraderApp(tk.Tk):
             "Confirme que a plataforma está na conta DEMO e que valor/expiração foram conferidos. "
             "O app não consegue verificar o tipo de conta nem os valores.\n\n"
             "A ativação contínua pode enviar no máximo uma entrada por vela M1, somente até HORA ATUAL :30. "
-            f"Cada sinal único tenta clicar imediatamente; após {entry_deadline} s sem clique o sinal é cancelado. "
+            f"Cada sinal único tenta clicar imediatamente; o limite de {entry_deadline} s é medido pela HORA ATUAL "
+            "entre o armamento e o clique, sem espera deliberada. "
             "Esse prazo não é uma espera antes da entrada. Não espera N+1. "
             f"Ficará ativa por {activation_timeout} s ou até você pará-la; sinais repetidos na mesma vela são bloqueados. "
             "A identidade da vela e a aceitação da ordem não são verificadas visualmente.\n\n"
@@ -971,7 +971,6 @@ class AutoTraderApp(tk.Tk):
             return
         self.pending_armed_clock = clock
         self.pending_rollover_notified = False
-        self.demo_signal_armed_at = time.monotonic()
         label = "COMPRA" if pending.direction == "BUY" else "VENDER"
         error = self._record_simulation_event(
             "sinal_armado_demo", direction=pending.direction, observed_text=pending.observed_text,
@@ -979,8 +978,8 @@ class AutoTraderApp(tk.Tk):
         )
         persistence_note = f" Histórico não gravado: {error}" if error else ""
         self.demo_status.set(
-            f"DEMO: {label} armado automaticamente ({pending.confidence:.0f}%). Tentando clicar em até "
-            f"{self.demo_entry_deadline_active:.0f} s; no máximo uma entrada nesta vela M1.{persistence_note}"
+            f"DEMO: {label} armado automaticamente ({pending.confidence:.0f}%). Tentativa imediata; limite de "
+            f"{self.demo_entry_deadline_active:.0f} s pela HORA ATUAL. No máximo uma entrada nesta vela M1.{persistence_note}"
         )
         self._refresh_simulation_buttons()
         self._execute_demo_click()
@@ -1001,16 +1000,6 @@ class AutoTraderApp(tk.Tk):
         if not self.demo_automation_enabled or pending is None:
             return
         now = time.monotonic()
-        if not demo_entry_deadline_open(
-            self.demo_signal_armed_at, now, self.demo_entry_deadline_active
-        ):
-            self.demo_signal_guard.mark_consumed(pending.direction, pending.x, pending.y)
-            self._cancel_pending_simulation()
-            self.demo_status.set(
-                f"Sinal descartado: passou o limite de {self.demo_entry_deadline_active:.0f} s sem clique; "
-                "modo contínuo segue aguardando outro sinal."
-            )
-            return
         if (
             clock is None
             or self.latest_clock_at is None
@@ -1019,6 +1008,22 @@ class AutoTraderApp(tk.Tk):
             self._deactivate_demo_automation()
             self._cancel_pending_simulation()
             self.demo_status.set("DEMO pausado: HORA ATUAL ausente ou desatualizada; nenhum clique foi tentado.")
+            return
+        elapsed = platform_clock_elapsed_seconds(self.pending_armed_clock, clock)
+        if elapsed is None or elapsed > self.demo_entry_deadline_active:
+            self.demo_signal_guard.mark_consumed(pending.direction, pending.x, pending.y)
+            self._cancel_pending_simulation()
+            if elapsed is None:
+                reason = "HORA ATUAL avançou de forma inválida desde o armamento"
+            else:
+                reason = (
+                    f"passaram {elapsed} s desde o armamento, acima do limite de "
+                    f"{self.demo_entry_deadline_active:.0f} s de HORA ATUAL"
+                )
+            self.demo_status.set(
+                f"Sinal descartado: {reason}; nenhum clique. "
+                "Modo contínuo segue aguardando outro sinal."
+            )
             return
         if not m1_entry_window_open(clock, max_elapsed_seconds=30):
             self.demo_signal_guard.mark_consumed(pending.direction, pending.x, pending.y)
@@ -1622,7 +1627,6 @@ class AutoTraderApp(tk.Tk):
     def _clear_pending_clock_observation(self) -> None:
         self.pending_armed_clock = None
         self.pending_rollover_notified = False
-        self.demo_signal_armed_at = None
 
     def _confirm_next_candle(self) -> None:
         elapsed_seconds = None
