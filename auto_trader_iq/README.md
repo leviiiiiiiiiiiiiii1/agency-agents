@@ -28,7 +28,7 @@ py -3.12 -m venv .venv
 python -m pip install -r .\requirements.txt
 ```
 
-Crie essa venv uma vez e reutilize-a; não reinstale os pacotes a cada execução. O app detecta automaticamente o caminho padrão `C:\Program Files\Tesseract-OCR\tesseract.exe`. Se a instalação estiver em outro local, informe o executável no campo **Executável Tesseract** da janela; esse caminho e as demais preferências são salvos em `%LOCALAPPDATA%\AutoTraderIQ\config.json` ao alterar as opções, iniciar ou fechar o app. O OCR continua desligado até você habilitá-lo.
+Crie essa venv uma vez e reutilize-a; não reinstale os pacotes a cada execução. O app detecta automaticamente o caminho padrão `C:\Program Files\Tesseract-OCR\tesseract.exe`. Se a instalação estiver em outro local, informe o executável no campo **Executável Tesseract** da janela; esse caminho e as demais preferências são salvos em `%LOCALAPPDATA%\AutoTraderIQ\config.json` ao alterar as opções, iniciar ou fechar o app. O OCR continua desligado até você habilitá-lo. No Windows, a opção **Manter tela/computador ativos durante a captura** fica desligada por padrão; quando marcada, solicita que o Windows não apague a tela nem suspenda o sistema enquanto a captura roda. O pedido é liberado ao parar a captura ou fechar o app. Isso não move o mouse nem impede um bloqueio manual da sessão, e pode aumentar o consumo de energia.
 
 O comando `$env:TESSERACT_CMD = ...` vale apenas para a janela atual do PowerShell. Se preferir configurar essa variável permanentemente no usuário, execute uma vez e reinicie o PowerShell/app:
 

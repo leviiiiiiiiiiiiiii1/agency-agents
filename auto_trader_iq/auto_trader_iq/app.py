@@ -40,6 +40,7 @@ from .demo_signal_guard import DemoSignalRepeatGuard
 from .signal_detector import SignalCandidate, TesseractSignalDetector
 from .simulation_history import SimulationHistoryStore, append_event_best_effort
 from .simulation import SimulationWorkflow
+from .windows_power import set_windows_keep_awake
 
 
 APP_NAME = "AUTO TRADER IQ"
@@ -141,6 +142,11 @@ class AutoTraderApp(tk.Tk):
         self.timeframe_var = tk.StringVar(value="M1")
         self.timer_status = tk.StringVar(value="M1: aguardando leitura de HORA ATUAL da plataforma.")
         self.compact_during_capture_var = tk.BooleanVar(value=True)
+        self.keep_awake_var = tk.BooleanVar(value=False)
+        self.keep_awake_active = False
+        self.keep_awake_status = tk.StringVar(
+            value="Economia de energia normal; prevenção de suspensão desligada."
+        )
         self.ocr_enabled_var = tk.BooleanVar(value=False)
         self.confidence_var = tk.StringVar(value="70")
         self.tesseract_path_var = tk.StringVar(value=find_tesseract_executable())
@@ -276,18 +282,30 @@ class AutoTraderApp(tk.Tk):
             variable=self.compact_during_capture_var, command=self._persist_config,
         ).grid(row=22, column=0, sticky="w", pady=(6, 0))
 
-        ttk.Label(controls, text="Período do gráfico").grid(row=23, column=0, sticky="w", pady=(6, 0))
+        self.keep_awake_checkbutton = ttk.Checkbutton(
+            controls,
+            text="Manter tela/computador ativos durante a captura (Windows)",
+            variable=self.keep_awake_var,
+            command=self._on_keep_awake_toggle,
+            state="normal" if sys.platform == "win32" else "disabled",
+        )
+        self.keep_awake_checkbutton.grid(row=23, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(controls, text="Efeito temporário; não move o mouse nem impede bloqueio manual.",
+                  wraplength=280).grid(row=24, column=0, sticky="w")
+
+        ttk.Label(controls, text="Período do gráfico").grid(row=25, column=0, sticky="w", pady=(6, 0))
         self.timeframe_combo = ttk.Combobox(
             controls, textvariable=self.timeframe_var, values=("M1", "M5", "M15", "M30"),
             state="readonly", width=10,
         )
-        self.timeframe_combo.grid(row=24, column=0, sticky="w", pady=(2, 0))
+        self.timeframe_combo.grid(row=26, column=0, sticky="w", pady=(2, 0))
         self.timeframe_combo.bind("<<ComboboxSelected>>", self._on_timeframe_change)
 
         info = ttk.LabelFrame(controls, text="Estado", padding=10)
-        info.grid(row=25, column=0, sticky="ew", pady=(8, 0))
+        info.grid(row=27, column=0, sticky="ew", pady=(8, 0))
         ttk.Label(info, textvariable=self.capture_status, wraplength=250).pack(anchor="w")
         ttk.Label(info, textvariable=self.heartbeat_status, wraplength=250).pack(anchor="w", pady=(5, 0))
+        ttk.Label(info, textvariable=self.keep_awake_status, wraplength=250).pack(anchor="w", pady=(5, 0))
         ttk.Label(info, textvariable=self.ocr_status, wraplength=250).pack(anchor="w", pady=(5, 0))
         ttk.Label(info, textvariable=self.timer_status, wraplength=250).pack(anchor="w", pady=(5, 0))
         controls.columnconfigure(0, weight=1)
@@ -525,6 +543,9 @@ class AutoTraderApp(tk.Tk):
             anchor="w", pady=(0, 2)
         )
         ttk.Label(self.compact_frame, textvariable=self.timer_status, wraplength=640).pack(
+            anchor="w", pady=(0, 2)
+        )
+        ttk.Label(self.compact_frame, textvariable=self.keep_awake_status, wraplength=640).pack(
             anchor="w", pady=(0, 5)
         )
 
@@ -1153,6 +1174,41 @@ class AutoTraderApp(tk.Tk):
             self.tesseract_path_var.set(selected)
             self._persist_config()
 
+    def _set_capture_keep_awake(self, enabled: bool) -> bool:
+        if enabled == self.keep_awake_active:
+            return True
+        try:
+            set_windows_keep_awake(enabled)
+        except Exception as exc:
+            self.keep_awake_status.set(
+                f"Não foi possível alterar a suspensão do Windows: {exc}"
+            )
+            if enabled:
+                self.keep_awake_var.set(False)
+                self.keep_awake_active = False
+            return False
+        self.keep_awake_active = enabled
+        self.keep_awake_status.set(
+            "Tela/computador mantidos ativos enquanto a captura roda."
+            if enabled else "Pedido de tela ativa liberado; economia normal restaurada."
+        )
+        return True
+
+    def _on_keep_awake_toggle(self) -> None:
+        if not self.keep_awake_var.get():
+            self._set_capture_keep_awake(False)
+            if not self.keep_awake_active:
+                self.keep_awake_status.set(
+                    "Economia de energia normal; prevenção de suspensão desligada."
+                )
+            return
+        if self.running:
+            self._set_capture_keep_awake(True)
+        else:
+            self.keep_awake_status.set(
+                "Será ativado apenas enquanto a captura estiver rodando."
+            )
+
     def _toggle_capture(self) -> None:
         if self.running:
             self._stop_capture("Captura parada pelo usuário.")
@@ -1183,6 +1239,12 @@ class AutoTraderApp(tk.Tk):
         self.latest_bar_count = 0
         self._update_timer_status()
         self.running = True
+        if self.keep_awake_var.get():
+            self._set_capture_keep_awake(True)
+        else:
+            self.keep_awake_status.set(
+                "Economia de energia normal; prevenção de suspensão desligada."
+            )
         self.last_frame_hash = None
         self.last_change_at = time.monotonic()
         self.start_button.configure(text="Parar visualização")
@@ -1220,6 +1282,7 @@ class AutoTraderApp(tk.Tk):
 
     def _stop_capture(self, reason: str) -> None:
         self._stop_sequence_recording("captura parada")
+        self._set_capture_keep_awake(False)
         if self.demo_automation_enabled:
             self._toggle_demo_automation()
         self.running = False
@@ -1931,6 +1994,7 @@ class AutoTraderApp(tk.Tk):
 
     def _on_close(self) -> None:
         self._stop_sequence_recording("aplicativo fechado")
+        self._set_capture_keep_awake(False)
         if self.demo_automation_enabled:
             self._toggle_demo_automation()
         self._persist_config()
