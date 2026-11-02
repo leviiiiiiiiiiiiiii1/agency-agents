@@ -423,7 +423,7 @@ class AutoTraderApp(tk.Tk):
         self.history_table.heading("status", text="Estado")
         self.history_table.column("time", width=90, anchor="center")
         self.history_table.column("direction", width=100, anchor="center")
-        self.history_table.column("status", width=200, anchor="w")
+        self.history_table.column("status", width=300, anchor="w")
         history_scrollbar = ttk.Scrollbar(history_frame, orient="vertical", command=self.history_table.yview)
         self.history_table.configure(yscrollcommand=history_scrollbar.set)
         self.history_table.pack(side="left", fill="x", expand=True)
@@ -1452,15 +1452,20 @@ class AutoTraderApp(tk.Tk):
 
         label = "COMPRA" if entry.direction == "BUY" else "VENDER"
         time_text = f"{clock.hour:02d}:{clock.minute:02d}:{clock.second:02d}"
+        armed_clock = self.pending_armed_clock
+        armed_time_text = (
+            f"{armed_clock.hour:02d}:{armed_clock.minute:02d}:{armed_clock.second:02d}"
+            if armed_clock is not None else "—"
+        )
         log_error = self._record_simulation_event(
             "entrada_demo_clicada", direction=entry.direction, observed_text=entry.signal_text,
             confidence=entry.confidence, signal_x=entry.signal_x, signal_y=entry.signal_y,
-            armed_platform_clock=self.pending_armed_clock,
+            armed_platform_clock=armed_clock,
             entry_delay_platform_seconds=elapsed,
         )
         self.history_table.insert(
             "", 0, iid=f"demo-{entry.signal_id}",
-            values=(time_text, label, f"DEMO · CLIQUE ENVIADO · prazo {self.demo_entry_deadline_active} s"),
+            values=(time_text, label, f"DEMO · atraso HORA ATUAL {elapsed} s"),
         )
         self.demo_signal_guard.mark_consumed(
             entry.direction, entry.signal_x, entry.signal_y
@@ -1468,9 +1473,10 @@ class AutoTraderApp(tk.Tk):
         self._clear_pending_clock_observation()
         persistence_note = f" Histórico local não gravado: {log_error}" if log_error else ""
         self.demo_status.set(
-            f"Clique {label} enviado às {time_text}; uma entrada nesta vela M1. "
-            "O modo continua ativo para novos sinais, mas este sinal fica bloqueado. "
-            f"Prazo restante: até {self.demo_activation_timeout_active} s desde a ativação.{persistence_note}"
+            f"Clique {label} enviado às {time_text}; atraso medido pela HORA ATUAL: {elapsed} s "
+            f"desde o armamento às {armed_time_text}. Uma entrada nesta vela M1; "
+            "o mesmo sinal fica bloqueado. "
+            f"Prazo restante da ativação: até {self.demo_activation_timeout_active} s.{persistence_note}"
         )
         self.simulation_status.set(
             "Tentativa DEMO registrada; identidade da vela e aceitação pela plataforma não verificadas. "
@@ -1913,11 +1919,16 @@ class AutoTraderApp(tk.Tk):
             direction = "COMPRA" if row.get("direction") == "BUY" else "VENDER"
             elapsed = row.get("elapsed_seconds_m1", "")
             elapsed_text = f" · M1 +{elapsed}s" if elapsed else ""
-            row_status = (
-                f"DEMO · CLIQUE ENVIADO{elapsed_text}"
-                if row.get("event") == "entrada_demo_clicada"
-                else f"SIMULADA · N+1{elapsed_text}"
-            )
+            if row.get("event") == "entrada_demo_clicada":
+                delay = row.get("entry_delay_platform_seconds", "")
+                armed_clock = row.get("armed_platform_clock", "")
+                if delay:
+                    arm_note = f" desde {armed_clock}" if armed_clock else " desde armamento"
+                    row_status = f"DEMO · atraso HORA ATUAL {delay}s{arm_note}"
+                else:
+                    row_status = "DEMO · clique enviado; atraso não registrado"
+            else:
+                row_status = f"SIMULADA · N+1{elapsed_text}"
             self.history_table.insert(
                 "", 0, iid=f"persisted-{index}",
                 values=(row.get("platform_clock") or "—", direction, row_status),
