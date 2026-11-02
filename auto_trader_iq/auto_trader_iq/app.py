@@ -101,6 +101,7 @@ class AutoTraderApp(tk.Tk):
         self.last_change_at = time.monotonic()
         self.last_pil_image: Image.Image | None = None
         self.preview_photo: ImageTk.PhotoImage | None = None
+        self.compact_preview_photo: ImageTk.PhotoImage | None = None
         self.detector: TesseractSignalDetector | None = None
         self.last_candidates: list[SignalCandidate] = []
         self.last_ocr_at = 0.0
@@ -395,61 +396,91 @@ class AutoTraderApp(tk.Tk):
         footer.pack(fill="x")
 
         self.compact_frame = ttk.Frame(self, padding=10)
-        ttk.Label(self.compact_frame, text="AUTO TRADER IQ · captura ativa",
-                  font=("Segoe UI", 13, "bold")).pack(anchor="w")
         ttk.Label(
             self.compact_frame,
-            text="Mantenha este painel fora da região monitorada. A captura continua enquanto você arma/confirma.",
-            wraplength=520,
+            text="AUTO TRADER IQ · monitoramento ativo",
+            font=("Segoe UI", 14, "bold"),
+        ).pack(anchor="w")
+        ttk.Label(
+            self.compact_frame,
+            text="Deixe o painel fora da região monitorada. A prévia mostra a captura já mascarada.",
+            wraplength=640,
         ).pack(anchor="w", pady=(2, 4))
-        ttk.Label(self.compact_frame, textvariable=self.ocr_status, wraplength=520).pack(anchor="w", pady=(0, 2))
-        ttk.Label(self.compact_frame, textvariable=self.timer_status, wraplength=520).pack(anchor="w", pady=(0, 4))
+        ttk.Label(self.compact_frame, textvariable=self.ocr_status, wraplength=640).pack(
+            anchor="w", pady=(0, 2)
+        )
+        ttk.Label(self.compact_frame, textvariable=self.timer_status, wraplength=640).pack(
+            anchor="w", pady=(0, 5)
+        )
+
+        compact_preview_box = ttk.LabelFrame(self.compact_frame, text="Prévia ao vivo da região", padding=4)
+        compact_preview_box.pack(fill="x", pady=(0, 5))
+        self.compact_preview_label = ttk.Label(
+            compact_preview_box,
+            text="Aguardando a primeira imagem…",
+            anchor="center",
+            width=90,
+            height=12,
+        )
+        self.compact_preview_label.pack(fill="x", expand=True)
+
         self.compact_candidate_table = ttk.Treeview(
             self.compact_frame, columns=("label", "confidence", "position"),
-            show="headings", height=4, selectmode="browse",
+            show="headings", height=2, selectmode="browse",
         )
-        self.compact_candidate_table.heading("label", text="Candidato OCR")
-        self.compact_candidate_table.heading("confidence", text="Confiança")
+        self.compact_candidate_table.heading("label", text="Sinal reconhecido")
+        self.compact_candidate_table.heading("confidence", text="Confiança OCR")
         self.compact_candidate_table.heading("position", text="Posição")
-        self.compact_candidate_table.column("label", width=160, stretch=True)
-        self.compact_candidate_table.column("confidence", width=90, anchor="center")
-        self.compact_candidate_table.column("position", width=120, anchor="center")
-        self.compact_candidate_table.pack(fill="x", expand=True)
-        compact_buttons = ttk.Frame(self.compact_frame)
-        compact_buttons.pack(fill="x", pady=(6, 2))
-        ttk.Button(compact_buttons, text="Armar selecionado", command=self._arm_compact_candidate).pack(
-            side="left", padx=(0, 5)
-        )
+        self.compact_candidate_table.column("label", width=190, stretch=True)
+        self.compact_candidate_table.column("confidence", width=110, anchor="center")
+        self.compact_candidate_table.column("position", width=130, anchor="center")
+        self.compact_candidate_table.pack(fill="x", expand=False)
+
+        compact_selection_actions = ttk.Frame(self.compact_frame)
+        compact_selection_actions.pack(fill="x", pady=(5, 2))
+        ttk.Button(
+            compact_selection_actions,
+            text="Armar selecionado",
+            command=self._arm_compact_candidate,
+        ).pack(side="left", padx=(0, 5))
         self.compact_confirm_button = ttk.Button(
-            compact_buttons, text="Confirmar N+1", command=self._confirm_next_candle, state="disabled"
+            compact_selection_actions,
+            text="Confirmar N+1",
+            command=self._confirm_next_candle,
+            state="disabled",
         )
         self.compact_confirm_button.pack(side="left", padx=5)
         self.compact_cancel_button = ttk.Button(
-            compact_buttons, text="Cancelar pendente", command=self._cancel_pending_simulation,
+            compact_selection_actions,
+            text="Cancelar pendente",
+            command=self._cancel_pending_simulation,
             state="disabled",
         )
         self.compact_cancel_button.pack(side="left", padx=5)
+
+        compact_controls = ttk.Frame(self.compact_frame)
+        compact_controls.pack(fill="x", pady=(2, 2))
         self.compact_demo_toggle_button = ttk.Button(
-            compact_buttons, text="Ativar DEMO…", command=self._toggle_demo_automation
+            compact_controls, text="Ativar DEMO…", command=self._toggle_demo_automation
         )
-        self.compact_demo_toggle_button.pack(side="left", padx=5)
-        ttk.Button(
-            compact_buttons, text="Configurações (pausar)", command=self._return_to_full_ui
-        ).pack(side="right")
-        recorder_row = ttk.Frame(self.compact_frame)
-        recorder_row.pack(fill="x", pady=(4, 0))
+        self.compact_demo_toggle_button.pack(side="left", padx=(0, 6))
         self.compact_sequence_button = ttk.Button(
-            recorder_row, text="Gravar sequência de teste (75 s)", command=self._toggle_sequence_recording
+            compact_controls, text="Gravar sequência (75 s)", command=self._toggle_sequence_recording
         )
-        self.compact_sequence_button.pack(side="left")
-        ttk.Label(recorder_row, textvariable=self.sequence_status, wraplength=350).pack(
-            side="left", padx=(8, 0)
+        self.compact_sequence_button.pack(side="left", padx=6)
+        ttk.Button(
+            compact_controls,
+            text="Configurações (pausar)",
+            command=self._return_to_full_ui,
+        ).pack(side="right")
+        ttk.Label(self.compact_frame, textvariable=self.sequence_status, wraplength=640).pack(
+            anchor="w", pady=(2, 0)
         )
-        ttk.Label(self.compact_frame, textvariable=self.demo_status, wraplength=520).pack(
-            anchor="w", pady=(4, 0)
+        ttk.Label(self.compact_frame, textvariable=self.demo_status, wraplength=640).pack(
+            anchor="w", pady=(3, 0)
         )
-        ttk.Label(self.compact_frame, textvariable=self.simulation_status, wraplength=520).pack(
-            anchor="w", pady=(4, 0)
+        ttk.Label(self.compact_frame, textvariable=self.simulation_status, wraplength=640).pack(
+            anchor="w", pady=(3, 0)
         )
 
     def _load_monitors(self) -> None:
@@ -1024,8 +1055,8 @@ class AutoTraderApp(tk.Tk):
         self.full_ui.pack_forget()
         self.compact_frame.pack(fill="both", expand=True)
         self.compact_mode = True
-        self.minsize(420, 330)
-        self.geometry("560x365+0+0")
+        self.minsize(640, 560)
+        self.geometry("700x620+0+0")
         self.update_idletasks()
 
     def _exit_compact_mode(self) -> None:
@@ -1642,11 +1673,9 @@ class AutoTraderApp(tk.Tk):
         self._update_timer_status()
 
     def _show_preview(self, image: Image.Image) -> None:
-        max_width = max(200, self.preview.winfo_width() - 20)
-        max_height = max(150, self.preview.winfo_height() - 20)
-        preview_image = image.copy()
+        annotated = image.copy()
         if self.last_candidates:
-            draw = ImageDraw.Draw(preview_image)
+            draw = ImageDraw.Draw(annotated)
             for item in self.last_candidates:
                 color = "#19a05b" if item.direction == "BUY" else "#e34141"
                 box = (item.left, item.top, item.left + item.width, item.top + item.height)
@@ -1654,9 +1683,24 @@ class AutoTraderApp(tk.Tk):
                 label = "COMPRA" if item.direction == "BUY" else "VENDER"
                 draw.text((item.left, max(0, item.top - 16)),
                           f"{label} {item.confidence:.0f}%", fill=color)
-        preview_image.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
-        self.preview_photo = ImageTk.PhotoImage(preview_image)
+
+        if self.full_ui.winfo_viewable():
+            full_width = max(200, self.preview.winfo_width() - 20)
+            full_height = max(150, self.preview.winfo_height() - 20)
+        else:
+            full_width, full_height = 900, 480
+        full_image = annotated.copy()
+        full_image.thumbnail((full_width, full_height), Image.Resampling.LANCZOS)
+        self.preview_photo = ImageTk.PhotoImage(full_image)
         self.preview.configure(image=self.preview_photo, text="")
+
+        compact_width = self.compact_preview_label.winfo_width()
+        if compact_width <= 1:
+            compact_width = 640
+        compact_image = annotated.copy()
+        compact_image.thumbnail((min(640, max(240, compact_width - 12)), 220), Image.Resampling.LANCZOS)
+        self.compact_preview_photo = ImageTk.PhotoImage(compact_image)
+        self.compact_preview_label.configure(image=self.compact_preview_photo, text="")
 
     def _save_snapshot(self) -> None:
         if self.last_pil_image is None:
