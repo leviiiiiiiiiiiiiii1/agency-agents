@@ -48,7 +48,9 @@ TIMER_MAX_AGE_SECONDS = 1.5
 DEFAULT_DEMO_ACTIVATION_TIMEOUT_SECONDS = 75
 MIN_DEMO_ACTIVATION_TIMEOUT_SECONDS = 15
 MAX_DEMO_ACTIVATION_TIMEOUT_SECONDS = 3600
-DEMO_ENTRY_MAX_DELAY_SECONDS = 15.0
+DEFAULT_DEMO_ENTRY_DEADLINE_SECONDS = 15
+MIN_DEMO_ENTRY_DEADLINE_SECONDS = 1
+MAX_DEMO_ENTRY_DEADLINE_SECONDS = 15
 
 
 def _enable_windows_dpi_awareness() -> None:
@@ -121,7 +123,11 @@ class AutoTraderApp(tk.Tk):
         self.demo_activation_timeout_var = tk.StringVar(
             value=str(DEFAULT_DEMO_ACTIVATION_TIMEOUT_SECONDS)
         )
+        self.demo_entry_deadline_var = tk.StringVar(
+            value=str(DEFAULT_DEMO_ENTRY_DEADLINE_SECONDS)
+        )
         self.demo_activation_timeout_active = DEFAULT_DEMO_ACTIVATION_TIMEOUT_SECONDS
+        self.demo_entry_deadline_active = DEFAULT_DEMO_ENTRY_DEADLINE_SECONDS
         self.demo_entries_this_activation = 0
         self.demo_minute_tracker = PlatformMinuteTracker()
         self.last_demo_entry_candle_id: int | None = None
@@ -350,6 +356,28 @@ class AutoTraderApp(tk.Tk):
         self.demo_timeout_spinbox.bind("<FocusOut>", lambda _event: self._persist_config())
         self.demo_timeout_spinbox.bind("<Return>", lambda _event: self._persist_config())
         ttk.Label(demo_timeout_row, text="padrão: 75 s").pack(side="left", padx=(6, 0))
+        demo_deadline_row = ttk.Frame(simulation_box)
+        demo_deadline_row.pack(fill="x", pady=(3, 0))
+        ttk.Label(
+            demo_deadline_row,
+            text=f"Prazo máx. do clique ({MIN_DEMO_ENTRY_DEADLINE_SECONDS}–"
+                 f"{MAX_DEMO_ENTRY_DEADLINE_SECONDS} s):",
+        ).pack(side="left", padx=(0, 6))
+        self.demo_entry_deadline_spinbox = ttk.Spinbox(
+            demo_deadline_row,
+            from_=MIN_DEMO_ENTRY_DEADLINE_SECONDS,
+            to=MAX_DEMO_ENTRY_DEADLINE_SECONDS,
+            increment=1,
+            textvariable=self.demo_entry_deadline_var,
+            width=4,
+            command=self._persist_config,
+        )
+        self.demo_entry_deadline_spinbox.pack(side="left")
+        self.demo_entry_deadline_spinbox.bind("<FocusOut>", lambda _event: self._persist_config())
+        self.demo_entry_deadline_spinbox.bind("<Return>", lambda _event: self._persist_config())
+        ttk.Label(demo_deadline_row, text="imediata; cancela após o prazo · padrão 15 s").pack(
+            side="left", padx=(6, 0)
+        )
         exclusion_row = ttk.Frame(simulation_box)
         exclusion_row.pack(fill="x", pady=(3, 0))
         ttk.Button(
@@ -619,10 +647,15 @@ class AutoTraderApp(tk.Tk):
 
     def _update_demo_toggle_text(self) -> None:
         text = "Parar cliques DEMO" if self.demo_automation_enabled else "Ativar cliques DEMO…"
+        config_state = "disabled" if self.demo_automation_enabled else "normal"
         for name in ("demo_toggle_button", "compact_demo_toggle_button"):
             button = getattr(self, name, None)
             if button is not None:
                 button.configure(text=text)
+        for name in ("demo_timeout_spinbox", "demo_entry_deadline_spinbox"):
+            spinbox = getattr(self, name, None)
+            if spinbox is not None:
+                spinbox.configure(state=config_state)
 
     def _toggle_demo_automation(self) -> None:
         if self.demo_automation_enabled:
@@ -653,6 +686,19 @@ class AutoTraderApp(tk.Tk):
                 parent=self,
             )
             return
+        try:
+            entry_deadline = int(self.demo_entry_deadline_var.get())
+        except (TypeError, ValueError):
+            messagebox.showerror(APP_NAME, "Informe o prazo do clique após o sinal em segundos.", parent=self)
+            return
+        if not MIN_DEMO_ENTRY_DEADLINE_SECONDS <= entry_deadline <= MAX_DEMO_ENTRY_DEADLINE_SECONDS:
+            messagebox.showerror(
+                APP_NAME,
+                f"O prazo do clique precisa estar entre {MIN_DEMO_ENTRY_DEADLINE_SECONDS} e "
+                f"{MAX_DEMO_ENTRY_DEADLINE_SECONDS} segundos.",
+                parent=self,
+            )
+            return
         if self.simulation.pending is not None:
             messagebox.showinfo(APP_NAME, "Cancele o sinal pendente antes de habilitar cliques DEMO.", parent=self)
             return
@@ -679,7 +725,8 @@ class AutoTraderApp(tk.Tk):
             "Confirme que a plataforma está na conta DEMO e que valor/expiração foram conferidos. "
             "O app não consegue verificar o tipo de conta nem os valores.\n\n"
             "A ativação contínua pode enviar no máximo uma entrada por vela M1, somente até HORA ATUAL :30. "
-            f"Cada sinal único tenta clicar em até {DEMO_ENTRY_MAX_DELAY_SECONDS:.0f} s do armamento, sem esperar N+1. "
+            f"Cada sinal único tenta clicar imediatamente; após {entry_deadline} s sem clique o sinal é cancelado. "
+            "Esse prazo não é uma espera antes da entrada. Não espera N+1. "
             f"Ficará ativa por {activation_timeout} s ou até você pará-la; sinais repetidos na mesma vela são bloqueados. "
             "A identidade da vela e a aceitação da ordem não são verificadas visualmente.\n\n"
             "Se a conta não estiver em DEMO, o clique poderá enviar uma ordem real. Ativar agora?",
@@ -690,6 +737,7 @@ class AutoTraderApp(tk.Tk):
         self.demo_automation_enabled = True
         self.demo_account_confirmed = True
         self.demo_activation_timeout_active = activation_timeout
+        self.demo_entry_deadline_active = entry_deadline
         self.demo_entries_this_activation = 0
         self.demo_timeout_after_id = self.after(
             activation_timeout * 1000, self._expire_demo_activation
@@ -698,7 +746,7 @@ class AutoTraderApp(tk.Tk):
         self._update_demo_toggle_text()
         self.demo_status.set(
             f"CLIQUE DEMO CONTÍNUO ATIVO por {activation_timeout} s: no máximo uma entrada por vela M1; "
-            f"cada clique exige sinal único, limite de {DEMO_ENTRY_MAX_DELAY_SECONDS:.0f} s e HORA ATUAL ≤:30."
+            f"cada clique exige sinal único, limite de {self.demo_entry_deadline_active:.0f} s e HORA ATUAL ≤:30."
         )
 
     def _maybe_auto_arm_demo_signal(self) -> None:
@@ -767,7 +815,7 @@ class AutoTraderApp(tk.Tk):
         persistence_note = f" Histórico não gravado: {error}" if error else ""
         self.demo_status.set(
             f"DEMO: {label} armado automaticamente ({pending.confidence:.0f}%). Tentando clicar em até "
-            f"{DEMO_ENTRY_MAX_DELAY_SECONDS:.0f} s; no máximo uma entrada nesta vela M1.{persistence_note}"
+            f"{self.demo_entry_deadline_active:.0f} s; no máximo uma entrada nesta vela M1.{persistence_note}"
         )
         self._refresh_simulation_buttons()
         self._execute_demo_click()
@@ -788,12 +836,12 @@ class AutoTraderApp(tk.Tk):
             return
         now = time.monotonic()
         if not demo_entry_deadline_open(
-            self.demo_signal_armed_at, now, DEMO_ENTRY_MAX_DELAY_SECONDS
+            self.demo_signal_armed_at, now, self.demo_entry_deadline_active
         ):
             self.demo_signal_guard.mark_consumed(pending.direction, pending.x, pending.y)
             self._cancel_pending_simulation()
             self.demo_status.set(
-                f"Sinal descartado: passou o limite de {DEMO_ENTRY_MAX_DELAY_SECONDS:.0f} s sem clique; "
+                f"Sinal descartado: passou o limite de {self.demo_entry_deadline_active:.0f} s sem clique; "
                 "modo contínuo segue aguardando outro sinal."
             )
             return
@@ -867,7 +915,7 @@ class AutoTraderApp(tk.Tk):
         )
         self.history_table.insert(
             "", 0, iid=f"demo-{entry.signal_id}",
-            values=(time_text, label, "DEMO · CLIQUE ENVIADO · até 15 s do armamento"),
+            values=(time_text, label, f"DEMO · CLIQUE ENVIADO · prazo {self.demo_entry_deadline_active} s"),
         )
         self.demo_signal_guard.mark_consumed(
             entry.direction, entry.signal_x, entry.signal_y
@@ -1630,6 +1678,7 @@ class AutoTraderApp(tk.Tk):
             "ocr_enabled": self.ocr_enabled_var.get(),
             "compact_during_capture": self.compact_during_capture_var.get(),
             "tesseract_executable": self.tesseract_path_var.get().strip().strip('"'),
+            "demo_entry_deadline_seconds": self.demo_entry_deadline_var.get(),
         }
         try:
             timeout_seconds = int(self.demo_activation_timeout_var.get())
@@ -1663,6 +1712,11 @@ class AutoTraderApp(tk.Tk):
             ))
             if MIN_DEMO_ACTIVATION_TIMEOUT_SECONDS <= timeout_seconds <= MAX_DEMO_ACTIVATION_TIMEOUT_SECONDS:
                 self.demo_activation_timeout_var.set(str(timeout_seconds))
+            entry_deadline = int(config.get(
+                "demo_entry_deadline_seconds", DEFAULT_DEMO_ENTRY_DEADLINE_SECONDS
+            ))
+            if MIN_DEMO_ENTRY_DEADLINE_SECONDS <= entry_deadline <= MAX_DEMO_ENTRY_DEADLINE_SECONDS:
+                self.demo_entry_deadline_var.set(str(entry_deadline))
             confidence = config.get("confidence")
             if confidence is not None:
                 self.confidence_var.set(str(confidence))
