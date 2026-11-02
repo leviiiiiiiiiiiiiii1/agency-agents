@@ -47,7 +47,7 @@ def click_demo_direction(
     """Click the calibrated direction button only after session-level opt-in.
 
     The caller must still enforce signal, timeframe, platform-clock window,
-    screen-region and app-window checks before invoking this function.
+    screen-region and calibrated frontmost-window checks before invoking this function.
     """
     if not enabled or not demo_confirmed:
         raise PermissionError("Cliques DEMO não estão explicitamente habilitados nesta sessão.")
@@ -75,6 +75,24 @@ def windows_mouse_position() -> tuple[int, int]:
     if not ctypes.windll.user32.GetCursorPos(ctypes.byref(point)):
         raise ctypes.WinError()
     return int(point.x), int(point.y)
+
+
+def windows_window_at_point(x: int, y: int) -> int | None:
+    """Get the root window currently visible at a physical screen point."""
+    if sys.platform != "win32":
+        raise RuntimeError("A identificação da janela sob o cursor só funciona no Windows.")
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    user32.WindowFromPoint.argtypes = (wintypes.POINT,)
+    user32.WindowFromPoint.restype = wintypes.HWND
+    user32.GetAncestor.argtypes = (wintypes.HWND, wintypes.UINT)
+    user32.GetAncestor.restype = wintypes.HWND
+    window = user32.WindowFromPoint(wintypes.POINT(int(x), int(y)))
+    if not window:
+        return None
+    root_window = user32.GetAncestor(window, 2)  # GA_ROOT
+    return int(root_window or window)
 
 
 def windows_mouse_click(x: int, y: int) -> None:

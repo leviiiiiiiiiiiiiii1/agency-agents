@@ -21,6 +21,7 @@ from .demo_click import (
     demo_entry_deadline_open,
     windows_mouse_click,
     windows_mouse_position,
+    windows_window_at_point,
 )
 from .candle_monitor import detect_candle_bars, filter_to_recent_candle
 from .candle_timer import (
@@ -133,6 +134,7 @@ class AutoTraderApp(tk.Tk):
         self.demo_minute_tracker = PlatformMinuteTracker()
         self.last_demo_entry_candle_id: int | None = None
         self.demo_click_targets: dict[str, ClickTarget | None] = {"BUY": None, "SELL": None}
+        self.demo_click_target_windows: dict[str, int | None] = {"BUY": None, "SELL": None}
         self.excluded_regions: list[ScreenRegion] = []
         self.compact_mode = False
 
@@ -754,21 +756,28 @@ class AutoTraderApp(tk.Tk):
         consent = messagebox.askyesno(
             APP_NAME,
             f"Calibrar o centro do botão {label}. Ao continuar, a janela AUTO TRADER ficará oculta por 5 segundos. "
-            "Mova o cursor para o centro do botão na plataforma e não clique. A calibração apenas lê a posição do cursor.",
+            "Mova o cursor para o centro do botão na plataforma e não clique. O app registra a posição e a janela sob o cursor.",
             parent=self,
         )
         if not consent:
             return
+        self.demo_click_targets[direction] = None
+        self.demo_click_target_windows[direction] = None
+        self._set_demo_target_label(direction, None)
         self.demo_status.set(f"Calibração {label}: janela oculta por 5 s; posicione o cursor no centro do botão.")
         self.withdraw()
         self._calibration_after_id = self.after(5000, lambda: self._finish_demo_calibration(direction))
 
     def _finish_demo_calibration(self, direction: str) -> None:
         target: ClickTarget | None = None
+        target_window: int | None = None
         error: Exception | None = None
         try:
             x, y = windows_mouse_position()
             target = ClickTarget(x, y)
+            target_window = windows_window_at_point(x, y)
+            if target_window is None:
+                raise RuntimeError("Não foi possível identificar a janela da plataforma nesse ponto.")
         except Exception as exc:
             error = exc
         finally:
@@ -779,8 +788,9 @@ class AutoTraderApp(tk.Tk):
         if error is not None:
             messagebox.showerror(APP_NAME, f"Não foi possível ler a posição do mouse:\n{error}", parent=self)
             return
-        assert target is not None
+        assert target is not None and target_window is not None
         self.demo_click_targets[direction] = target
+        self.demo_click_target_windows[direction] = target_window
         self._set_demo_target_label(direction, target)
         label = "COMPRAR" if direction == "BUY" else "VENDER"
         if self._inside_capture_region(target) and not self._target_is_excluded_or_outside_capture(target):
@@ -850,8 +860,17 @@ class AutoTraderApp(tk.Tk):
             return
         buy_target = self.demo_click_targets["BUY"]
         sell_target = self.demo_click_targets["SELL"]
-        if buy_target is None or sell_target is None:
-            messagebox.showinfo(APP_NAME, "Calibre os centros dos botões COMPRAR e VENDER antes de ativar.", parent=self)
+        if (
+            buy_target is None
+            or sell_target is None
+            or self.demo_click_target_windows["BUY"] is None
+            or self.demo_click_target_windows["SELL"] is None
+        ):
+            messagebox.showinfo(
+                APP_NAME,
+                "Calibre novamente os botões COMPRAR e VENDER com a janela da plataforma visível.",
+                parent=self,
+            )
             return
         if (
             self.region is None
@@ -966,14 +985,15 @@ class AutoTraderApp(tk.Tk):
         self._refresh_simulation_buttons()
         self._execute_demo_click()
 
-    def _demo_target_is_covered_by_app(self, target: ClickTarget) -> bool:
-        if not self.winfo_viewable():
+    def _target_window_is_topmost(self, direction: str, target: ClickTarget) -> bool:
+        calibrated_window = self.demo_click_target_windows.get(direction)
+        if calibrated_window is None:
             return False
-        left, top = self.winfo_rootx(), self.winfo_rooty()
-        return (
-            left <= target.x < left + self.winfo_width()
-            and top <= target.y < top + self.winfo_height()
-        )
+        try:
+            current_window = windows_window_at_point(target.x, target.y)
+        except Exception:
+            return False
+        return current_window == calibrated_window
 
     def _execute_demo_click(self) -> None:
         pending = self.simulation.pending
@@ -1012,10 +1032,13 @@ class AutoTraderApp(tk.Tk):
         if (
             target is None
             or not self._target_is_excluded_or_outside_capture(target)
-            or self._demo_target_is_covered_by_app(target)
+            or not self._target_window_is_topmost(pending.direction, target)
         ):
             self._deactivate_demo_automation()
-            self.demo_status.set("DEMO bloqueado: botão não está fora da captura/ocultado, ou está coberto pela janela do app.")
+            self.demo_status.set(
+                "DEMO bloqueado: o ponto do botão não está sobre a mesma janela calibrada. "
+                "Traga a corretora para frente e recalibre os botões."
+            )
             self._cancel_pending_simulation()
             return
         self.demo_entries_this_activation += 1
