@@ -38,6 +38,16 @@ class DemoSignalRepeatGuardTests(unittest.TestCase):
         self.assertFalse(guard.blocks(self.candidate("SELL", 300, 200)))
         self.assertFalse(guard.blocks(self.candidate("BUY", 500, 200)))
 
+    def test_reset_at_minute_rollover_allows_same_position_as_a_new_candle_signal(self):
+        guard = DemoSignalRepeatGuard()
+        candidate = self.candidate()
+        guard.mark_consumed(candidate.direction, candidate.left, candidate.top)
+        self.assertTrue(guard.blocks(candidate))
+
+        guard.reset()
+
+        self.assertFalse(guard.blocks(candidate))
+
     def test_invalid_guard_limits_are_rejected(self):
         for options in (
             {"tolerance_x": -1},

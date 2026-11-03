@@ -27,11 +27,12 @@ class _ConsumedSignal:
 
 
 class DemoSignalRepeatGuard:
-    """Latch a consumed signal until its OCR tag disappears.
+    """Latch a consumed signal within one DEMO M1 candle.
 
-    OCR coordinate jitter is tolerated. A consumed signal stays locked for at
-    least 30 seconds, and also until several consecutive OCR updates no longer
-    show a nearby candidate.
+    OCR coordinate jitter is tolerated. During the current candle, a consumed
+    signal stays locked for at least 30 seconds and until several consecutive
+    OCR updates no longer show a nearby candidate. The app resets the latch at
+    the next M1 rollover so a new candle can produce a new entry.
     """
 
     def __init__(
@@ -99,8 +100,12 @@ class DemoSignalRepeatGuard:
         self._consumed = retained
 
     def blocks(self, candidate: SignalCandidate) -> bool:
-        """Whether this candidate resembles a signal already entered."""
+        """Whether this candidate resembles a signal already consumed this candle."""
         return any(
             signal.matches(candidate, self.tolerance_x, self.tolerance_y)
             for signal in self._consumed
         )
+
+    def reset(self) -> None:
+        """Forget prior-candle latches when the DEMO M1 minute rolls over."""
+        self._consumed.clear()

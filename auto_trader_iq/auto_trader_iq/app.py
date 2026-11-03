@@ -144,6 +144,7 @@ class AutoTraderApp(tk.Tk):
         self.demo_entry_deadline_active = DEFAULT_DEMO_ENTRY_DEADLINE_SECONDS
         self.demo_entries_this_activation = 0
         self.demo_minute_tracker = PlatformMinuteTracker()
+        self.demo_signal_guard_candle_id: int | None = None
         self.last_demo_entry_candle_id: int | None = None
         self.demo_click_targets: dict[str, ClickTarget | None] = {"BUY": None, "SELL": None}
         self.demo_click_target_windows: dict[str, int | None] = {"BUY": None, "SELL": None}
@@ -1366,6 +1367,9 @@ class AutoTraderApp(tk.Tk):
         current_candle_id = self.demo_minute_tracker.update(clock)
         if current_candle_id is None:
             return
+        if current_candle_id != self.demo_signal_guard_candle_id:
+            self.demo_signal_guard.reset()
+            self.demo_signal_guard_candle_id = current_candle_id
         candidates = list(self.candidates_by_id.values())
         if len(candidates) != 1:
             if len(candidates) > 1:
