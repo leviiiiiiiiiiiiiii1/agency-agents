@@ -20,8 +20,7 @@ class PlatformClockReading:
 
     @property
     def elapsed_seconds_in_m1(self) -> int:
-        # As velas M1 da plataforma alinham ao minuto; usar o relógio da plataforma,
-        # nunca o relógio do computador.
+        # Os limites M1 usam os segundos da fonte de relógio selecionada pelo fluxo.
         return self.second
 
 
@@ -144,14 +143,14 @@ def parse_platform_clock_line(
 
 
 def platform_minute_key(reading: PlatformClockReading | None) -> tuple[int, int] | None:
-    """Return the platform-clock M1 candle key, or None for an unreadable clock."""
+    """Return the M1 minute key for a clock reading, or None if unavailable."""
     if reading is None:
         return None
     return reading.hour, reading.minute
 
 
 class PlatformMinuteTracker:
-    """Assign a session-unique sequence to each observed platform-clock minute."""
+    """Assign a session-unique sequence to each observed clock minute."""
 
     def __init__(self) -> None:
         self._last_key: tuple[int, int] | None = None
@@ -183,7 +182,7 @@ def platform_clock_elapsed_seconds(
     previous: PlatformClockReading | None,
     current: PlatformClockReading | None,
 ) -> int | None:
-    """Return elapsed whole seconds between HORA ATUAL readings, or None on a jump/backstep."""
+    """Return elapsed whole seconds between clock readings, or None on a jump/backstep."""
     offset = platform_minute_offset(previous, current)
     if previous is None or current is None or offset not in {0, 1}:
         return None
@@ -197,7 +196,7 @@ def platform_minute_advanced(
     previous: PlatformClockReading | None,
     current: PlatformClockReading | None,
 ) -> bool:
-    """Return True only when HORA ATUAL advances by exactly one minute."""
+    """Return True only when the selected clock advances by exactly one minute."""
     return platform_minute_offset(previous, current) == 1
 
 

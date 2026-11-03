@@ -32,6 +32,9 @@ class SimulationHistoryStore:
         "clock_confidence",
         "armed_platform_clock",
         "entry_delay_platform_seconds",
+        "clock_source",
+        "armed_clock",
+        "entry_delay_seconds",
     )
 
     def __init__(self, path: Path) -> None:
@@ -70,6 +73,9 @@ class SimulationHistoryStore:
         clock_confidence: float | None = None,
         armed_platform_clock: str = "",
         entry_delay_platform_seconds: int | None = None,
+        clock_source: str = "",
+        armed_clock: str = "",
+        entry_delay_seconds: int | None = None,
     ) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._upgrade_schema_if_needed()
@@ -97,6 +103,11 @@ class SimulationHistoryStore:
                 "entry_delay_platform_seconds": (
                     "" if entry_delay_platform_seconds is None
                     else int(entry_delay_platform_seconds)
+                ),
+                "clock_source": clock_source,
+                "armed_clock": armed_clock,
+                "entry_delay_seconds": (
+                    "" if entry_delay_seconds is None else int(entry_delay_seconds)
                 ),
             })
 

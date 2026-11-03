@@ -15,7 +15,10 @@ class SimulationHistoryStoreTests(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def append(self, event, direction="BUY", elapsed=None, armed_clock="", entry_delay=None):
+    def append(
+        self, event, direction="BUY", elapsed=None, armed_clock="", entry_delay=None,
+        clock_source="", generic_armed_clock="", generic_entry_delay=None,
+    ):
         self.store.append_event(
             platform_clock="23:44:21",
             event=event,
@@ -29,6 +32,9 @@ class SimulationHistoryStoreTests(unittest.TestCase):
             clock_confidence=91.0,
             armed_platform_clock=armed_clock,
             entry_delay_platform_seconds=entry_delay,
+            clock_source=clock_source,
+            armed_clock=generic_armed_clock,
+            entry_delay_seconds=generic_entry_delay,
         )
 
     def test_append_creates_csv_with_metadata_only(self):
@@ -57,7 +63,7 @@ class SimulationHistoryStoreTests(unittest.TestCase):
         self.assertEqual(row["entry_delay_platform_seconds"], "0")
 
     def test_migrates_legacy_header_and_preserves_existing_rows(self):
-        legacy_fields = list(self.store.FIELDNAMES[:-2])
+        legacy_fields = list(self.store.FIELDNAMES[:-5])
         old_row = {
             "platform_clock": "15:58:07",
             "event": "entrada_demo_clicada",
@@ -84,6 +90,21 @@ class SimulationHistoryStoreTests(unittest.TestCase):
         self.assertEqual(rows[0]["armed_platform_clock"], "")
         self.assertEqual(rows[1]["armed_platform_clock"], "16:00:01")
         self.assertEqual(rows[1]["entry_delay_platform_seconds"], "0")
+
+    def test_records_local_demo_clock_source_and_generic_delay_fields(self):
+        self.append(
+            "entrada_demo_clicada",
+            clock_source="windows_utc_minus_3",
+            generic_armed_clock="16:13:25",
+            generic_entry_delay=2,
+        )
+
+        row = self.store.load_recent_entries()[0]
+
+        self.assertEqual(row["clock_source"], "windows_utc_minus_3")
+        self.assertEqual(row["armed_clock"], "16:13:25")
+        self.assertEqual(row["entry_delay_seconds"], "2")
+        self.assertEqual(row["entry_delay_platform_seconds"], "")
 
     def test_recent_entries_filters_events_and_returns_latest_limit(self):
         self.append("entrada_simulada", elapsed=10)

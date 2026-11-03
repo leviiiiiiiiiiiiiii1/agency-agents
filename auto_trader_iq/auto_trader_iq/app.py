@@ -15,6 +15,7 @@ from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageDraw, ImageTk
 
 from .capture import ScreenCapture, ScreenRegion
+from .demo_clock import WindowsUtcMinusThreeClock
 from .demo_click import (
     ClickTarget,
     click_demo_direction,
@@ -46,6 +47,7 @@ from .windows_power import set_windows_keep_awake
 
 
 APP_NAME = "AUTO TRADER IQ"
+DEMO_CLOCK_SOURCE = "windows_utc_minus_3"
 POLL_MS = 500
 OCR_INTERVAL_SECONDS = 0.5
 TIMER_MAX_AGE_SECONDS = 1.5
@@ -123,6 +125,7 @@ class AutoTraderApp(tk.Tk):
         self.sequence_recorder = SequenceRecorder(self.data_dir / "sequences")
         self.sequence_status = tk.StringVar(value="Gravação de teste inativa; nenhuma imagem está sendo salva.")
         self.simulation = SimulationWorkflow()
+        self.demo_clock = WindowsUtcMinusThreeClock()
         self.demo_signal_guard = DemoSignalRepeatGuard()
         self.candidates_by_id: dict[str, SignalCandidate] = {}
         self.simulation_status = tk.StringVar(value="Simulação parada; nenhuma entrada foi registrada.")
@@ -1248,8 +1251,10 @@ class AutoTraderApp(tk.Tk):
             "ATENÇÃO — cliques automáticos somente em conta DEMO.\n\n"
             "Confirme que a plataforma está na conta DEMO e que valor/expiração foram conferidos. "
             "O app não consegue verificar o tipo de conta nem os valores.\n\n"
-            "A ativação contínua pode enviar no máximo uma entrada por vela M1, somente até HORA ATUAL :30. "
-            f"Cada sinal único tenta clicar imediatamente; o limite de {entry_deadline} s é medido pela HORA ATUAL "
+            "A ativação contínua pode enviar no máximo uma entrada por vela M1, somente até :30 do relógio "
+            "do Windows convertido para UTC−3. Esse é um relógio local, não uma leitura da corretora; "
+            "a sincronização do Windows pode divergir em segundos. "
+            f"Cada sinal único tenta clicar imediatamente; o limite de {entry_deadline} s é medido por esse relógio "
             "entre o armamento e o clique, sem espera deliberada. "
             "Esse prazo não é uma espera antes da entrada. Não espera N+1. "
             f"Ficará ativa por {activation_timeout} s ou até você pará-la; sinais repetidos na mesma vela são bloqueados. "
@@ -1260,6 +1265,7 @@ class AutoTraderApp(tk.Tk):
         )
         if not consent:
             return
+        self.demo_clock.reset()
         self.demo_automation_enabled = True
         self.demo_account_confirmed = True
         self.demo_activation_timeout_active = activation_timeout
@@ -1279,7 +1285,8 @@ class AutoTraderApp(tk.Tk):
         self._update_demo_toggle_text()
         self.demo_status.set(
             f"CLIQUE DEMO CONTÍNUO ATIVO por {activation_timeout} s: no máximo uma entrada por vela M1; "
-            f"cada clique exige sinal único, limite de {self.demo_entry_deadline_active:.0f} s e HORA ATUAL ≤:30."
+            f"cada clique exige sinal único, limite de {self.demo_entry_deadline_active:.0f} s e relógio Windows UTC−3 ≤:30. "
+            "A sincronização do Windows pode divergir em segundos da corretora."
         )
 
     def _maybe_auto_arm_demo_signal(self) -> None:
@@ -1292,14 +1299,13 @@ class AutoTraderApp(tk.Tk):
         ):
             return
         now = time.monotonic()
-        clock = self.latest_platform_clock
-        if (
-            clock is None
-            or self.latest_clock_at is None
-            or now - self.latest_clock_at > TIMER_MAX_AGE_SECONDS
-        ):
-            self.demo_status.set("DEMO aguardando leitura recente e confiável de HORA ATUAL; nenhum clique será feito.")
+        if self.last_ocr_at <= 0 or now - self.last_ocr_at > TIMER_MAX_AGE_SECONDS:
+            self.demo_status.set(
+                "DEMO aguardando sinal/quadro OCR recente; o relógio UTC−3 do Windows "
+                "não substitui a validação de atualidade do sinal. Nenhum clique será feito."
+            )
             return
+        clock = self.demo_clock.reading()
         current_candle_id = self.demo_minute_tracker.update(clock)
         if current_candle_id is None:
             return
@@ -1323,7 +1329,7 @@ class AutoTraderApp(tk.Tk):
                 candidate.direction, candidate.left, candidate.top
             )
             self.demo_status.set(
-                f"DEMO ativo: HORA ATUAL {clock.hour:02d}:{clock.minute:02d}:{clock.second:02d} passou de :30; "
+                f"DEMO ativo: relógio Windows UTC−3 {clock.hour:02d}:{clock.minute:02d}:{clock.second:02d} passou de :30; "
                 "este sinal foi descartado sem clique, aguardando um próximo sinal elegível."
             )
             return
@@ -1343,12 +1349,14 @@ class AutoTraderApp(tk.Tk):
         error = self._record_simulation_event(
             "sinal_armado_demo", direction=pending.direction, observed_text=pending.observed_text,
             confidence=pending.confidence, signal_x=pending.x, signal_y=pending.y,
-            armed_platform_clock=clock,
+            clock_override=clock, clock_source_override=DEMO_CLOCK_SOURCE,
+            armed_clock_override=clock,
         )
         persistence_note = f" Histórico não gravado: {error}" if error else ""
         self.demo_status.set(
             f"DEMO: {label} armado automaticamente ({pending.confidence:.0f}%). Tentativa imediata; limite de "
-            f"{self.demo_entry_deadline_active:.0f} s pela HORA ATUAL. No máximo uma entrada nesta vela M1.{persistence_note}"
+            f"{self.demo_entry_deadline_active:.0f} s pelo relógio UTC−3 do Windows. "
+            f"No máximo uma entrada nesta vela M1.{persistence_note}"
         )
         self._refresh_simulation_buttons()
         self._execute_demo_click()
@@ -1365,41 +1373,14 @@ class AutoTraderApp(tk.Tk):
 
     def _execute_demo_click(self) -> None:
         pending = self.simulation.pending
-        clock = self.latest_platform_clock
         if not self.demo_automation_enabled or pending is None:
             return
         now = time.monotonic()
-        if (
-            clock is None
-            or self.latest_clock_at is None
-            or now - self.latest_clock_at > TIMER_MAX_AGE_SECONDS
-        ):
+        if self.last_ocr_at <= 0 or now - self.last_ocr_at > TIMER_MAX_AGE_SECONDS:
             self._deactivate_demo_automation()
             self._cancel_pending_simulation()
-            self.demo_status.set("DEMO pausado: HORA ATUAL ausente ou desatualizada; nenhum clique foi tentado.")
-            return
-        elapsed = platform_clock_elapsed_seconds(self.pending_armed_clock, clock)
-        if elapsed is None or elapsed > self.demo_entry_deadline_active:
-            self.demo_signal_guard.mark_consumed(pending.direction, pending.x, pending.y)
-            self._cancel_pending_simulation()
-            if elapsed is None:
-                reason = "HORA ATUAL avançou de forma inválida desde o armamento"
-            else:
-                reason = (
-                    f"passaram {elapsed} s desde o armamento, acima do limite de "
-                    f"{self.demo_entry_deadline_active:.0f} s de HORA ATUAL"
-                )
             self.demo_status.set(
-                f"Sinal descartado: {reason}; nenhum clique. "
-                "Modo contínuo segue aguardando outro sinal."
-            )
-            return
-        if not m1_entry_window_open(clock, max_elapsed_seconds=30):
-            self.demo_signal_guard.mark_consumed(pending.direction, pending.x, pending.y)
-            self._cancel_pending_simulation()
-            self.demo_status.set(
-                "Sinal descartado porque HORA ATUAL passou de :30; nenhum clique. "
-                "Modo contínuo segue ativo para um sinal novo elegível."
+                "DEMO pausado: quadro/sinal OCR desatualizado; nenhum clique foi tentado."
             )
             return
         target = self.demo_click_targets[pending.direction]
@@ -1414,6 +1395,38 @@ class AutoTraderApp(tk.Tk):
                 "Traga a corretora para frente e recalibre os botões."
             )
             self._cancel_pending_simulation()
+            return
+        if self.last_ocr_at <= 0 or time.monotonic() - self.last_ocr_at > TIMER_MAX_AGE_SECONDS:
+            self._deactivate_demo_automation()
+            self._cancel_pending_simulation()
+            self.demo_status.set(
+                "DEMO pausado: quadro/sinal OCR ficou desatualizado antes do clique; nenhum clique foi tentado."
+            )
+            return
+        clock = self.demo_clock.reading()
+        elapsed = platform_clock_elapsed_seconds(self.pending_armed_clock, clock)
+        if elapsed is None or elapsed > self.demo_entry_deadline_active:
+            self.demo_signal_guard.mark_consumed(pending.direction, pending.x, pending.y)
+            self._cancel_pending_simulation()
+            if elapsed is None:
+                reason = "o relógio UTC−3 do Windows avançou de forma inválida desde o armamento"
+            else:
+                reason = (
+                    f"passaram {elapsed} s desde o armamento, acima do limite de "
+                    f"{self.demo_entry_deadline_active:.0f} s do relógio UTC−3 do Windows"
+                )
+            self.demo_status.set(
+                f"Sinal descartado: {reason}; nenhum clique. "
+                "Modo contínuo segue aguardando outro sinal."
+            )
+            return
+        if not m1_entry_window_open(clock, max_elapsed_seconds=30):
+            self.demo_signal_guard.mark_consumed(pending.direction, pending.x, pending.y)
+            self._cancel_pending_simulation()
+            self.demo_status.set(
+                "Sinal descartado porque o relógio UTC−3 do Windows passou de :30; nenhum clique. "
+                "Modo contínuo segue ativo para um sinal novo elegível."
+            )
             return
         self.demo_entries_this_activation += 1
         self.last_demo_entry_candle_id = self.demo_minute_tracker.update(clock)
@@ -1438,6 +1451,8 @@ class AutoTraderApp(tk.Tk):
                         "clique_demo_inconclusivo", direction=failed.direction,
                         observed_text=failed.observed_text, confidence=failed.confidence,
                         signal_x=failed.x, signal_y=failed.y,
+                        clock_override=self.demo_clock.reading(),
+                        clock_source_override=DEMO_CLOCK_SOURCE,
                     )
                 except ValueError:
                     pass
@@ -1460,12 +1475,12 @@ class AutoTraderApp(tk.Tk):
         log_error = self._record_simulation_event(
             "entrada_demo_clicada", direction=entry.direction, observed_text=entry.signal_text,
             confidence=entry.confidence, signal_x=entry.signal_x, signal_y=entry.signal_y,
-            armed_platform_clock=armed_clock,
-            entry_delay_platform_seconds=elapsed,
+            clock_override=clock, clock_source_override=DEMO_CLOCK_SOURCE,
+            armed_clock_override=armed_clock, entry_delay_seconds=elapsed,
         )
         self.history_table.insert(
             "", 0, iid=f"demo-{entry.signal_id}",
-            values=(time_text, label, f"DEMO · atraso HORA ATUAL {elapsed} s"),
+            values=(time_text, label, f"DEMO · atraso relógio Windows UTC−3 {elapsed} s"),
         )
         self.demo_signal_guard.mark_consumed(
             entry.direction, entry.signal_x, entry.signal_y
@@ -1473,7 +1488,8 @@ class AutoTraderApp(tk.Tk):
         self._clear_pending_clock_observation()
         persistence_note = f" Histórico local não gravado: {log_error}" if log_error else ""
         self.demo_status.set(
-            f"Clique {label} enviado às {time_text}; atraso medido pela HORA ATUAL: {elapsed} s "
+            f"Clique {label} enviado às {time_text} (relógio Windows UTC−3); "
+            f"atraso medido por essa fonte: {elapsed} s "
             f"desde o armamento às {armed_time_text}. Uma entrada nesta vela M1; "
             "o mesmo sinal fica bloqueado. "
             f"Prazo restante da ativação: até {self.demo_activation_timeout_active} s.{persistence_note}"
@@ -1672,8 +1688,6 @@ class AutoTraderApp(tk.Tk):
                 try:
                     raw_candidates, self.latest_platform_clock = self.detector.detect_frame(image)
                     self.latest_clock_at = now if self.latest_platform_clock is not None else None
-                    if self.latest_platform_clock is not None:
-                        self.demo_minute_tracker.update(self.latest_platform_clock)
                     self._observe_pending_platform_minute()
                     bars = detect_candle_bars(image)
                     self.latest_bar_count = len(bars)
@@ -1922,11 +1936,20 @@ class AutoTraderApp(tk.Tk):
             elapsed = row.get("elapsed_seconds_m1", "")
             elapsed_text = f" · M1 +{elapsed}s" if elapsed else ""
             if row.get("event") == "entrada_demo_clicada":
-                delay = row.get("entry_delay_platform_seconds", "")
-                armed_clock = row.get("armed_platform_clock", "")
+                delay = row.get("entry_delay_seconds", "") or row.get(
+                    "entry_delay_platform_seconds", ""
+                )
+                armed_clock = row.get("armed_clock", "") or row.get(
+                    "armed_platform_clock", ""
+                )
                 if delay:
                     arm_note = f" desde {armed_clock}" if armed_clock else " desde armamento"
-                    row_status = f"DEMO · atraso HORA ATUAL {delay}s{arm_note}"
+                    source = (
+                        "relógio Windows UTC−3"
+                        if row.get("clock_source") == DEMO_CLOCK_SOURCE
+                        else "HORA ATUAL OCR"
+                    )
+                    row_status = f"DEMO · atraso {source} {delay}s{arm_note}"
                 else:
                     row_status = "DEMO · clique enviado; atraso não registrado"
             else:
@@ -1953,6 +1976,10 @@ class AutoTraderApp(tk.Tk):
         elapsed_seconds_m1: int | None = None,
         armed_platform_clock: PlatformClockReading | None = None,
         entry_delay_platform_seconds: int | None = None,
+        clock_override: PlatformClockReading | None = None,
+        clock_source_override: str | None = None,
+        armed_clock_override: PlatformClockReading | None = None,
+        entry_delay_seconds: int | None = None,
     ) -> str | None:
         now = time.monotonic()
         clock_is_fresh = (
@@ -1960,7 +1987,12 @@ class AutoTraderApp(tk.Tk):
             and self.latest_clock_at is not None
             and now - self.latest_clock_at <= TIMER_MAX_AGE_SECONDS
         )
-        clock = self.latest_platform_clock if clock_is_fresh else None
+        clock = clock_override or (self.latest_platform_clock if clock_is_fresh else None)
+        clock_source = (
+            clock_source_override
+            if clock_override is not None
+            else ("platform_ocr" if clock is not None else "")
+        )
         # Persistência é best-effort: nunca deve bloquear confirmação assistida.
         return append_event_best_effort(
             self.simulation_history,
@@ -1975,13 +2007,23 @@ class AutoTraderApp(tk.Tk):
             signal_x=signal_x,
             signal_y=signal_y,
             elapsed_seconds_m1=elapsed_seconds_m1,
-            clock_confidence=clock.confidence if clock else None,
+            clock_confidence=(
+                clock.confidence
+                if clock is not None and clock_source != DEMO_CLOCK_SOURCE else None
+            ),
             armed_platform_clock=(
                 f"{armed_platform_clock.hour:02d}:{armed_platform_clock.minute:02d}:"
                 f"{armed_platform_clock.second:02d}"
                 if armed_platform_clock is not None else ""
             ),
             entry_delay_platform_seconds=entry_delay_platform_seconds,
+            clock_source=clock_source,
+            armed_clock=(
+                f"{armed_clock_override.hour:02d}:{armed_clock_override.minute:02d}:"
+                f"{armed_clock_override.second:02d}"
+                if armed_clock_override is not None else ""
+            ),
+            entry_delay_seconds=entry_delay_seconds,
         )
 
     def _arm_selected_candidate(self) -> None:
@@ -2041,6 +2083,7 @@ class AutoTraderApp(tk.Tk):
     def _observe_pending_platform_minute(self) -> None:
         if (
             self.timeframe_var.get() != "M1"
+            or self.demo_automation_enabled
             or self.simulation.pending is None
             or self.pending_rollover_notified
             or not platform_minute_advanced(self.pending_armed_clock, self.latest_platform_clock)
@@ -2178,8 +2221,36 @@ class AutoTraderApp(tk.Tk):
             )
             self._refresh_simulation_buttons()
             return
-        platform_clock = self.latest_platform_clock
         observed_at = time.monotonic() if now is None else now
+        if self.demo_automation_enabled:
+            frame_fresh = (
+                self.last_ocr_at > 0
+                and observed_at - self.last_ocr_at <= TIMER_MAX_AGE_SECONDS
+            )
+            if not frame_fresh:
+                self.timer_status.set(
+                    "M1 DEMO: quadro/sinal OCR ausente ou desatualizado; clique bloqueado."
+                )
+            else:
+                demo_clock = self.demo_clock.reading()
+                pending = self.simulation.pending
+                prefix = "M1 DEMO · relógio do Windows em UTC−3 (segundos podem divergir da corretora)"
+                if pending is not None:
+                    elapsed = platform_clock_elapsed_seconds(self.pending_armed_clock, demo_clock)
+                    self.timer_status.set(
+                        f"{prefix}: {demo_clock.hour:02d}:{demo_clock.minute:02d}:"
+                        f"{demo_clock.second:02d}; armamento +{elapsed if elapsed is not None else '—'} s; "
+                        "janela até :30."
+                    )
+                else:
+                    self.timer_status.set(
+                        f"{prefix}: {demo_clock.hour:02d}:{demo_clock.minute:02d}:"
+                        f"{demo_clock.second:02d}; no máximo uma entrada por vela, até :30."
+                    )
+            self._refresh_simulation_buttons()
+            return
+
+        platform_clock = self.latest_platform_clock
         fresh = (
             self.latest_clock_at is not None
             and observed_at - self.latest_clock_at <= TIMER_MAX_AGE_SECONDS
