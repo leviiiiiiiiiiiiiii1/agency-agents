@@ -15,7 +15,7 @@ from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageDraw, ImageTk
 
 from .capture import ScreenCapture, ScreenRegion
-from .demo_clock import WindowsUtcMinusThreeClock
+from .demo_clock import WindowsUtcMinusThreeClock, demo_entry_second_action
 from .demo_click import (
     ClickTarget,
     click_demo_direction,
@@ -43,7 +43,7 @@ from .settings import find_tesseract_executable, load_settings, save_settings
 from .demo_signal_guard import DemoSignalRepeatGuard
 from .signal_detector import SignalCandidate, TesseractSignalDetector
 from .simulation_history import SimulationHistoryStore, append_event_best_effort
-from .simulation import SimulationWorkflow
+from .simulation import PendingSignal, SimulationWorkflow
 from .windows_power import set_windows_keep_awake
 
 
@@ -58,6 +58,9 @@ MAX_DEMO_ACTIVATION_TIMEOUT_SECONDS = 3600
 DEFAULT_DEMO_ENTRY_DEADLINE_SECONDS = 15
 MIN_DEMO_ENTRY_DEADLINE_SECONDS = 1
 MAX_DEMO_ENTRY_DEADLINE_SECONDS = 15
+DEFAULT_DEMO_ENTRY_SECOND = 5
+MIN_DEMO_ENTRY_SECOND = 0
+MAX_DEMO_ENTRY_SECOND = 30
 DEFAULT_DEMO_MOUSE_KEEPALIVE_SECONDS = 60
 MIN_DEMO_MOUSE_KEEPALIVE_SECONDS = 30
 MAX_DEMO_MOUSE_KEEPALIVE_SECONDS = 600
@@ -140,8 +143,11 @@ class AutoTraderApp(tk.Tk):
         self.demo_entry_deadline_var = tk.StringVar(
             value=str(DEFAULT_DEMO_ENTRY_DEADLINE_SECONDS)
         )
+        self.demo_entry_second_var = tk.StringVar(value=f"{DEFAULT_DEMO_ENTRY_SECOND:02d}")
         self.demo_activation_timeout_active = DEFAULT_DEMO_ACTIVATION_TIMEOUT_SECONDS
         self.demo_entry_deadline_active = DEFAULT_DEMO_ENTRY_DEADLINE_SECONDS
+        self.demo_entry_second_active = DEFAULT_DEMO_ENTRY_SECOND
+        self.demo_entry_after_id: str | None = None
         self.demo_entries_this_activation = 0
         self.demo_minute_tracker = PlatformMinuteTracker()
         self.demo_signal_guard_candle_id: int | None = None
@@ -210,7 +216,7 @@ class AutoTraderApp(tk.Tk):
 
         warning = ttk.Label(
             self.full_ui,
-            text="Cliques automáticos são experimentais e desligados por padrão. A ativação DEMO pode tratar vários sinais, no máximo uma tentativa por vela M1; o app não verifica tipo de conta nem aceitação da ordem.",
+            text="Cliques automáticos são experimentais e desligados por padrão. A ativação DEMO limita-se a uma entrada por vela M1, no segundo configurado; o app não verifica tipo de conta nem aceitação da ordem.",
             foreground="#8a4b08", background="#fff3cd", padding=9, wraplength=760,
         )
         warning.pack(fill="x", padx=18, pady=(0, 10))
@@ -544,9 +550,30 @@ class AutoTraderApp(tk.Tk):
         self.demo_entry_deadline_spinbox.pack(side="left")
         self.demo_entry_deadline_spinbox.bind("<FocusOut>", lambda _event: self._persist_config())
         self.demo_entry_deadline_spinbox.bind("<Return>", lambda _event: self._persist_config())
-        ttk.Label(demo_deadline_row, text="imediata; cancela após o prazo · padrão 15 s").pack(
+        ttk.Label(demo_deadline_row, text="limite armar→entrada · padrão 15 s").pack(
             side="left", padx=(6, 0)
         )
+        demo_entry_second_row = ttk.Frame(simulation_box)
+        demo_entry_second_row.pack(fill="x", pady=(3, 0))
+        ttk.Label(demo_entry_second_row, text="Segundo fixo da entrada DEMO (:SS):").pack(
+            side="left", padx=(0, 6)
+        )
+        self.demo_entry_second_spinbox = ttk.Spinbox(
+            demo_entry_second_row,
+            from_=MIN_DEMO_ENTRY_SECOND,
+            to=MAX_DEMO_ENTRY_SECOND,
+            increment=1,
+            textvariable=self.demo_entry_second_var,
+            width=4,
+            command=self._persist_config,
+        )
+        self.demo_entry_second_spinbox.pack(side="left")
+        self.demo_entry_second_spinbox.bind("<FocusOut>", lambda _event: self._persist_config())
+        self.demo_entry_second_spinbox.bind("<Return>", lambda _event: self._persist_config())
+        ttk.Label(
+            demo_entry_second_row,
+            text=f"tenta em :SS; sinal tardio descartado · padrão :{DEFAULT_DEMO_ENTRY_SECOND:02d}",
+        ).pack(side="left", padx=(6, 0))
         exclusion_row = ttk.Frame(simulation_box)
         exclusion_row.pack(fill="x", pady=(3, 0))
         ttk.Button(
@@ -1187,7 +1214,9 @@ class AutoTraderApp(tk.Tk):
             button = getattr(self, name, None)
             if button is not None:
                 button.configure(text=text)
-        for name in ("demo_timeout_spinbox", "demo_entry_deadline_spinbox"):
+        for name in (
+            "demo_timeout_spinbox", "demo_entry_deadline_spinbox", "demo_entry_second_spinbox"
+        ):
             spinbox = getattr(self, name, None)
             if spinbox is not None:
                 spinbox.configure(state=config_state)
@@ -1231,6 +1260,18 @@ class AutoTraderApp(tk.Tk):
                 APP_NAME,
                 f"O prazo do clique precisa estar entre {MIN_DEMO_ENTRY_DEADLINE_SECONDS} e "
                 f"{MAX_DEMO_ENTRY_DEADLINE_SECONDS} segundos.",
+                parent=self,
+            )
+            return
+        try:
+            entry_second = int(self.demo_entry_second_var.get())
+        except (TypeError, ValueError):
+            messagebox.showerror(APP_NAME, "Informe o segundo fixo da entrada DEMO entre :00 e :30.", parent=self)
+            return
+        if not MIN_DEMO_ENTRY_SECOND <= entry_second <= MAX_DEMO_ENTRY_SECOND:
+            messagebox.showerror(
+                APP_NAME,
+                f"O segundo fixo precisa estar entre :{MIN_DEMO_ENTRY_SECOND:02d} e :{MAX_DEMO_ENTRY_SECOND:02d}.",
                 parent=self,
             )
             return
@@ -1312,9 +1353,10 @@ class AutoTraderApp(tk.Tk):
             "A ativação contínua pode enviar no máximo uma entrada por vela M1, somente até :30 do relógio "
             "do Windows convertido para UTC−3. Esse é um relógio local, não uma leitura da corretora; "
             "a sincronização do Windows pode divergir em segundos. "
-            f"Cada sinal único tenta clicar imediatamente; o limite de {entry_deadline} s é medido por esse relógio "
-            "entre o armamento e o clique, sem espera deliberada. "
-            "Esse prazo não é uma espera antes da entrada. Não espera N+1. "
+            f"As entradas visam sempre :{entry_second:02d}: sinais reconhecidos antes aguardam até esse segundo; "
+            "sinais reconhecidos depois são descartados nesta vela. "
+            f"O limite de {entry_deadline} s mede armamento→clique e também cancela se o horário fixo ficar fora do prazo. "
+            "Não espera N+1. "
             f"Ficará ativa por {activation_timeout} s ou até você pará-la; sinais repetidos na mesma vela são bloqueados. "
             "A identidade da vela e a aceitação da ordem não são verificadas visualmente.\n\n"
             f"{mouse_keepalive_note}\n\n"
@@ -1328,6 +1370,7 @@ class AutoTraderApp(tk.Tk):
         self.demo_account_confirmed = True
         self.demo_activation_timeout_active = activation_timeout
         self.demo_entry_deadline_active = entry_deadline
+        self.demo_entry_second_active = entry_second
         self.demo_entries_this_activation = 0
         self.demo_timeout_after_id = self.after(
             activation_timeout * 1000, self._expire_demo_activation
@@ -1342,9 +1385,10 @@ class AutoTraderApp(tk.Tk):
         self._persist_config()
         self._update_demo_toggle_text()
         self.demo_status.set(
-            f"CLIQUE DEMO CONTÍNUO ATIVO por {activation_timeout} s: no máximo uma entrada por vela M1; "
-            f"cada clique exige sinal único, limite de {self.demo_entry_deadline_active:.0f} s e relógio Windows UTC−3 ≤:30. "
-            "A sincronização do Windows pode divergir em segundos da corretora."
+            f"CLIQUE DEMO CONTÍNUO ATIVO por {activation_timeout} s: no máximo uma entrada por vela M1 "
+            f"em :{self.demo_entry_second_active:02d}; sinais tardios são descartados. "
+            f"Limite armamento→clique {self.demo_entry_deadline_active:.0f} s, relógio Windows UTC−3. "
+            "Os segundos podem divergir da corretora."
         )
 
     def _maybe_auto_arm_demo_signal(self) -> None:
@@ -1415,7 +1459,8 @@ class AutoTraderApp(tk.Tk):
         )
         persistence_note = f" Histórico não gravado: {error}" if error else ""
         self.demo_status.set(
-            f"DEMO: {label} armado automaticamente ({pending.confidence:.0f}%). Tentativa imediata; limite de "
+            f"DEMO: {label} armado automaticamente ({pending.confidence:.0f}%). Entrada programada para "
+            f":{self.demo_entry_second_active:02d}; limite armamento→clique de "
             f"{self.demo_entry_deadline_active:.0f} s pelo relógio UTC−3 do Windows. "
             f"No máximo uma entrada nesta vela M1.{persistence_note}"
         )
@@ -1436,7 +1481,27 @@ class AutoTraderApp(tk.Tk):
             and current_signature == self.demo_click_target_signatures.get(direction)
         )
 
+    def _pending_demo_candidate_is_current(self, pending: PendingSignal) -> bool:
+        candidates = list(self.candidates_by_id.values())
+        if len(candidates) != 1:
+            return False
+        candidate = candidates[0]
+        return (
+            candidate.direction == pending.direction
+            and abs(candidate.left - pending.x) <= self.demo_signal_guard.tolerance_x
+            and abs(candidate.top - pending.y) <= self.demo_signal_guard.tolerance_y
+        )
+
+    def _cancel_scheduled_demo_entry(self) -> None:
+        if self.demo_entry_after_id is not None:
+            try:
+                self.after_cancel(self.demo_entry_after_id)
+            except tk.TclError:
+                pass
+            self.demo_entry_after_id = None
+
     def _execute_demo_click(self) -> None:
+        self.demo_entry_after_id = None
         pending = self.simulation.pending
         if not self.demo_automation_enabled or pending is None:
             return
@@ -1468,21 +1533,47 @@ class AutoTraderApp(tk.Tk):
                 "DEMO pausado: quadro/sinal OCR ficou desatualizado antes do clique; nenhum clique foi tentado."
             )
             return
-        clock = self.demo_clock.reading()
-        elapsed = platform_clock_elapsed_seconds(self.pending_armed_clock, clock)
-        if elapsed is None or elapsed > self.demo_entry_deadline_active:
+        if not self._pending_demo_candidate_is_current(pending):
             self.demo_signal_guard.mark_consumed(pending.direction, pending.x, pending.y)
             self._cancel_pending_simulation()
-            if elapsed is None:
-                reason = "o relógio UTC−3 do Windows avançou de forma inválida desde o armamento"
-            else:
-                reason = (
-                    f"passaram {elapsed} s desde o armamento, acima do limite de "
-                    f"{self.demo_entry_deadline_active:.0f} s do relógio UTC−3 do Windows"
-                )
             self.demo_status.set(
-                f"Sinal descartado: {reason}; nenhum clique. "
-                "Modo contínuo segue aguardando outro sinal."
+                "Sinal DEMO descartado: a etiqueta não está mais presente na leitura OCR recente."
+            )
+            return
+        clock = self.demo_clock.reading()
+        elapsed = platform_clock_elapsed_seconds(self.pending_armed_clock, clock)
+        if elapsed is None:
+            self.demo_signal_guard.mark_consumed(pending.direction, pending.x, pending.y)
+            self._cancel_pending_simulation()
+            self.demo_status.set(
+                "Sinal descartado: o relógio Windows UTC−3 avançou de forma inválida; nenhum clique."
+            )
+            return
+        action = demo_entry_second_action(clock.second, self.demo_entry_second_active)
+        remaining_to_target = self.demo_entry_second_active - clock.second
+        expected_elapsed = elapsed + max(0, remaining_to_target)
+        if expected_elapsed > self.demo_entry_deadline_active:
+            self.demo_signal_guard.mark_consumed(pending.direction, pending.x, pending.y)
+            self._cancel_pending_simulation()
+            self.demo_status.set(
+                "Sinal descartado: o segundo fixo ultrapassaria o limite armamento→entrada; nenhum clique."
+            )
+            return
+        if action == "wait":
+            self.demo_entry_after_id = self.after(
+                remaining_to_target * 1000, self._execute_demo_click
+            )
+            self.demo_status.set(
+                f"Sinal DEMO armado; aguardando :{self.demo_entry_second_active:02d} "
+                "para padronizar o segundo da entrada."
+            )
+            return
+        if action == "late":
+            self.demo_signal_guard.mark_consumed(pending.direction, pending.x, pending.y)
+            self._cancel_pending_simulation()
+            self.demo_status.set(
+                f"Sinal DEMO descartado: foi reconhecido depois de :{self.demo_entry_second_active:02d}; "
+                "aguardando novo sinal na próxima vela."
             )
             return
         if not m1_entry_window_open(clock, max_elapsed_seconds=30):
@@ -1579,6 +1670,7 @@ class AutoTraderApp(tk.Tk):
         )
 
     def _deactivate_demo_automation(self) -> None:
+        self._cancel_scheduled_demo_entry()
         self._cancel_demo_mouse_keepalive()
         self.demo_automation_enabled = False
         self.demo_account_confirmed = False
@@ -2234,6 +2326,7 @@ class AutoTraderApp(tk.Tk):
             button.configure(state="disabled")
 
     def _cancel_pending_simulation(self) -> None:
+        self._cancel_scheduled_demo_entry()
         try:
             pending = self.simulation.cancel_pending()
         except ValueError as exc:
@@ -2305,12 +2398,13 @@ class AutoTraderApp(tk.Tk):
                     self.timer_status.set(
                         f"{prefix}: {demo_clock.hour:02d}:{demo_clock.minute:02d}:"
                         f"{demo_clock.second:02d}; armamento +{elapsed if elapsed is not None else '—'} s; "
-                        "janela até :30."
+                        f"entrada no segundo :{self.demo_entry_second_active:02d} (até :30)."
                     )
                 else:
                     self.timer_status.set(
                         f"{prefix}: {demo_clock.hour:02d}:{demo_clock.minute:02d}:"
-                        f"{demo_clock.second:02d}; no máximo uma entrada por vela, até :30."
+                        f"{demo_clock.second:02d}; entrada DEMO no segundo :{self.demo_entry_second_active:02d}, "
+                        "máximo uma por vela, até :30."
                     )
             self._refresh_simulation_buttons()
             return
@@ -2589,6 +2683,7 @@ class AutoTraderApp(tk.Tk):
             "compact_during_capture": self.compact_during_capture_var.get(),
             "tesseract_executable": self.tesseract_path_var.get().strip().strip('"'),
             "demo_entry_deadline_seconds": self.demo_entry_deadline_var.get(),
+            "demo_entry_second": self.demo_entry_second_var.get(),
             "demo_mouse_keepalive_enabled": bool(self.demo_mouse_keepalive_var.get()),
             "demo_mouse_keepalive_interval_seconds": self.demo_mouse_keepalive_interval_var.get(),
         }
@@ -2656,6 +2751,12 @@ class AutoTraderApp(tk.Tk):
             ))
             if MIN_DEMO_ENTRY_DEADLINE_SECONDS <= entry_deadline <= MAX_DEMO_ENTRY_DEADLINE_SECONDS:
                 self.demo_entry_deadline_var.set(str(entry_deadline))
+            try:
+                entry_second = int(config.get("demo_entry_second", DEFAULT_DEMO_ENTRY_SECOND))
+            except (TypeError, ValueError):
+                entry_second = DEFAULT_DEMO_ENTRY_SECOND
+            if MIN_DEMO_ENTRY_SECOND <= entry_second <= MAX_DEMO_ENTRY_SECOND:
+                self.demo_entry_second_var.set(f"{entry_second:02d}")
             confidence = config.get("confidence")
             if confidence is not None:
                 self.confidence_var.set(str(confidence))

@@ -12,6 +12,17 @@ from .candle_timer import PlatformClockReading
 UTC_MINUS_THREE = timezone(timedelta(hours=-3), name="UTC-03:00")
 
 
+def demo_entry_second_action(current_second: int, target_second: int) -> str:
+    """Classify a DEMO signal as waiting, on-time, or late for its fixed M1 second."""
+    if not 0 <= current_second <= 59 or not 0 <= target_second <= 30:
+        raise ValueError("Os segundos precisam estar dentro dos limites do minuto M1.")
+    if current_second < target_second:
+        return "wait"
+    if current_second == target_second:
+        return "enter"
+    return "late"
+
+
 def windows_utc_minus_three_reading(instant: datetime | None = None) -> PlatformClockReading:
     """Return the system UTC instant represented in the broker's fixed UTC-3 zone.
 
