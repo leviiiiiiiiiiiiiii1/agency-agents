@@ -80,6 +80,39 @@ def windows_window_at_point(x: int, y: int) -> int | None:
     return int(root_window or window)
 
 
+def windows_window_signature_at_point(x: int, y: int) -> dict[str, object] | None:
+    """Return a persisted identity/geometry signature for the root window at a point."""
+    if sys.platform != "win32":
+        raise RuntimeError("A identificação da janela sob o cursor só funciona no Windows.")
+    from ctypes import wintypes
+
+    handle = windows_window_at_point(x, y)
+    if handle is None:
+        return None
+    user32 = ctypes.windll.user32
+    hwnd = wintypes.HWND(handle)
+    process_id = wintypes.DWORD()
+    user32.GetWindowThreadProcessId.argtypes = (
+        wintypes.HWND, ctypes.POINTER(wintypes.DWORD)
+    )
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
+    class_name = ctypes.create_unicode_buffer(256)
+    rect = wintypes.RECT()
+    user32.GetClassNameW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+    user32.GetClassNameW.restype = ctypes.c_int
+    user32.GetWindowRect.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.RECT))
+    user32.GetWindowRect.restype = wintypes.BOOL
+    if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        raise ctypes.WinError()
+    user32.GetClassNameW(hwnd, class_name, len(class_name))
+    return {
+        "process_id": int(process_id.value),
+        "class_name": class_name.value,
+        "rect": [int(rect.left), int(rect.top), int(rect.right), int(rect.bottom)],
+    }
+
+
 def windows_mouse_move(x: int, y: int) -> None:
     """Move the Windows cursor without pressing any mouse button."""
     if sys.platform != "win32":

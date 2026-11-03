@@ -24,6 +24,7 @@ from .demo_click import (
     windows_mouse_move,
     windows_mouse_position,
     windows_window_at_point,
+    windows_window_signature_at_point,
 )
 from .candle_monitor import detect_candle_bars, filter_to_recent_candle
 from .candle_timer import (
@@ -146,9 +147,13 @@ class AutoTraderApp(tk.Tk):
         self.last_demo_entry_candle_id: int | None = None
         self.demo_click_targets: dict[str, ClickTarget | None] = {"BUY": None, "SELL": None}
         self.demo_click_target_windows: dict[str, int | None] = {"BUY": None, "SELL": None}
+        self.demo_click_target_signatures: dict[str, dict[str, object] | None] = {
+            "BUY": None, "SELL": None
+        }
         self.demo_mouse_keepalive_target: ClickTarget | None = None
         self.demo_mouse_keepalive_alternate: ClickTarget | None = None
         self.demo_mouse_keepalive_window: int | None = None
+        self.demo_mouse_keepalive_signature: dict[str, object] | None = None
         self.demo_mouse_keepalive_after_id: str | None = None
         self.demo_mouse_keepalive_last_move_at = 0.0
         self.demo_mouse_keepalive_use_alternate = False
@@ -497,6 +502,8 @@ class AutoTraderApp(tk.Tk):
             width=5,
         )
         self.demo_mouse_keepalive_spinbox.pack(side="left")
+        self.demo_mouse_keepalive_spinbox.bind("<FocusOut>", lambda _event: self._persist_config())
+        self.demo_mouse_keepalive_spinbox.bind("<Return>", lambda _event: self._persist_config())
         demo_timeout_row = ttk.Frame(simulation_box)
         demo_timeout_row.pack(fill="x", pady=(3, 0))
         ttk.Label(
@@ -792,6 +799,7 @@ class AutoTraderApp(tk.Tk):
                 return
             self.excluded_regions.append(region)
             self.exclusion_status.set(f"{len(self.excluded_regions)} área(s) serão ocultadas antes do OCR e da gravação")
+            self._persist_config()
             self.last_pil_image = None
             self.preview.configure(text="Área de exclusão atualizada. Inicie a visualização para conferir o recorte mascarado.", image="")
 
@@ -805,6 +813,7 @@ class AutoTraderApp(tk.Tk):
     def _clear_excluded_regions(self) -> None:
         self.excluded_regions.clear()
         self.exclusion_status.set("nenhuma área ocultada")
+        self._persist_config()
         self.last_pil_image = None
         self.preview.configure(text="Áreas ocultas removidas. Inicie a visualização para atualizar o recorte.", image="")
 
@@ -849,12 +858,15 @@ class AutoTraderApp(tk.Tk):
             return
         self.demo_click_targets[direction] = None
         self.demo_click_target_windows[direction] = None
+        self.demo_click_target_signatures[direction] = None
         self.demo_mouse_keepalive_target = None
         self.demo_mouse_keepalive_alternate = None
         self.demo_mouse_keepalive_window = None
+        self.demo_mouse_keepalive_signature = None
         self.demo_mouse_keepalive_var.set(False)
         self.demo_mouse_keepalive_status.set("Recalibre o ponto neutro após recalibrar botões.")
         self._set_demo_target_label(direction, None)
+        self._persist_config()
         self.demo_status.set(f"Calibração {label}: janela oculta por 5 s; posicione o cursor no centro do botão.")
         self.withdraw()
         self._calibration_after_id = self.after(5000, lambda: self._finish_demo_calibration(direction))
@@ -862,12 +874,14 @@ class AutoTraderApp(tk.Tk):
     def _finish_demo_calibration(self, direction: str) -> None:
         target: ClickTarget | None = None
         target_window: int | None = None
+        target_signature: dict[str, object] | None = None
         error: Exception | None = None
         try:
             x, y = windows_mouse_position()
             target = ClickTarget(x, y)
             target_window = windows_window_at_point(x, y)
-            if target_window is None:
+            target_signature = windows_window_signature_at_point(x, y)
+            if target_window is None or not self._valid_window_signature(target_signature):
                 raise RuntimeError("Não foi possível identificar a janela da plataforma nesse ponto.")
         except Exception as exc:
             error = exc
@@ -879,10 +893,12 @@ class AutoTraderApp(tk.Tk):
         if error is not None:
             messagebox.showerror(APP_NAME, f"Não foi possível ler a posição do mouse:\n{error}", parent=self)
             return
-        assert target is not None and target_window is not None
+        assert target is not None and target_window is not None and target_signature is not None
         self.demo_click_targets[direction] = target
         self.demo_click_target_windows[direction] = target_window
+        self.demo_click_target_signatures[direction] = target_signature
         self._set_demo_target_label(direction, target)
+        self._persist_config()
         label = "COMPRAR" if direction == "BUY" else "VENDER"
         if self._inside_capture_region(target) and not self._target_is_excluded_or_outside_capture(target):
             self.demo_status.set(
@@ -906,7 +922,16 @@ class AutoTraderApp(tk.Tk):
             self.demo_click_target_windows["BUY"],
             self.demo_click_target_windows["SELL"],
         }
-        if None in expected_windows or expected_windows != {target_window}:
+        buy_signature = self.demo_click_target_signatures["BUY"]
+        sell_signature = self.demo_click_target_signatures["SELL"]
+        if (
+            None in expected_windows
+            or expected_windows != {target_window}
+            or buy_signature is None
+            or sell_signature is None
+            or buy_signature != sell_signature
+            or self.demo_mouse_keepalive_signature != buy_signature
+        ):
             return False
         for point in (target, alternate):
             if not self._target_is_excluded_or_outside_capture(point):
@@ -920,7 +945,11 @@ class AutoTraderApp(tk.Tk):
                     return False
             if check_frontmost:
                 try:
-                    if windows_window_at_point(point.x, point.y) != target_window:
+                    if (
+                        windows_window_at_point(point.x, point.y) != target_window
+                        or windows_window_signature_at_point(point.x, point.y)
+                        != self.demo_mouse_keepalive_signature
+                    ):
                         return False
                 except Exception:
                     return False
@@ -950,7 +979,9 @@ class AutoTraderApp(tk.Tk):
         self.demo_mouse_keepalive_target = None
         self.demo_mouse_keepalive_alternate = None
         self.demo_mouse_keepalive_window = None
+        self.demo_mouse_keepalive_signature = None
         self.demo_mouse_keepalive_status.set("Calibração: posicione no ponto neutro, sem clicar.")
+        self._persist_config()
         self.withdraw()
         self.after(5000, self._finish_demo_mouse_keepalive_calibration)
 
@@ -959,8 +990,15 @@ class AutoTraderApp(tk.Tk):
             x, y = windows_mouse_position()
             target = ClickTarget(x, y)
             target_window = windows_window_at_point(x, y)
-            if target_window is None:
+            target_signature = windows_window_signature_at_point(x, y)
+            if target_window is None or not self._valid_window_signature(target_signature):
                 raise RuntimeError("Não foi possível identificar a janela sob o ponto escolhido.")
+            if (
+                target_signature != self.demo_click_target_signatures["BUY"]
+                or target_signature != self.demo_click_target_signatures["SELL"]
+            ):
+                raise RuntimeError("O ponto neutro precisa estar na mesma janela já calibrada para COMPRAR/VENDER.")
+            self.demo_mouse_keepalive_signature = target_signature
             alternates: list[ClickTarget] = []
             for delta_x in (DEMO_MOUSE_KEEPALIVE_NUDGE_PX, -DEMO_MOUSE_KEEPALIVE_NUDGE_PX):
                 try:
@@ -981,6 +1019,11 @@ class AutoTraderApp(tk.Tk):
                 )
         except Exception as exc:
             self.deiconify()
+            self.demo_mouse_keepalive_target = None
+            self.demo_mouse_keepalive_alternate = None
+            self.demo_mouse_keepalive_window = None
+            self.demo_mouse_keepalive_signature = None
+            self._persist_config()
             self.demo_mouse_keepalive_status.set("Ponto neutro não calibrado.")
             messagebox.showerror(APP_NAME, f"Calibração do ponto neutro recusada:\n{exc}", parent=self)
             return
@@ -988,10 +1031,12 @@ class AutoTraderApp(tk.Tk):
         self.demo_mouse_keepalive_target = target
         self.demo_mouse_keepalive_alternate = alternate
         self.demo_mouse_keepalive_window = target_window
+        self.demo_mouse_keepalive_signature = target_signature
         self.demo_mouse_keepalive_use_alternate = False
         self.demo_mouse_keepalive_status.set(
             f"Ponto neutro calibrado em {target.x},{target.y}; sem clique."
         )
+        self._persist_config()
 
     def _demo_mouse_keepalive_interval(self) -> int | None:
         try:
@@ -1008,9 +1053,11 @@ class AutoTraderApp(tk.Tk):
             self.demo_mouse_keepalive_status.set(
                 "Movimento automático do cursor desligado; nenhum movimento será feito."
             )
+            self._persist_config()
             return
         if self.demo_mouse_keepalive_target is None or self.demo_mouse_keepalive_alternate is None:
             self.demo_mouse_keepalive_var.set(False)
+            self._persist_config()
             messagebox.showinfo(
                 APP_NAME,
                 "Calibre primeiro o ponto neutro. O movimento não envia cliques e só funciona durante DEMO ativo.",
@@ -1019,6 +1066,7 @@ class AutoTraderApp(tk.Tk):
             return
         if self._demo_mouse_keepalive_interval() is None:
             self.demo_mouse_keepalive_var.set(False)
+            self._persist_config()
             messagebox.showerror(
                 APP_NAME,
                 f"O intervalo ocioso deve estar entre {MIN_DEMO_MOUSE_KEEPALIVE_SECONDS} e "
@@ -1036,6 +1084,7 @@ class AutoTraderApp(tk.Tk):
             self.demo_mouse_keepalive_status.set(
                 "Ativado; só movimentará o cursor durante uma ativação DEMO autorizada."
             )
+        self._persist_config()
 
     def _schedule_demo_mouse_keepalive(self) -> None:
         if (
@@ -1192,12 +1241,20 @@ class AutoTraderApp(tk.Tk):
         if (
             buy_target is None
             or sell_target is None
-            or self.demo_click_target_windows["BUY"] is None
-            or self.demo_click_target_windows["SELL"] is None
+            or not self._valid_window_signature(self.demo_click_target_signatures["BUY"])
+            or not self._valid_window_signature(self.demo_click_target_signatures["SELL"])
         ):
             messagebox.showinfo(
                 APP_NAME,
-                "Calibre novamente os botões COMPRAR e VENDER com a janela da plataforma visível.",
+                "Calibre COMPRAR e VENDER uma vez; as posições serão guardadas para próximas sessões.",
+                parent=self,
+            )
+            return
+        if not self._bind_persisted_demo_windows():
+            messagebox.showerror(
+                APP_NAME,
+                "As posições salvas não correspondem à mesma janela/plataforma e geometria. "
+                "Traga a plataforma original para frente e recalibre COMPRAR/VENDER.",
                 parent=self,
             )
             return
@@ -1367,9 +1424,13 @@ class AutoTraderApp(tk.Tk):
             return False
         try:
             current_window = windows_window_at_point(target.x, target.y)
+            current_signature = windows_window_signature_at_point(target.x, target.y)
         except Exception:
             return False
-        return current_window == calibrated_window
+        return (
+            current_window == calibrated_window
+            and current_signature == self.demo_click_target_signatures.get(direction)
+        )
 
     def _execute_demo_click(self) -> None:
         pending = self.simulation.pending
@@ -2367,6 +2428,155 @@ class AutoTraderApp(tk.Tk):
         except OSError as exc:
             messagebox.showerror(APP_NAME, f"Não foi possível salvar a imagem:\n{exc}", parent=self)
 
+    def _screen_layout_signature(self) -> list[dict[str, int]]:
+        layout = [
+            {key: int(monitor[key]) for key in ("left", "top", "width", "height")}
+            for monitor in self.monitors
+        ]
+        return sorted(
+            layout,
+            key=lambda item: (item["left"], item["top"], item["width"], item["height"]),
+        )
+
+    @staticmethod
+    def _valid_window_signature(value: object) -> bool:
+        if not isinstance(value, dict):
+            return False
+        process_id = value.get("process_id")
+        class_name = value.get("class_name")
+        rect = value.get("rect")
+        return (
+            isinstance(process_id, int) and not isinstance(process_id, bool) and process_id > 0
+            and isinstance(class_name, str) and bool(class_name)
+            and isinstance(rect, list) and len(rect) == 4
+            and all(isinstance(item, int) and not isinstance(item, bool) for item in rect)
+            and rect[2] > rect[0] and rect[3] > rect[1]
+        )
+
+    def _load_persisted_calibrations(self, config: dict[str, object]) -> None:
+        has_saved_calibration = any(
+            bool(config.get(key))
+            for key in ("excluded_regions", "demo_click_targets", "demo_mouse_keepalive")
+        )
+        if not has_saved_calibration:
+            return
+        if config.get("screen_layout") != self._screen_layout_signature():
+            self.demo_status.set(
+                "Calibrações antigas não restauradas: a disposição dos monitores mudou; "
+                "selecione novamente as áreas e calibre os pontos."
+            )
+            return
+
+        raw_regions = config.get("excluded_regions", [])
+        if isinstance(raw_regions, list):
+            for value in raw_regions:
+                try:
+                    region = ScreenRegion.from_dict(value)
+                except (TypeError, ValueError, KeyError):
+                    continue
+                if self.region is not None and self._regions_intersect(region, self.region):
+                    self.excluded_regions.append(region)
+        self.exclusion_status.set(
+            f"{len(self.excluded_regions)} área(s) ocultada(s) restaurada(s)"
+            if self.excluded_regions else "nenhuma área ocultada"
+        )
+
+        raw_targets = config.get("demo_click_targets", {})
+        if isinstance(raw_targets, dict):
+            for direction in ("BUY", "SELL"):
+                item = raw_targets.get(direction)
+                if not isinstance(item, dict):
+                    continue
+                point = item.get("target")
+                signature = item.get("window_signature")
+                if not isinstance(point, dict) or not self._valid_window_signature(signature):
+                    continue
+                try:
+                    target = ClickTarget(point.get("x"), point.get("y"))
+                except (TypeError, ValueError):
+                    continue
+                left, top, right, bottom = signature["rect"]
+                if not (left <= target.x < right and top <= target.y < bottom):
+                    continue
+                self.demo_click_targets[direction] = target
+                self.demo_click_target_signatures[direction] = signature
+                self._set_demo_target_label(direction, target)
+
+        raw_keepalive = config.get("demo_mouse_keepalive")
+        if isinstance(raw_keepalive, dict):
+            signature = raw_keepalive.get("window_signature")
+            if self._valid_window_signature(signature):
+                try:
+                    point_data = raw_keepalive.get("target")
+                    alternate_data = raw_keepalive.get("alternate")
+                    if not isinstance(point_data, dict) or not isinstance(alternate_data, dict):
+                        raise ValueError("coordenadas ausentes")
+                    self.demo_mouse_keepalive_target = ClickTarget(
+                        point_data.get("x"), point_data.get("y")
+                    )
+                    self.demo_mouse_keepalive_alternate = ClickTarget(
+                        alternate_data.get("x"), alternate_data.get("y")
+                    )
+                    left, top, right, bottom = signature["rect"]
+                    for saved_point in (
+                        self.demo_mouse_keepalive_target,
+                        self.demo_mouse_keepalive_alternate,
+                    ):
+                        if not (left <= saved_point.x < right and top <= saved_point.y < bottom):
+                            raise ValueError("ponto neutro fora da janela calibrada")
+                    self.demo_mouse_keepalive_signature = signature
+                    self.demo_mouse_keepalive_status.set(
+                        f"Ponto neutro salvo em {self.demo_mouse_keepalive_target.x},"
+                        f"{self.demo_mouse_keepalive_target.y}; será revalidado antes do uso."
+                    )
+                except (TypeError, ValueError):
+                    self.demo_mouse_keepalive_target = None
+                    self.demo_mouse_keepalive_alternate = None
+                    self.demo_mouse_keepalive_signature = None
+
+        if any(self.demo_click_targets.values()) or self.excluded_regions:
+            self.demo_status.set(
+                "Calibrações locais restauradas; janela e posição serão revalidadas antes de qualquer movimento/clique."
+            )
+
+    def _bind_persisted_demo_windows(self) -> bool:
+        """Rebind stored screen points only if the exact calibrated window is still there."""
+        rebound: dict[str, int] = {}
+        for direction in ("BUY", "SELL"):
+            target = self.demo_click_targets[direction]
+            expected_signature = self.demo_click_target_signatures[direction]
+            if target is None or not self._valid_window_signature(expected_signature):
+                return False
+            try:
+                current_window = windows_window_at_point(target.x, target.y)
+                current_signature = windows_window_signature_at_point(target.x, target.y)
+            except Exception:
+                return False
+            if current_window is None or current_signature != expected_signature:
+                return False
+            rebound[direction] = current_window
+
+        if rebound["BUY"] != rebound["SELL"]:
+            return False
+        self.demo_click_target_windows.update(rebound)
+
+        neutral = self.demo_mouse_keepalive_target
+        neutral_signature = self.demo_mouse_keepalive_signature
+        if neutral is not None and self._valid_window_signature(neutral_signature):
+            try:
+                neutral_window = windows_window_at_point(neutral.x, neutral.y)
+                current_signature = windows_window_signature_at_point(neutral.x, neutral.y)
+            except Exception:
+                neutral_window = None
+                current_signature = None
+            if (
+                neutral_window == rebound["BUY"]
+                and current_signature == neutral_signature
+                and neutral_signature == self.demo_click_target_signatures["BUY"]
+            ):
+                self.demo_mouse_keepalive_window = neutral_window
+        return True
+
     def _persist_config(self) -> None:
         payload: dict[str, object] = {
             "timeframe": self.timeframe_var.get(),
@@ -2375,6 +2585,8 @@ class AutoTraderApp(tk.Tk):
             "compact_during_capture": self.compact_during_capture_var.get(),
             "tesseract_executable": self.tesseract_path_var.get().strip().strip('"'),
             "demo_entry_deadline_seconds": self.demo_entry_deadline_var.get(),
+            "demo_mouse_keepalive_enabled": bool(self.demo_mouse_keepalive_var.get()),
+            "demo_mouse_keepalive_interval_seconds": self.demo_mouse_keepalive_interval_var.get(),
         }
         try:
             timeout_seconds = int(self.demo_activation_timeout_var.get())
@@ -2384,6 +2596,33 @@ class AutoTraderApp(tk.Tk):
             pass
         if self.region is not None:
             payload["region"] = self.region.as_mss_dict()
+        payload["screen_layout"] = self._screen_layout_signature()
+        payload["excluded_regions"] = [region.as_mss_dict() for region in self.excluded_regions]
+        payload["demo_click_targets"] = {
+            direction: {
+                "target": {"x": target.x, "y": target.y},
+                "window_signature": self.demo_click_target_signatures[direction],
+            }
+            for direction, target in self.demo_click_targets.items()
+            if target is not None
+            and self._valid_window_signature(self.demo_click_target_signatures[direction])
+        }
+        if (
+            self.demo_mouse_keepalive_target is not None
+            and self.demo_mouse_keepalive_alternate is not None
+            and self._valid_window_signature(self.demo_mouse_keepalive_signature)
+        ):
+            payload["demo_mouse_keepalive"] = {
+                "target": {
+                    "x": self.demo_mouse_keepalive_target.x,
+                    "y": self.demo_mouse_keepalive_target.y,
+                },
+                "alternate": {
+                    "x": self.demo_mouse_keepalive_alternate.x,
+                    "y": self.demo_mouse_keepalive_alternate.y,
+                },
+                "window_signature": self.demo_mouse_keepalive_signature,
+            }
         monitor_index = self._selected_monitor_index()
         if monitor_index is not None:
             payload["monitor_index"] = monitor_index
@@ -2420,9 +2659,29 @@ class AutoTraderApp(tk.Tk):
                 self.ocr_enabled_var.set(config["ocr_enabled"])
             if isinstance(config.get("compact_during_capture"), bool):
                 self.compact_during_capture_var.set(config["compact_during_capture"])
+            if isinstance(config.get("demo_mouse_keepalive_enabled"), bool):
+                self.demo_mouse_keepalive_var.set(config["demo_mouse_keepalive_enabled"])
+            try:
+                keepalive_interval = int(config.get(
+                    "demo_mouse_keepalive_interval_seconds", DEFAULT_DEMO_MOUSE_KEEPALIVE_SECONDS
+                ))
+            except (TypeError, ValueError):
+                keepalive_interval = DEFAULT_DEMO_MOUSE_KEEPALIVE_SECONDS
+            if MIN_DEMO_MOUSE_KEEPALIVE_SECONDS <= keepalive_interval <= MAX_DEMO_MOUSE_KEEPALIVE_SECONDS:
+                self.demo_mouse_keepalive_interval_var.set(str(keepalive_interval))
             tesseract_executable = config.get("tesseract_executable")
             if isinstance(tesseract_executable, str) and tesseract_executable.strip():
                 self.tesseract_path_var.set(tesseract_executable.strip().strip('"'))
+            self._load_persisted_calibrations(config)
+            if self.demo_mouse_keepalive_var.get():
+                if self.demo_mouse_keepalive_target is None:
+                    self.demo_mouse_keepalive_status.set(
+                        "Opção salva marcada; calibre o ponto neutro. Só moverá durante ativação DEMO autorizada."
+                    )
+                else:
+                    self.demo_mouse_keepalive_status.set(
+                        "Ponto neutro salvo e revalidado antes do uso; movimento só durante ativação DEMO autorizada."
+                    )
         except FileNotFoundError:
             pass
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:

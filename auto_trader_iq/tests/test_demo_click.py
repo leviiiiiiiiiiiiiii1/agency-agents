@@ -10,6 +10,7 @@ from auto_trader_iq.demo_click import (
     windows_mouse_move,
     windows_mouse_position,
     windows_window_at_point,
+    windows_window_signature_at_point,
 )
 
 
@@ -70,6 +71,8 @@ class DemoClickTests(unittest.TestCase):
             windows_mouse_click(100, 100)
         with self.assertRaisesRegex(RuntimeError, "Windows"):
             windows_window_at_point(100, 100)
+        with self.assertRaisesRegex(RuntimeError, "Windows"):
+            windows_window_signature_at_point(100, 100)
 
 
 if __name__ == "__main__":

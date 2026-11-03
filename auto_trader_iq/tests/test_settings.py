@@ -13,7 +13,22 @@ class SettingsPersistenceTests(unittest.TestCase):
     def test_settings_are_written_atomically_and_loaded(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "nested" / "config.json"
-            settings = {"timeframe": "M1", "tesseract_executable": "tesseract.exe"}
+            settings = {
+                "timeframe": "M1",
+                "tesseract_executable": "tesseract.exe",
+                "screen_layout": [{"left": 0, "top": 0, "width": 1920, "height": 1080}],
+                "excluded_regions": [{"left": 10, "top": 20, "width": 30, "height": 40}],
+                "demo_click_targets": {
+                    "BUY": {
+                        "target": {"x": 100, "y": 200},
+                        "window_signature": {
+                            "process_id": 1234,
+                            "class_name": "TradingWindow",
+                            "rect": [0, 0, 1920, 1080],
+                        },
+                    }
+                },
+            }
 
             save_settings(config_path, settings)
 
