@@ -35,7 +35,7 @@ def click_demo_direction(
     screen-region and calibrated frontmost-window checks before invoking this function.
     """
     if not enabled or not demo_confirmed:
-        raise PermissionError("Cliques DEMO não estão explicitamente habilitados nesta sessão.")
+        raise PermissionError("Cliques automáticos não estão explicitamente habilitados nesta sessão.")
     if direction == "BUY":
         target = buy_target
     elif direction == "SELL":

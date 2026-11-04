@@ -75,7 +75,7 @@ class WindowsUtcMinusThreeClock:
 
     def reading(self) -> PlatformClockReading:
         if self._anchor_utc is None:
-            raise RuntimeError("O relógio DEMO ainda não foi inicializado.")
+            raise RuntimeError("O relógio da automação ainda não foi inicializado.")
         elapsed = self._monotonic_clock() - self._anchor_monotonic
         if elapsed < 0:
             raise RuntimeError("O relógio monotônico do Windows recuou.")

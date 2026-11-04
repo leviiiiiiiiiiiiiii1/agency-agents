@@ -1,4 +1,4 @@
-"""Interface com simulação assistida e teste experimental de cliques em conta DEMO."""
+"""Interface de OCR e automação assistida de cliques em COMPRA/VENDER."""
 
 from __future__ import annotations
 
@@ -100,7 +100,7 @@ class AutoTraderApp(tk.Tk):
     def __init__(self) -> None:
         _enable_windows_dpi_awareness()
         super().__init__()
-        self.title(f"{APP_NAME} — Teste DEMO assistido")
+        self.title(f"{APP_NAME} — Automação assistida")
         self.geometry("1050x760")
         self.minsize(800, 580)
 
@@ -130,7 +130,7 @@ class AutoTraderApp(tk.Tk):
         self.demo_signal_guard = DemoSignalRepeatGuard()
         self.candidates_by_id: dict[str, SignalCandidate] = {}
         self.simulation_status = tk.StringVar(value="Simulação parada; nenhuma entrada foi registrada.")
-        self.demo_status = tk.StringVar(value="Cliques DEMO desligados; esta opção nunca é reativada automaticamente.")
+        self.demo_status = tk.StringVar(value="Cliques automáticos desligados; esta opção nunca é reativada automaticamente.")
         self.demo_automation_enabled = False
         self.demo_account_confirmed = False
         self.demo_timeout_after_id: str | None = None
@@ -204,12 +204,12 @@ class AutoTraderApp(tk.Tk):
         header = ttk.Frame(self.full_ui, padding=(18, 16))
         header.pack(fill="x")
         ttk.Label(header, text=APP_NAME, font=("Segoe UI", 20, "bold")).pack(anchor="w")
-        ttk.Label(header, text="OCR COMPRA/VENDER · simulação assistida e teste de clique DEMO",
+        ttk.Label(header, text="OCR COMPRA/VENDER · simulação manual · cliques automáticos",
                   font=("Segoe UI", 10)).pack(anchor="w", pady=(3, 0))
 
         warning = ttk.Label(
             self.full_ui,
-            text="Cliques automáticos são experimentais e desligados por padrão. A ativação DEMO limita-se a uma entrada por vela M1, no segundo configurado; o app não verifica tipo de conta nem aceitação da ordem.",
+            text="Cliques automáticos ficam desligados por padrão. Há no máximo uma tentativa por vela M1, no segundo configurado. O app não verifica a conta, os parâmetros da ordem nem sua aceitação; um clique pode enviar uma ordem real.",
             foreground="#8a4b08", background="#fff3cd", padding=9, wraplength=760,
         )
         warning.pack(fill="x", padx=18, pady=(0, 10))
@@ -277,7 +277,7 @@ class AutoTraderApp(tk.Tk):
 
         ttk.Checkbutton(
             controls,
-            text="Ativar OCR experimental COMPRA/VENDER",
+            text="Ativar reconhecimento OCR COMPRA/VENDER",
             variable=self.ocr_enabled_var,
             command=self._persist_config,
         ).grid(row=17, column=0, sticky="w", pady=(8, 2))
@@ -405,7 +405,7 @@ class AutoTraderApp(tk.Tk):
 
         simulation_box = ttk.LabelFrame(
             right_content,
-            text="Simulação assistida · cliques experimentais apenas em DEMO",
+            text="Simulação manual · cliques automáticos opcionais",
             padding=6,
         )
         simulation_box.pack(fill="x", pady=(8, 0))
@@ -459,7 +459,7 @@ class AutoTraderApp(tk.Tk):
         )
         self.cancel_sim_button.pack(side="left", padx=6)
         self.demo_toggle_button = ttk.Button(
-            sim_buttons, text="Ativar cliques DEMO…", command=self._toggle_demo_automation
+            sim_buttons, text="Ativar cliques automáticos…", command=self._toggle_demo_automation
         )
         self.demo_toggle_button.pack(side="right", padx=6)
         demo_target_row = ttk.Frame(simulation_box)
@@ -486,7 +486,7 @@ class AutoTraderApp(tk.Tk):
         demo_mouse_keepalive_options.pack(fill="x", pady=(3, 0))
         self.demo_mouse_keepalive_checkbutton = ttk.Checkbutton(
             demo_mouse_keepalive_options,
-            text="Movimentar cursor sem clicar após inatividade (somente DEMO)",
+            text="Movimentar cursor sem clicar após inatividade (opcional)",
             variable=self.demo_mouse_keepalive_var,
             command=self._on_demo_mouse_keepalive_toggle,
             state="normal" if sys.platform == "win32" else "disabled",
@@ -508,7 +508,7 @@ class AutoTraderApp(tk.Tk):
         demo_timeout_row.pack(fill="x", pady=(3, 0))
         ttk.Label(
             demo_timeout_row,
-            text=f"Limite da ativação contínua DEMO ({MIN_DEMO_ACTIVATION_TIMEOUT_SECONDS}–"
+            text=f"Limite da automação contínua ({MIN_DEMO_ACTIVATION_TIMEOUT_SECONDS}–"
                  f"{MAX_DEMO_ACTIVATION_TIMEOUT_SECONDS} s):",
         ).pack(side="left", padx=(0, 6))
         self.demo_timeout_spinbox = ttk.Spinbox(
@@ -526,7 +526,7 @@ class AutoTraderApp(tk.Tk):
         ttk.Label(demo_timeout_row, text="padrão: 75 s").pack(side="left", padx=(6, 0))
         demo_entry_second_row = ttk.Frame(simulation_box)
         demo_entry_second_row.pack(fill="x", pady=(3, 0))
-        ttk.Label(demo_entry_second_row, text="Segundo fixo da entrada DEMO (:SS):").pack(
+        ttk.Label(demo_entry_second_row, text="Segundo fixo do clique automático (:SS):").pack(
             side="left", padx=(0, 6)
         )
         self.demo_entry_second_spinbox = ttk.Spinbox(
@@ -657,7 +657,7 @@ class AutoTraderApp(tk.Tk):
 
         self.compact_demo_mouse_keepalive_checkbutton = ttk.Checkbutton(
             self.compact_frame,
-            text="Movimentar cursor sem clicar após inatividade (DEMO)",
+            text="Movimentar cursor sem clicar após inatividade (opcional)",
             variable=self.demo_mouse_keepalive_var,
             command=self._on_demo_mouse_keepalive_toggle,
             state="normal" if sys.platform == "win32" else "disabled",
@@ -670,7 +670,7 @@ class AutoTraderApp(tk.Tk):
         compact_controls = ttk.Frame(self.compact_frame)
         compact_controls.pack(fill="x", pady=(2, 2))
         self.compact_demo_toggle_button = ttk.Button(
-            compact_controls, text="Ativar DEMO…", command=self._toggle_demo_automation
+            compact_controls, text="Ativar cliques automáticos…", command=self._toggle_demo_automation
         )
         self.compact_demo_toggle_button.pack(side="left", padx=(0, 6))
         self.compact_sequence_button = ttk.Button(
@@ -844,7 +844,7 @@ class AutoTraderApp(tk.Tk):
         if direction not in {"BUY", "SELL"}:
             return
         if self.demo_automation_enabled:
-            messagebox.showinfo(APP_NAME, "Desative os cliques DEMO antes de calibrar os botões.", parent=self)
+            messagebox.showinfo(APP_NAME, "Desative os cliques automáticos antes de calibrar os botões.", parent=self)
             return
         label = "COMPRAR" if direction == "BUY" else "VENDER"
         consent = messagebox.askyesno(
@@ -902,7 +902,7 @@ class AutoTraderApp(tk.Tk):
         if self._inside_capture_region(target) and not self._target_is_excluded_or_outside_capture(target):
             self.demo_status.set(
                 f"Botão {label} calibrado em {target.x}, {target.y}; marque uma área para ocultar os botões "
-                "antes de ativar cliques DEMO. Nenhum clique foi enviado."
+                "antes de ativar cliques automáticos. Nenhum clique foi enviado."
             )
         else:
             self.demo_status.set(f"Botão {label} calibrado em {target.x}, {target.y}; nenhum clique foi enviado.")
@@ -959,7 +959,7 @@ class AutoTraderApp(tk.Tk):
             messagebox.showerror(APP_NAME, "A calibração do cursor só funciona no Windows.", parent=self)
             return
         if self.demo_automation_enabled:
-            messagebox.showinfo(APP_NAME, "Desative os cliques DEMO antes de calibrar o ponto neutro.", parent=self)
+            messagebox.showinfo(APP_NAME, "Desative os cliques automáticos antes de calibrar o ponto neutro.", parent=self)
             return
         if any(self.demo_click_targets[direction] is None for direction in ("BUY", "SELL")):
             messagebox.showinfo(APP_NAME, "Calibre COMPRAR e VENDER antes de calibrar o ponto neutro.", parent=self)
@@ -970,7 +970,7 @@ class AutoTraderApp(tk.Tk):
             APP_NAME,
             "Calibrar um ponto neutro sem clique. A janela AUTO TRADER ficará oculta por 5 segundos. "
             "Mova o cursor para uma área vazia da janela da corretora, longe dos botões de ordem e etiquetas; "
-            "não clique. O ponto e uma posição adjacente serão usados apenas quando DEMO estiver autorizado.",
+            "não clique. O ponto e uma posição adjacente serão usados apenas durante uma ativação explícita da automação.",
             parent=self,
         )
         if not consent:
@@ -1059,7 +1059,7 @@ class AutoTraderApp(tk.Tk):
             self._persist_config()
             messagebox.showinfo(
                 APP_NAME,
-                "Calibre primeiro o ponto neutro. O movimento não envia cliques e só funciona durante DEMO ativo.",
+                "Calibre primeiro o ponto neutro. O movimento não envia cliques e só funciona durante a automação ativa.",
                 parent=self,
             )
             return
@@ -1077,11 +1077,11 @@ class AutoTraderApp(tk.Tk):
             self.demo_mouse_keepalive_last_move_at = time.monotonic()
             self._schedule_demo_mouse_keepalive()
             self.demo_mouse_keepalive_status.set(
-                "Movimento DEMO sem clique habilitado; aguardando inatividade do usuário."
+                "Movimento sem clique habilitado; aguardando inatividade do usuário."
             )
         else:
             self.demo_mouse_keepalive_status.set(
-                "Ativado; só movimentará o cursor durante uma ativação DEMO autorizada."
+                "Ativado; só movimentará o cursor durante a automação ativa."
             )
         self._persist_config()
 
@@ -1172,14 +1172,14 @@ class AutoTraderApp(tk.Tk):
                         )
             elif idle_seconds < interval:
                 self.demo_mouse_keepalive_status.set(
-                    f"Movimento DEMO sem clique aguardando {interval} s de inatividade do usuário."
+                    f"Movimento sem clique aguardando {interval} s de inatividade do usuário."
                 )
         except Exception as exc:
-            self.demo_mouse_keepalive_status.set(f"Movimento DEMO suspenso por erro: {exc}")
+            self.demo_mouse_keepalive_status.set(f"Movimento sem clique suspenso por erro: {exc}")
         self._schedule_demo_mouse_keepalive()
 
     def _update_demo_toggle_text(self) -> None:
-        text = "Parar cliques DEMO" if self.demo_automation_enabled else "Ativar cliques DEMO…"
+        text = "Parar cliques automáticos" if self.demo_automation_enabled else "Ativar cliques automáticos…"
         config_state = "disabled" if self.demo_automation_enabled else "normal"
         for name in ("demo_toggle_button", "compact_demo_toggle_button"):
             button = getattr(self, name, None)
@@ -1195,21 +1195,21 @@ class AutoTraderApp(tk.Tk):
             self._deactivate_demo_automation()
             if self.simulation.pending is not None:
                 self._cancel_pending_simulation()
-            self.demo_status.set("Cliques DEMO desligados pelo usuário; nenhum sinal pendente será executado.")
+            self.demo_status.set("Cliques automáticos desligados pelo usuário; nenhum sinal pendente será executado.")
             return
         if sys.platform != "win32":
             messagebox.showerror(APP_NAME, "A automação do mouse só funciona no Windows.", parent=self)
             return
         if not self.running or self.detector is None:
-            messagebox.showinfo(APP_NAME, "Inicie a captura com OCR ativo antes de habilitar cliques DEMO.", parent=self)
+            messagebox.showinfo(APP_NAME, "Inicie a captura com OCR ativo antes de habilitar cliques automáticos.", parent=self)
             return
         if self.timeframe_var.get() != "M1":
-            messagebox.showinfo(APP_NAME, "A automação contínua de clique DEMO está limitada ao período M1.", parent=self)
+            messagebox.showinfo(APP_NAME, "A automação contínua de cliques está limitada ao período M1.", parent=self)
             return
         try:
             activation_timeout = int(self.demo_activation_timeout_var.get())
         except (TypeError, ValueError):
-            messagebox.showerror(APP_NAME, "Informe o limite da ativação DEMO em segundos.", parent=self)
+            messagebox.showerror(APP_NAME, "Informe o limite da automação em segundos.", parent=self)
             return
         if not MIN_DEMO_ACTIVATION_TIMEOUT_SECONDS <= activation_timeout <= MAX_DEMO_ACTIVATION_TIMEOUT_SECONDS:
             messagebox.showerror(
@@ -1222,7 +1222,7 @@ class AutoTraderApp(tk.Tk):
         try:
             entry_second = int(self.demo_entry_second_var.get())
         except (TypeError, ValueError):
-            messagebox.showerror(APP_NAME, "Informe o segundo fixo da entrada DEMO entre :00 e :30.", parent=self)
+            messagebox.showerror(APP_NAME, "Informe o segundo fixo do clique automático entre :00 e :30.", parent=self)
             return
         if not MIN_DEMO_ENTRY_SECOND <= entry_second <= MAX_DEMO_ENTRY_SECOND:
             messagebox.showerror(
@@ -1232,7 +1232,7 @@ class AutoTraderApp(tk.Tk):
             )
             return
         if self.simulation.pending is not None:
-            messagebox.showinfo(APP_NAME, "Cancele o sinal pendente antes de habilitar cliques DEMO.", parent=self)
+            messagebox.showinfo(APP_NAME, "Cancele o sinal pendente antes de habilitar cliques automáticos.", parent=self)
             return
         buy_target = self.demo_click_targets["BUY"]
         sell_target = self.demo_click_targets["SELL"]
@@ -1303,8 +1303,8 @@ class AutoTraderApp(tk.Tk):
             )
         consent = messagebox.askyesno(
             APP_NAME,
-            "ATENÇÃO — cliques automáticos somente em conta DEMO.\n\n"
-            "Confirme que a plataforma está na conta DEMO e que valor/expiração foram conferidos. "
+            "ATENÇÃO — cliques automáticos na plataforma.\n\n"
+            "Confira a conta selecionada, o ativo, o valor, a expiração e os demais parâmetros diretamente na plataforma. "
             "O app não consegue verificar o tipo de conta nem os valores.\n\n"
             "A ativação contínua pode enviar no máximo uma entrada por vela M1, somente até :30 do relógio "
             "do Windows convertido para UTC−3. Esse é um relógio local, não uma leitura da corretora; "
@@ -1315,7 +1315,7 @@ class AutoTraderApp(tk.Tk):
             f"Ficará ativa por {activation_timeout} s ou até você pará-la; sinais repetidos na mesma vela são bloqueados. "
             "A identidade da vela e a aceitação da ordem não são verificadas visualmente.\n\n"
             f"{mouse_keepalive_note}\n\n"
-            "Se a conta não estiver em DEMO, o clique poderá enviar uma ordem real. Ativar agora?",
+            "O app não consegue verificar esses dados nem confirmar se a plataforma aceitou a ordem. Um clique pode enviar uma ordem real. Ativar agora?",
             parent=self,
         )
         if not consent:
@@ -1334,12 +1334,12 @@ class AutoTraderApp(tk.Tk):
             self.demo_mouse_keepalive_use_alternate = False
             self._schedule_demo_mouse_keepalive()
             self.demo_mouse_keepalive_status.set(
-                "Keep-alive DEMO sem clique ativo; aguardando intervalo de inatividade."
+                "Movimento sem clique ativo; aguardando intervalo de inatividade."
             )
         self._persist_config()
         self._update_demo_toggle_text()
         self.demo_status.set(
-            f"CLIQUE DEMO CONTÍNUO ATIVO por {activation_timeout} s: sinais legíveis são armados "
+            f"CLIQUES AUTOMÁTICOS ATIVOS por {activation_timeout} s: sinais legíveis são armados "
             f"assim que reconhecidos; entrada programada para :{self.demo_entry_second_active:02d}. "
             "Sinais reconhecidos depois desse segundo são descartados; uma tentativa por minuto "
             "do relógio Windows UTC−3. Os segundos podem divergir da corretora."
@@ -1364,10 +1364,10 @@ class AutoTraderApp(tk.Tk):
         candidates = list(self.candidates_by_id.values())
         if len(candidates) != 1:
             if len(candidates) > 1:
-                self.demo_status.set("DEMO contínuo pausado nesta leitura: há mais de um candidato OCR.")
+                self.demo_status.set("Automação contínua pausada nesta leitura: há mais de um candidato OCR.")
             else:
                 self.demo_status.set(
-                    "DEMO ativo: nenhum sinal COMPRA/VENDER recente e legível; "
+                    "Automação ativa: nenhum sinal COMPRA/VENDER recente e legível; "
                     "aguardando nova leitura OCR. O minuto de referência é o Windows UTC−3."
                 )
             return
@@ -1377,7 +1377,7 @@ class AutoTraderApp(tk.Tk):
                 candidate.direction, candidate.left, candidate.top
             )
             self.demo_status.set(
-                f"DEMO ativo: já houve uma tentativa na vela M1 "
+                f"Automação ativa: já houve uma tentativa na vela M1 "
                 f"{clock.hour:02d}:{clock.minute:02d} do relógio Windows UTC−3; "
                 "aguardando a próxima virada do minuto do Windows."
             )
@@ -1387,13 +1387,13 @@ class AutoTraderApp(tk.Tk):
                 candidate.direction, candidate.left, candidate.top
             )
             self.demo_status.set(
-                f"DEMO ativo: relógio Windows UTC−3 {clock.hour:02d}:{clock.minute:02d}:{clock.second:02d} passou de :30; "
+                f"Automação ativa: relógio Windows UTC−3 {clock.hour:02d}:{clock.minute:02d}:{clock.second:02d} passou de :30; "
                 "este sinal foi descartado sem clique, aguardando um próximo sinal elegível."
             )
             return
         if self.demo_signal_guard.blocks(candidate):
             self.demo_status.set(
-                f"DEMO ativo: este sinal já foi consumido na vela M1 "
+                f"Automação ativa: este sinal já foi consumido na vela M1 "
                 f"{clock.hour:02d}:{clock.minute:02d} do relógio Windows UTC−3; "
                 "aguardando a próxima virada do minuto do Windows."
             )
@@ -1414,7 +1414,7 @@ class AutoTraderApp(tk.Tk):
         )
         persistence_note = f" Histórico não gravado: {error}" if error else ""
         self.demo_status.set(
-            f"DEMO: {label} armado automaticamente ({pending.confidence:.0f}%). "
+            f"Sinal {label} armado para clique automático ({pending.confidence:.0f}%). "
             f"Entrada programada para :{self.demo_entry_second_active:02d}; "
             f"uma tentativa nesta vela M1 do relógio Windows UTC−3.{persistence_note}"
         )
@@ -1465,7 +1465,7 @@ class AutoTraderApp(tk.Tk):
         if current_candle_id is None or current_candle_id != self.pending_demo_candle_id:
             self._cancel_pending_simulation()
             self.demo_status.set(
-                f"Sinal DEMO expirou: o relógio Windows UTC−3 avançou para "
+                f"Sinal expirou: o relógio Windows UTC−3 avançou para "
                 f"{clock.hour:02d}:{clock.minute:02d} antes da tentativa; "
                 "sinal antigo cancelado sem clique."
             )
@@ -1478,7 +1478,7 @@ class AutoTraderApp(tk.Tk):
         ):
             self._deactivate_demo_automation()
             self.demo_status.set(
-                "DEMO bloqueado: o ponto do botão não está sobre a mesma janela calibrada. "
+                "Clique automático bloqueado: o ponto do botão não está sobre a mesma janela calibrada. "
                 "Traga a corretora para frente e recalibre os botões."
             )
             self._cancel_pending_simulation()
@@ -1487,7 +1487,7 @@ class AutoTraderApp(tk.Tk):
             self.demo_signal_guard.mark_consumed(pending.direction, pending.x, pending.y)
             self._cancel_pending_simulation()
             self.demo_status.set(
-                "Sinal DEMO descartado: a etiqueta não está mais presente na leitura OCR recente."
+                "Sinal descartado: a etiqueta não está mais presente na leitura OCR recente."
             )
             return
         elapsed = platform_clock_elapsed_seconds(self.pending_armed_clock, clock)
@@ -1505,7 +1505,7 @@ class AutoTraderApp(tk.Tk):
                 remaining_to_target * 1000, self._execute_demo_click
             )
             self.demo_status.set(
-                f"Sinal DEMO armado; aguardando :{self.demo_entry_second_active:02d} "
+                f"Sinal armado; aguardando :{self.demo_entry_second_active:02d} "
                 "para padronizar o segundo da entrada."
             )
             return
@@ -1513,7 +1513,7 @@ class AutoTraderApp(tk.Tk):
             self.demo_signal_guard.mark_consumed(pending.direction, pending.x, pending.y)
             self._cancel_pending_simulation()
             self.demo_status.set(
-                f"Sinal DEMO descartado: foi reconhecido depois de :{self.demo_entry_second_active:02d}; "
+                f"Sinal descartado: foi reconhecido depois de :{self.demo_entry_second_active:02d}; "
                 "aguardando novo sinal na próxima vela."
             )
             return
@@ -1556,7 +1556,7 @@ class AutoTraderApp(tk.Tk):
             self._clear_pending_clock_observation()
             self._deactivate_demo_automation()
             self.demo_status.set(
-                f"Resultado do clique DEMO incerto ({exc}); automação encerrada para evitar repetição. "
+                f"Resultado do clique automático incerto ({exc}); automação encerrada para evitar repetição. "
                 "Verifique a plataforma antes de reativar."
             )
             self._refresh_simulation_buttons()
@@ -1577,7 +1577,7 @@ class AutoTraderApp(tk.Tk):
         )
         self.history_table.insert(
             "", 0, iid=f"demo-{entry.signal_id}",
-            values=(time_text, label, f"DEMO · atraso relógio Windows UTC−3 {elapsed} s"),
+            values=(time_text, label, f"Automática · atraso relógio Windows UTC−3 {elapsed} s"),
         )
         self.demo_signal_guard.mark_consumed(
             entry.direction, entry.signal_x, entry.signal_y
@@ -1592,7 +1592,7 @@ class AutoTraderApp(tk.Tk):
             f"Prazo restante da ativação: até {self.demo_activation_timeout_active} s.{persistence_note}"
         )
         self.simulation_status.set(
-            "Tentativa DEMO registrada; identidade da vela e aceitação pela plataforma não verificadas. "
+            "Tentativa de clique registrada; identidade da vela e aceitação pela plataforma não verificadas. "
             f"Entradas nesta ativação: {self.demo_entries_this_activation}."
         )
         self._refresh_simulation_buttons()
@@ -1607,7 +1607,7 @@ class AutoTraderApp(tk.Tk):
         if self.simulation.pending is not None:
             self._cancel_pending_simulation()
         self.demo_status.set(
-            f"Ativação DEMO encerrada pelo limite de {timeout} s; {entries} entrada(s) tentada(s)."
+            f"Automação encerrada pelo limite de {timeout} s; {entries} entrada(s) tentada(s)."
         )
 
     def _deactivate_demo_automation(self) -> None:
@@ -1617,7 +1617,7 @@ class AutoTraderApp(tk.Tk):
         self.demo_account_confirmed = False
         if self.demo_mouse_keepalive_var.get():
             self.demo_mouse_keepalive_status.set(
-                "Keep-alive sem clique parado porque a ativação DEMO terminou."
+                "Keep-alive sem clique parado porque a automação terminou."
             )
         if self.demo_timeout_after_id is not None:
             try:
@@ -2000,7 +2000,7 @@ class AutoTraderApp(tk.Tk):
     def _clear_entry_history(self) -> None:
         if self.demo_automation_enabled:
             messagebox.showinfo(
-                APP_NAME, "Pare os cliques DEMO antes de limpar o log.", parent=self
+                APP_NAME, "Pare os cliques automáticos antes de limpar o log.", parent=self
             )
             return
         if not messagebox.askyesno(
@@ -2047,9 +2047,9 @@ class AutoTraderApp(tk.Tk):
                         if row.get("clock_source") == DEMO_CLOCK_SOURCE
                         else "HORA ATUAL OCR"
                     )
-                    row_status = f"DEMO · atraso {source} {delay}s{arm_note}"
+                    row_status = f"Automática · atraso {source} {delay}s{arm_note}"
                 else:
-                    row_status = "DEMO · clique enviado; atraso não registrado"
+                    row_status = "Automática · clique enviado; atraso não registrado"
             else:
                 row_status = f"SIMULADA · N+1{elapsed_text}"
             self.history_table.insert(
@@ -2140,7 +2140,7 @@ class AutoTraderApp(tk.Tk):
 
     def _arm_candidate_id(self, item_id: str) -> None:
         if self.demo_automation_enabled:
-            self.simulation_status.set("No modo DEMO, os candidatos são armados automaticamente; use Cancelar para abortar.")
+            self.simulation_status.set("Com cliques automáticos ativos, os candidatos são armados automaticamente; use Cancelar para abortar.")
             return
         candidate = self.candidates_by_id.get(item_id)
         if candidate is None:
@@ -2325,7 +2325,7 @@ class AutoTraderApp(tk.Tk):
         if self.demo_automation_enabled:
             demo_clock = self.demo_clock.reading()
             pending = self.simulation.pending
-            prefix = "M1 DEMO · referência temporal somente Windows UTC−3"
+            prefix = "M1 automático · referência temporal somente Windows UTC−3"
             if pending is not None:
                 elapsed = platform_clock_elapsed_seconds(self.pending_armed_clock, demo_clock)
                 self.timer_status.set(
@@ -2336,7 +2336,7 @@ class AutoTraderApp(tk.Tk):
             else:
                 self.timer_status.set(
                     f"{prefix}: {demo_clock.hour:02d}:{demo_clock.minute:02d}:"
-                    f"{demo_clock.second:02d}; entrada DEMO no segundo :{self.demo_entry_second_active:02d}, "
+                    f"{demo_clock.second:02d}; clique automático no segundo :{self.demo_entry_second_active:02d}, "
                     "máximo uma tentativa por minuto do Windows, até :30."
                 )
             self._refresh_simulation_buttons()
@@ -2402,7 +2402,7 @@ class AutoTraderApp(tk.Tk):
             )
             if self.demo_automation_enabled:
                 self._deactivate_demo_automation()
-                self.demo_status.set("Teste DEMO encerrado sem clique: janela M1/N+1 não foi válida.")
+                self.demo_status.set("Automação encerrada sem clique: janela M1/N+1 não foi válida.")
             persistence_note = f" Histórico local não gravado: {log_error}" if log_error else ""
             self.simulation_status.set(
                 f"Sinal {label} descartado: {expire_reason}; nenhuma entrada enviada."
@@ -2708,11 +2708,11 @@ class AutoTraderApp(tk.Tk):
             if self.demo_mouse_keepalive_var.get():
                 if self.demo_mouse_keepalive_target is None:
                     self.demo_mouse_keepalive_status.set(
-                        "Opção salva marcada; calibre o ponto neutro. Só moverá durante ativação DEMO autorizada."
+                        "Opção salva marcada; calibre o ponto neutro. Só moverá durante a automação ativa."
                     )
                 else:
                     self.demo_mouse_keepalive_status.set(
-                        "Ponto neutro salvo e revalidado antes do uso; movimento só durante ativação DEMO autorizada."
+                        "Ponto neutro salvo e revalidado antes do uso; movimento só durante a automação ativa."
                     )
         except FileNotFoundError:
             pass
