@@ -1785,6 +1785,8 @@ class AutoTraderApp(tk.Tk):
             if self.detector is not None and now - self.last_ocr_at >= OCR_INTERVAL_SECONDS:
                 try:
                     raw_candidates, self.latest_platform_clock = self.detector.detect_frame(image)
+                    raw_candidate_count = self.detector.last_candidate_count
+                    color_rejected_count = self.detector.last_color_rejected_count
                     self.latest_clock_at = now if self.latest_platform_clock is not None else None
                     self._observe_pending_platform_minute()
                     bars = detect_candle_bars(image)
@@ -1792,7 +1794,9 @@ class AutoTraderApp(tk.Tk):
                     self.last_candidates = filter_to_recent_candle(raw_candidates, bars)
                     self.demo_signal_guard.observe(self.last_candidates)
                     self.last_ocr_at = now
-                    self._update_ocr_status(self.last_candidates, len(raw_candidates), len(bars))
+                    self._update_ocr_status(
+                        self.last_candidates, raw_candidate_count, len(bars), color_rejected_count
+                    )
                     self._maybe_auto_arm_demo_signal()
                     # OCR may be slower than one frame; assess freshness after processing,
                     # not against the frame-start timestamp captured before the OCR work.
@@ -1915,11 +1919,20 @@ class AutoTraderApp(tk.Tk):
         )
 
     def _update_ocr_status(
-        self, candidates: list[SignalCandidate], raw_count: int = 0, candle_count: int = 0
+        self,
+        candidates: list[SignalCandidate],
+        raw_count: int = 0,
+        candle_count: int = 0,
+        color_rejected_count: int = 0,
     ) -> None:
         self._update_candidate_table(candidates)
         if not candidates:
-            if raw_count and candle_count < 2:
+            if color_rejected_count:
+                self.ocr_status.set(
+                    f"OCR viu {raw_count} etiqueta(s), mas a cor do texto diverge da direção; "
+                    f"{color_rejected_count} candidato(s) bloqueado(s)."
+                )
+            elif raw_count and candle_count < 2:
                 self.ocr_status.set(
                     f"OCR viu {raw_count} etiqueta(s), mas não localizou 2 velas com segurança; "
                     "candidatos bloqueados."
@@ -1939,6 +1952,8 @@ class AutoTraderApp(tk.Tk):
         )
         if len(candidates) > 4:
             summary += f" | +{len(candidates) - 4}"
+        if color_rejected_count:
+            summary += f" · {color_rejected_count} rótulo(s) bloqueado(s) por conflito de cor"
         self.ocr_status.set(
             f"Candidato(s) nas velas mais recentes — revise: {summary} "
             f"(OCR bruto: {raw_count}; barras detectadas: {candle_count})"

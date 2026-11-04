@@ -21,11 +21,26 @@ class CandleBar:
     bottom: int
 
 
+def _candle_pixel_color(r: int, g: int, b: int) -> str | None:
+    """Recognize common candle palettes, including white/purple chart themes."""
+    if g >= 90 and g >= r * 1.32 and g >= b * 1.12:
+        return "green"
+    if r >= 125 and r >= g * 1.32 and r >= b * 1.25:
+        return "red"
+    if b >= 120 and r >= 80 and b >= r * 1.12 and r >= g * 1.35:
+        return "purple"
+    if min(r, g, b) >= 190 and max(r, g, b) - min(r, g, b) <= 42:
+        return "white"
+    return None
+
+
 def detect_candle_bars(image, downscale: int = 2) -> list[CandleBar]:
-    """Localiza agrupamentos largos/altos de pixels vermelhos ou verdes.
+    """Localiza corpos/pavios em paletas verde/vermelha ou branca/roxa.
 
     Reduz a imagem para acelerar a varredura; exige largura, área e altura mínimas
-    para rejeitar, na maioria dos casos, textos, setas e linhas horizontais.
+    para rejeitar, na maioria dos casos, textos, setas e linhas horizontais. Se houver
+    pelo menos duas barras brancas/roxas, prioriza essa paleta para não confundir
+    setas de sinal vermelhas/verdes com velas.
     """
     if downscale < 1:
         raise ValueError("downscale precisa ser pelo menos 1.")
@@ -38,17 +53,15 @@ def detect_candle_bars(image, downscale: int = 2) -> list[CandleBar]:
 
     column_color: dict[int, str] = {}
     for x in range(width):
-        green_ys: list[int] = []
-        red_ys: list[int] = []
+        positions_by_color: dict[str, list[int]] = {}
         for y in range(height):
-            r, g, b = pixels[x, y]
-            if g >= 90 and g >= r * 1.32 and g >= b * 1.12:
-                green_ys.append(y)
-            elif r >= 125 and r >= g * 1.32 and r >= b * 1.25:
-                red_ys.append(y)
-        dominant = "green" if len(green_ys) >= len(red_ys) else "red"
-        positions = green_ys if dominant == "green" else red_ys
-        # Candle corpo/wick ocupa muitas linhas no mesmo x; letras e retículos, poucas.
+            color = _candle_pixel_color(*pixels[x, y])
+            if color is not None:
+                positions_by_color.setdefault(color, []).append(y)
+        if not positions_by_color:
+            continue
+        dominant, positions = max(positions_by_color.items(), key=lambda item: len(item[1]))
+        # Corpo/pavio ocupa muitas linhas no mesmo x; letras e retículos, poucas.
         if len(positions) >= 5:
             column_color[x] = dominant
 
@@ -76,10 +89,7 @@ def detect_candle_bars(image, downscale: int = 2) -> list[CandleBar]:
         color_pixels = 0
         for x in range(left, right + 1):
             for y in range(height):
-                r, g, b = pixels[x, y]
-                matches = (g >= 90 and g >= r * 1.32 and g >= b * 1.12) if color == "green" \
-                    else (r >= 125 and r >= g * 1.32 and r >= b * 1.25)
-                if matches:
+                if _candle_pixel_color(*pixels[x, y]) == color:
                     ys.append(y)
                     color_pixels += 1
         if not ys:
@@ -93,6 +103,11 @@ def detect_candle_bars(image, downscale: int = 2) -> list[CandleBar]:
             top=top * downscale,
             bottom=(bottom + 1) * downscale,
         ))
+    light_palette_bars = [bar for bar in bars if bar.color in {"white", "purple"}]
+    if len(light_palette_bars) >= 2:
+        bars = light_palette_bars
+    else:
+        bars = [bar for bar in bars if bar.color in {"green", "red"}]
     return sorted(bars, key=lambda bar: bar.center_x)
 
 

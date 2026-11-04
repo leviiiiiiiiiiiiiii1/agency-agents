@@ -58,6 +58,31 @@ def parse_ocr_rows(data: dict[str, Any], min_confidence: float = 70.0) -> list[S
     return candidates
 
 
+def _signal_color_direction(image, candidate: SignalCandidate) -> str | None:
+    """Classify a colored label by its dominant green (BUY) or red (SELL) pixels.
+
+    Neutral/unknown labels return None so OCR remains usable with uncolored themes.
+    A color that contradicts the recognized word rejects the candidate rather than
+    silently changing its direction.
+    """
+    left = max(0, candidate.left - 2)
+    top = max(0, candidate.top - 2)
+    right = min(image.width, candidate.left + candidate.width + 2)
+    bottom = min(image.height, candidate.top + candidate.height + 2)
+    if right <= left or bottom <= top:
+        return None
+    red = green = 0
+    for r, g, b in image.crop((left, top, right, bottom)).convert("RGB").getdata():
+        if g >= 70 and g >= r * 1.25 and g >= b * 1.08:
+            green += 1
+        elif r >= 85 and r >= g * 1.30 and r >= b * 1.18:
+            red += 1
+    dominant = max(red, green)
+    if dominant < 4 or dominant < min(red, green) * 1.35:
+        return None
+    return "SELL" if red > green else "BUY"
+
+
 def _summarize_clock_ocr(data: dict[str, Any], limit: int = 180) -> str:
     """Short local diagnostic of tokens from the bottom-right clock-only crop."""
     snippets: list[str] = []
@@ -84,6 +109,8 @@ class TesseractSignalDetector:
         self.min_confidence = min_confidence
         self.executable = executable
         self.last_clock_ocr_text = ""
+        self.last_candidate_count = 0
+        self.last_color_rejected_count = 0
 
     def check_ready(self) -> None:
         try:
@@ -128,6 +155,16 @@ class TesseractSignalDetector:
                             max(1, c.width // scale), max(1, c.height // scale), c.observed_text)
             for c in candidates
         ]
+        self.last_candidate_count = len(candidates)
+        self.last_color_rejected_count = 0
+        color_checked: list[SignalCandidate] = []
+        for candidate in candidates:
+            color_direction = _signal_color_direction(image, candidate)
+            if color_direction is not None and color_direction != candidate.direction:
+                self.last_color_rejected_count += 1
+            else:
+                color_checked.append(candidate)
+        candidates = color_checked
         clock = parse_platform_clock(data, prepared.width, prepared.height)
         if clock is not None:
             clock = PlatformClockReading(
