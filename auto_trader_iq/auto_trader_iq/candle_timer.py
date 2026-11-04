@@ -142,30 +142,6 @@ def parse_platform_clock_line(
     )
 
 
-def platform_minute_key(reading: PlatformClockReading | None) -> tuple[int, int] | None:
-    """Return the M1 minute key for a clock reading, or None if unavailable."""
-    if reading is None:
-        return None
-    return reading.hour, reading.minute
-
-
-class PlatformMinuteTracker:
-    """Assign a session-unique sequence to each observed clock minute."""
-
-    def __init__(self) -> None:
-        self._last_key: tuple[int, int] | None = None
-        self._sequence = -1
-
-    def update(self, reading: PlatformClockReading | None) -> int | None:
-        key = platform_minute_key(reading)
-        if key is None:
-            return None
-        if key != self._last_key:
-            self._last_key = key
-            self._sequence += 1
-        return self._sequence
-
-
 def platform_minute_offset(
     previous: PlatformClockReading | None,
     current: PlatformClockReading | None,
@@ -176,20 +152,6 @@ def platform_minute_offset(
     previous_minute = previous.hour * 60 + previous.minute
     current_minute = current.hour * 60 + current.minute
     return (current_minute - previous_minute) % (24 * 60)
-
-
-def platform_clock_elapsed_seconds(
-    previous: PlatformClockReading | None,
-    current: PlatformClockReading | None,
-) -> int | None:
-    """Return elapsed whole seconds between clock readings, or None on a jump/backstep."""
-    offset = platform_minute_offset(previous, current)
-    if previous is None or current is None or offset not in {0, 1}:
-        return None
-    if offset == 0:
-        elapsed = current.second - previous.second
-        return elapsed if elapsed >= 0 else None
-    return 60 - previous.second + current.second
 
 
 def platform_minute_advanced(

@@ -40,10 +40,9 @@ class SimulatedEntry:
 class SimulationWorkflow:
     """Arma um candidato OCR e registra uma entrada simulada após confirmação humana.
 
-    O fingerprint direcional/espacial reduz cliques repetidos sobre o mesmo rótulo
-    durante uma sessão. No modo DEMO pode receber um escopo por vela M1 para
-    permitir sinais em velas distintas; não representa identidade real de vela e
-    não persiste após fechar o programa.
+    O fingerprint direcional/espacial reduz rearmamentos do mesmo rótulo durante
+    uma sessão. Não representa identidade real de vela e não persiste após fechar
+    o programa.
     """
 
     def __init__(self, position_bucket_px: int = 24) -> None:
@@ -58,24 +57,21 @@ class SimulationWorkflow:
     def _now() -> datetime:
         return datetime.now(timezone.utc)
 
-    def _fingerprint(self, candidate: SignalCandidate, scope: str | None = None) -> str:
+    def _fingerprint(self, candidate: SignalCandidate) -> str:
         center_x = candidate.left + candidate.width // 2
         center_y = candidate.top + candidate.height // 2
         bucket_x = center_x // self.position_bucket_px
         bucket_y = center_y // self.position_bucket_px
-        base = f"{candidate.direction}:{bucket_x}:{bucket_y}"
-        return f"{scope}:{base}" if scope else base
+        return f"{candidate.direction}:{bucket_x}:{bucket_y}"
 
     def arm(
         self,
         candidate: SignalCandidate,
         detected_at: datetime | None = None,
-        *,
-        dedupe_scope: str | None = None,
     ) -> PendingSignal:
         if self.pending is not None:
             raise ValueError("Já existe um sinal aguardando a confirmação da próxima vela.")
-        fingerprint = self._fingerprint(candidate, dedupe_scope)
+        fingerprint = self._fingerprint(candidate)
         if fingerprint in self._processed_fingerprints:
             raise ValueError("Este sinal já foi usado nesta sessão; duplicata ignorada.")
         detected_at = detected_at or self._now()

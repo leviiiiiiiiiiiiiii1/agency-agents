@@ -121,7 +121,7 @@ class SimulationHistoryStore:
             with self.path.open("r", newline="", encoding="utf-8") as handle:
                 rows = [
                     row for row in csv.DictReader(handle)
-                    if row.get("event") in {"entrada_simulada", "entrada_demo_clicada"}
+                    if row.get("event") == "entrada_simulada"
                 ]
         target.parent.mkdir(parents=True, exist_ok=True)
         with target.open("w", newline="", encoding="utf-8") as handle:
@@ -141,6 +141,6 @@ class SimulationHistoryStore:
         with self.path.open("r", newline="", encoding="utf-8") as handle:
             rows = [
                 row for row in csv.DictReader(handle)
-                if row.get("event") in {"entrada_simulada", "entrada_demo_clicada"}
+                if row.get("event") == "entrada_simulada"
             ]
         return rows[-limit:]
