@@ -56,6 +56,19 @@ class DemoSignalRepeatGuard:
         self.minimum_lock_seconds = minimum_lock_seconds
         self.missing_observations_to_release = missing_observations_to_release
         self._consumed: list[_ConsumedSignal] = []
+        self._candle_id: int | None = None
+
+    def advance_candle(self, candle_id: int | None) -> bool:
+        """Clear consumed labels only when a fresh clock confirms a new candle.
+
+        A missing candle ID is deliberately ignored: losing an OCR clock reading
+        must never unlock a signal early.
+        """
+        if candle_id is None or candle_id == self._candle_id:
+            return False
+        self.reset()
+        self._candle_id = candle_id
+        return True
 
     def mark_consumed(
         self, direction: str, left: int, top: int, *, consumed_at: float | None = None

@@ -150,7 +150,7 @@ class AutoTraderApp(tk.Tk):
         self.demo_entry_after_id: str | None = None
         self.demo_entries_this_activation = 0
         self.demo_minute_tracker = PlatformMinuteTracker()
-        self.demo_signal_guard_candle_id: int | None = None
+        self.pending_demo_candle_id: int | None = None
         self.last_demo_entry_candle_id: int | None = None
         self.demo_click_targets: dict[str, ClickTarget | None] = {"BUY": None, "SELL": None}
         self.demo_click_target_windows: dict[str, int | None] = {"BUY": None, "SELL": None}
@@ -1400,24 +1400,22 @@ class AutoTraderApp(tk.Tk):
             or self.simulation.pending is not None
         ):
             return
-        now = time.monotonic()
-        if self.last_ocr_at <= 0 or now - self.last_ocr_at > TIMER_MAX_AGE_SECONDS:
-            self.demo_status.set(
-                "DEMO aguardando sinal/quadro OCR recente; o relógio UTC−3 do Windows "
-                "não substitui a validação de atualidade do sinal. Nenhum clique será feito."
-            )
-            return
+        # O relógio Windows UTC−3 é a única referência temporal do DEMO.
+        # A atualização do OCR não impõe um timeout adicional ao clique.
         clock = self.demo_clock.reading()
         current_candle_id = self.demo_minute_tracker.update(clock)
         if current_candle_id is None:
             return
-        if current_candle_id != self.demo_signal_guard_candle_id:
-            self.demo_signal_guard.reset()
-            self.demo_signal_guard_candle_id = current_candle_id
+        self.demo_signal_guard.advance_candle(current_candle_id)
         candidates = list(self.candidates_by_id.values())
         if len(candidates) != 1:
             if len(candidates) > 1:
                 self.demo_status.set("DEMO contínuo pausado nesta leitura: há mais de um candidato OCR.")
+            else:
+                self.demo_status.set(
+                    "DEMO ativo: nenhum sinal COMPRA/VENDER recente e legível; "
+                    "aguardando nova leitura OCR. O minuto de referência é o Windows UTC−3."
+                )
             return
         candidate = candidates[0]
         if self.last_demo_entry_candle_id == current_candle_id:
@@ -1425,8 +1423,9 @@ class AutoTraderApp(tk.Tk):
                 candidate.direction, candidate.left, candidate.top
             )
             self.demo_status.set(
-                f"DEMO ativo: já houve uma entrada na vela {clock.hour:02d}:{clock.minute:02d}; "
-                "aguardando a próxima vela M1."
+                f"DEMO ativo: já houve uma tentativa na vela M1 "
+                f"{clock.hour:02d}:{clock.minute:02d} do relógio Windows UTC−3; "
+                "aguardando a próxima virada do minuto do Windows."
             )
             return
         if not m1_entry_window_open(clock, max_elapsed_seconds=30):
@@ -1440,14 +1439,16 @@ class AutoTraderApp(tk.Tk):
             return
         if self.demo_signal_guard.blocks(candidate):
             self.demo_status.set(
-                "DEMO ativo: este sinal já foi consumido; aguardando outro sinal. "
-                "A trava por sinal evita reentradas."
+                f"DEMO ativo: este sinal já foi consumido na vela M1 "
+                f"{clock.hour:02d}:{clock.minute:02d} do relógio Windows UTC−3; "
+                "aguardando a próxima virada do minuto do Windows."
             )
             return
         try:
             pending = self.simulation.arm(candidate, dedupe_scope=str(current_candle_id))
         except ValueError:
             return
+        self.pending_demo_candle_id = current_candle_id
         self.pending_armed_clock = clock
         self.pending_rollover_notified = False
         label = "COMPRA" if pending.direction == "BUY" else "VENDER"
@@ -1505,12 +1506,15 @@ class AutoTraderApp(tk.Tk):
         pending = self.simulation.pending
         if not self.demo_automation_enabled or pending is None:
             return
-        now = time.monotonic()
-        if self.last_ocr_at <= 0 or now - self.last_ocr_at > TIMER_MAX_AGE_SECONDS:
-            self._deactivate_demo_automation()
+        clock = self.demo_clock.reading()
+        current_candle_id = self.demo_minute_tracker.update(clock)
+        self.demo_signal_guard.advance_candle(current_candle_id)
+        if current_candle_id is None or current_candle_id != self.pending_demo_candle_id:
             self._cancel_pending_simulation()
             self.demo_status.set(
-                "DEMO pausado: quadro/sinal OCR desatualizado; nenhum clique foi tentado."
+                f"Sinal DEMO expirou: o relógio Windows UTC−3 avançou para "
+                f"{clock.hour:02d}:{clock.minute:02d} antes da tentativa; "
+                "sinal antigo cancelado sem clique."
             )
             return
         target = self.demo_click_targets[pending.direction]
@@ -1526,13 +1530,6 @@ class AutoTraderApp(tk.Tk):
             )
             self._cancel_pending_simulation()
             return
-        if self.last_ocr_at <= 0 or time.monotonic() - self.last_ocr_at > TIMER_MAX_AGE_SECONDS:
-            self._deactivate_demo_automation()
-            self._cancel_pending_simulation()
-            self.demo_status.set(
-                "DEMO pausado: quadro/sinal OCR ficou desatualizado antes do clique; nenhum clique foi tentado."
-            )
-            return
         if not self._pending_demo_candidate_is_current(pending):
             self.demo_signal_guard.mark_consumed(pending.direction, pending.x, pending.y)
             self._cancel_pending_simulation()
@@ -1540,7 +1537,6 @@ class AutoTraderApp(tk.Tk):
                 "Sinal DEMO descartado: a etiqueta não está mais presente na leitura OCR recente."
             )
             return
-        clock = self.demo_clock.reading()
         elapsed = platform_clock_elapsed_seconds(self.pending_armed_clock, clock)
         if elapsed is None:
             self.demo_signal_guard.mark_consumed(pending.direction, pending.x, pending.y)
@@ -1585,7 +1581,7 @@ class AutoTraderApp(tk.Tk):
             )
             return
         self.demo_entries_this_activation += 1
-        self.last_demo_entry_candle_id = self.demo_minute_tracker.update(clock)
+        self.last_demo_entry_candle_id = self.pending_demo_candle_id
         try:
             click_demo_direction(
                 pending.direction,
@@ -2266,6 +2262,7 @@ class AutoTraderApp(tk.Tk):
     def _clear_pending_clock_observation(self) -> None:
         self.pending_armed_clock = None
         self.pending_rollover_notified = False
+        self.pending_demo_candle_id = None
 
     def _confirm_next_candle(self) -> None:
         elapsed_seconds = None
@@ -2381,31 +2378,22 @@ class AutoTraderApp(tk.Tk):
             return
         observed_at = time.monotonic() if now is None else now
         if self.demo_automation_enabled:
-            frame_fresh = (
-                self.last_ocr_at > 0
-                and observed_at - self.last_ocr_at <= TIMER_MAX_AGE_SECONDS
-            )
-            if not frame_fresh:
+            demo_clock = self.demo_clock.reading()
+            pending = self.simulation.pending
+            prefix = "M1 DEMO · referência temporal somente Windows UTC−3"
+            if pending is not None:
+                elapsed = platform_clock_elapsed_seconds(self.pending_armed_clock, demo_clock)
                 self.timer_status.set(
-                    "M1 DEMO: quadro/sinal OCR ausente ou desatualizado; clique bloqueado."
+                    f"{prefix}: {demo_clock.hour:02d}:{demo_clock.minute:02d}:"
+                    f"{demo_clock.second:02d}; armamento +{elapsed if elapsed is not None else '—'} s; "
+                    f"entrada no segundo :{self.demo_entry_second_active:02d} (até :30)."
                 )
             else:
-                demo_clock = self.demo_clock.reading()
-                pending = self.simulation.pending
-                prefix = "M1 DEMO · relógio do Windows em UTC−3 (segundos podem divergir da corretora)"
-                if pending is not None:
-                    elapsed = platform_clock_elapsed_seconds(self.pending_armed_clock, demo_clock)
-                    self.timer_status.set(
-                        f"{prefix}: {demo_clock.hour:02d}:{demo_clock.minute:02d}:"
-                        f"{demo_clock.second:02d}; armamento +{elapsed if elapsed is not None else '—'} s; "
-                        f"entrada no segundo :{self.demo_entry_second_active:02d} (até :30)."
-                    )
-                else:
-                    self.timer_status.set(
-                        f"{prefix}: {demo_clock.hour:02d}:{demo_clock.minute:02d}:"
-                        f"{demo_clock.second:02d}; entrada DEMO no segundo :{self.demo_entry_second_active:02d}, "
-                        "máximo uma por vela, até :30."
-                    )
+                self.timer_status.set(
+                    f"{prefix}: {demo_clock.hour:02d}:{demo_clock.minute:02d}:"
+                    f"{demo_clock.second:02d}; entrada DEMO no segundo :{self.demo_entry_second_active:02d}, "
+                    "máximo uma tentativa por minuto do Windows, até :30."
+                )
             self._refresh_simulation_buttons()
             return
 

@@ -38,15 +38,27 @@ class DemoSignalRepeatGuardTests(unittest.TestCase):
         self.assertFalse(guard.blocks(self.candidate("SELL", 300, 200)))
         self.assertFalse(guard.blocks(self.candidate("BUY", 500, 200)))
 
-    def test_reset_at_minute_rollover_allows_same_position_as_a_new_candle_signal(self):
+    def test_new_confirmed_candle_releases_same_position_but_same_candle_stays_locked(self):
         guard = DemoSignalRepeatGuard()
         candidate = self.candidate()
+        self.assertTrue(guard.advance_candle(10))
         guard.mark_consumed(candidate.direction, candidate.left, candidate.top)
         self.assertTrue(guard.blocks(candidate))
 
-        guard.reset()
+        self.assertFalse(guard.advance_candle(10))
+        self.assertTrue(guard.blocks(candidate))
+        self.assertTrue(guard.advance_candle(11))
 
         self.assertFalse(guard.blocks(candidate))
+
+    def test_missing_candle_id_does_not_release_consumed_signal(self):
+        guard = DemoSignalRepeatGuard()
+        candidate = self.candidate()
+        guard.advance_candle(10)
+        guard.mark_consumed(candidate.direction, candidate.left, candidate.top)
+
+        self.assertFalse(guard.advance_candle(None))
+        self.assertTrue(guard.blocks(candidate))
 
     def test_invalid_guard_limits_are_rejected(self):
         for options in (
