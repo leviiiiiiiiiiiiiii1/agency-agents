@@ -16,7 +16,7 @@ O movimento opcional do cursor sem clique é uma configuração separada: ocorre
 
 A simulação manual continua disponível: o usuário arma um candidato e confirma visualmente que a vela N+1 nasceu. Em M1, a confirmação usa a leitura HORA ATUAL da plataforma, exige avanço de exatamente um minuto desde o armamento e fica limitada aos primeiros 30 segundos. Leituras ausentes, atrasadas ou com minutos pulados bloqueiam a confirmação. A entrada resultante é registrada como **SIMULADA** e não é enviada à corretora.
 
-A confiança do Tesseract não é uma probabilidade calibrada. Quando o texto do sinal está colorido, a cor verde é conferida com COMPRA/BUY e a vermelha com VENDER/SELL; conflito descarta o candidato, enquanto texto sem cor confiável continua dependendo do OCR. O filtro visual de velas reconhece, entre outras, as paletas verde/vermelha e branca/roxa e tenta associar etiquetas às barras recentes. Essas heurísticas não comprovam a identidade da vela; confira os candidatos e a prévia antes de qualquer ação.
+A confiança do Tesseract não é uma probabilidade calibrada. Quando a leitura normal não encontra etiquetas, o app faz uma segunda leitura OCR isolando pixels verdes/vermelhos; candidatos desse recurso só passam quando a cor confirma COMPRA/BUY (verde) ou VENDER/SELL (vermelho). Na leitura normal, conflito de cor também descarta o candidato, enquanto texto sem cor confiável continua dependendo do OCR. O filtro visual de velas reconhece, entre outras, as paletas verde/vermelha e branca/roxa e tenta associar etiquetas às barras recentes. Essas heurísticas não comprovam a identidade da vela; confira os candidatos e a prévia antes de qualquer ação.
 
 ## Instalação e execução no Windows
 

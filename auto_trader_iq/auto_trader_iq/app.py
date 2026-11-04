@@ -1929,7 +1929,7 @@ class AutoTraderApp(tk.Tk):
         if not candidates:
             if color_rejected_count:
                 self.ocr_status.set(
-                    f"OCR viu {raw_count} etiqueta(s), mas a cor do texto diverge da direção; "
+                    f"OCR viu {raw_count} etiqueta(s), mas a cor não confirmou a direção; "
                     f"{color_rejected_count} candidato(s) bloqueado(s)."
                 )
             elif raw_count and candle_count < 2:

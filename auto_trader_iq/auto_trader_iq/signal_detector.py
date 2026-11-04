@@ -83,6 +83,21 @@ def _signal_color_direction(image, candidate: SignalCandidate) -> str | None:
     return "SELL" if red > green else "BUY"
 
 
+def _colored_signal_mask(image):
+    """Isolate saturated green/red signal text for an OCR fallback pass."""
+    from PIL import Image
+
+    rgb = image.convert("RGB")
+    mask = bytearray(rgb.width * rgb.height)
+    for index, (r, g, b) in enumerate(rgb.getdata()):
+        if (
+            (g >= 70 and g >= r * 1.25 and g >= b * 1.08)
+            or (r >= 85 and r >= g * 1.30 and r >= b * 1.18)
+        ):
+            mask[index] = 255
+    return Image.frombytes("L", rgb.size, bytes(mask))
+
+
 def _summarize_clock_ocr(data: dict[str, Any], limit: int = 180) -> str:
     """Short local diagnostic of tokens from the bottom-right clock-only crop."""
     snippets: list[str] = []
@@ -155,12 +170,50 @@ class TesseractSignalDetector:
                             max(1, c.width // scale), max(1, c.height // scale), c.observed_text)
             for c in candidates
         ]
+        used_color_fallback = False
+        if not candidates:
+            color_mask = _colored_signal_mask(image)
+            if color_mask.getbbox() is not None:
+                color_scale = 4
+                enlarged_mask = color_mask.resize(
+                    (image.width * color_scale, image.height * color_scale),
+                    Image.Resampling.NEAREST,
+                )
+                for page_segmentation in (11, 6):
+                    color_config = (
+                        f"--oem 3 --psm {page_segmentation} "
+                        f"-c tessedit_char_whitelist={whitelist}"
+                    )
+                    color_data = pytesseract.image_to_data(
+                        enlarged_mask,
+                        config=color_config,
+                        output_type=pytesseract.Output.DICT,
+                    )
+                    color_candidates = parse_ocr_rows(color_data, self.min_confidence)
+                    if color_candidates:
+                        candidates = [
+                            SignalCandidate(
+                                c.direction,
+                                c.confidence,
+                                c.left // color_scale,
+                                c.top // color_scale,
+                                max(1, c.width // color_scale),
+                                max(1, c.height // color_scale),
+                                c.observed_text,
+                            )
+                            for c in color_candidates
+                        ]
+                        used_color_fallback = True
+                        break
         self.last_candidate_count = len(candidates)
         self.last_color_rejected_count = 0
         color_checked: list[SignalCandidate] = []
         for candidate in candidates:
             color_direction = _signal_color_direction(image, candidate)
-            if color_direction is not None and color_direction != candidate.direction:
+            if (
+                (color_direction is not None and color_direction != candidate.direction)
+                or (used_color_fallback and color_direction is None)
+            ):
                 self.last_color_rejected_count += 1
             else:
                 color_checked.append(candidate)
