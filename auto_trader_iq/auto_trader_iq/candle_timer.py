@@ -1,4 +1,4 @@
-"""Leitura do relógio da plataforma e janela temporal de entrada M1."""
+"""Leitura informativa do relógio da plataforma por OCR."""
 
 from __future__ import annotations
 
@@ -18,19 +18,13 @@ class PlatformClockReading:
     top: int
     text: str
 
-    @property
-    def elapsed_seconds_in_m1(self) -> int:
-        # Os limites M1 usam os segundos da fonte de relógio selecionada pelo fluxo.
-        return self.second
-
 
 def parse_platform_clock(
     data: dict[str, Any], image_width: int, image_height: int, min_confidence: float = 70.0
 ) -> PlatformClockReading | None:
     """Localiza HH:MM:SS perto do rótulo HORA ATUAL no canto inferior direito.
 
-    Retorna None se faltar o rótulo/horário ou se a geometria não for plausível;
-    essa falha bloqueia a confirmação M1.
+    Retorna None se faltar o rótulo/horário ou se a geometria não for plausível.
     """
     texts = data.get("text", [])
     anchors: list[tuple[float, float]] = []
@@ -139,81 +133,4 @@ def parse_platform_clock_line(
         origin_left + left // scale,
         origin_top + top // scale,
         match.group(0),
-    )
-
-
-def platform_minute_key(reading: PlatformClockReading | None) -> tuple[int, int] | None:
-    """Return the M1 minute key for a clock reading, or None if unavailable."""
-    if reading is None:
-        return None
-    return reading.hour, reading.minute
-
-
-class PlatformMinuteTracker:
-    """Assign a session-unique sequence to each observed clock minute."""
-
-    def __init__(self) -> None:
-        self._last_key: tuple[int, int] | None = None
-        self._sequence = -1
-
-    def update(self, reading: PlatformClockReading | None) -> int | None:
-        key = platform_minute_key(reading)
-        if key is None:
-            return None
-        if key != self._last_key:
-            self._last_key = key
-            self._sequence += 1
-        return self._sequence
-
-
-def platform_minute_offset(
-    previous: PlatformClockReading | None,
-    current: PlatformClockReading | None,
-) -> int | None:
-    """Return elapsed minute steps on the platform clock, including midnight wrap."""
-    if previous is None or current is None:
-        return None
-    previous_minute = previous.hour * 60 + previous.minute
-    current_minute = current.hour * 60 + current.minute
-    return (current_minute - previous_minute) % (24 * 60)
-
-
-def platform_clock_elapsed_seconds(
-    previous: PlatformClockReading | None,
-    current: PlatformClockReading | None,
-) -> int | None:
-    """Return elapsed whole seconds between clock readings, or None on a jump/backstep."""
-    offset = platform_minute_offset(previous, current)
-    if previous is None or current is None or offset not in {0, 1}:
-        return None
-    if offset == 0:
-        elapsed = current.second - previous.second
-        return elapsed if elapsed >= 0 else None
-    return 60 - previous.second + current.second
-
-
-def platform_minute_advanced(
-    previous: PlatformClockReading | None,
-    current: PlatformClockReading | None,
-) -> bool:
-    """Return True only when the selected clock advances by exactly one minute."""
-    return platform_minute_offset(previous, current) == 1
-
-
-def m1_entry_window_open(reading: PlatformClockReading | None, max_elapsed_seconds: int = 30) -> bool:
-    """M1: permite entrada apenas de 00 a max_elapsed segundos após a virada do minuto."""
-    if reading is None or not 0 <= max_elapsed_seconds <= 60:
-        return False
-    return 0 <= reading.elapsed_seconds_in_m1 <= max_elapsed_seconds
-
-
-def m1_next_candle_entry_window_open(
-    armed_clock: PlatformClockReading | None,
-    current_clock: PlatformClockReading | None,
-    max_elapsed_seconds: int = 30,
-) -> bool:
-    """Require exactly one platform-minute advance and an open N+1 M1 window."""
-    return (
-        platform_minute_offset(armed_clock, current_clock) == 1
-        and m1_entry_window_open(current_clock, max_elapsed_seconds)
     )

@@ -3,11 +3,7 @@ import unittest
 from PIL import Image
 
 from auto_trader_iq.capture import ScreenRegion
-from auto_trader_iq.screen_mask import (
-    mask_screen_regions,
-    point_is_masked,
-    point_is_masked_with_margin,
-)
+from auto_trader_iq.screen_mask import mask_screen_regions
 
 
 class ScreenMaskTests(unittest.TestCase):
@@ -34,17 +30,7 @@ class ScreenMaskTests(unittest.TestCase):
         self.assertEqual(image.getpixel((15, 15)), (0, 0, 0))
         self.assertEqual(image.getpixel((0, 0)), (255, 255, 255))
 
-    def test_point_is_masked_only_inside_excluded_screen_area(self):
-        excluded = [ScreenRegion(100, 200, 30, 40)]
-        self.assertTrue(point_is_masked(100, 200, excluded))
-        self.assertTrue(point_is_masked(129, 239, excluded))
-        self.assertFalse(point_is_masked(130, 239, excluded))
-        self.assertFalse(point_is_masked(99, 200, excluded))
 
-    def test_button_target_requires_mask_margin_around_calibrated_center(self):
-        excluded = [ScreenRegion(100, 200, 120, 120)]
-        self.assertTrue(point_is_masked_with_margin(160, 260, excluded))
-        self.assertFalse(point_is_masked_with_margin(145, 245, excluded))
 
 
 if __name__ == "__main__":

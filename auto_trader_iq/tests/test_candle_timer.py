@@ -1,17 +1,6 @@
 import unittest
 
-from auto_trader_iq.candle_timer import (
-    PlatformClockReading,
-    PlatformMinuteTracker,
-    m1_entry_window_open,
-    m1_next_candle_entry_window_open,
-    parse_platform_clock,
-    parse_platform_clock_line,
-    platform_clock_elapsed_seconds,
-    platform_minute_advanced,
-    platform_minute_key,
-    platform_minute_offset,
-)
+from auto_trader_iq.candle_timer import parse_platform_clock, parse_platform_clock_line
 
 
 class PlatformClockTests(unittest.TestCase):
@@ -27,23 +16,17 @@ class PlatformClockTests(unittest.TestCase):
             "height": [16] * len(texts),
         }
 
-    def test_reads_platform_clock_and_elapsed_m1_seconds(self):
+    def test_reads_platform_clock_seconds(self):
         reading = parse_platform_clock(self.make_rows(), 1200, 500)
         self.assertIsNotNone(reading)
         self.assertEqual((reading.hour, reading.minute, reading.second), (21, 23, 2))
-        self.assertEqual(reading.elapsed_seconds_in_m1, 2)
-        self.assertTrue(m1_entry_window_open(reading))
 
-    def test_accepts_only_first_30_seconds(self):
-        at_cutoff = parse_platform_clock(self.make_rows("21:23:30"), 1200, 500)
-        after_cutoff = parse_platform_clock(self.make_rows("21:23:31"), 1200, 500)
-        self.assertTrue(m1_entry_window_open(at_cutoff))
-        self.assertFalse(m1_entry_window_open(after_cutoff))
-
-    def test_accepts_exact_minute_rollover(self):
-        at_open = parse_platform_clock(self.make_rows("21:24:00"), 1200, 500)
-        self.assertEqual(at_open.elapsed_seconds_in_m1, 0)
-        self.assertTrue(m1_entry_window_open(at_open))
+    def test_parses_valid_seconds_without_entry_window_rules(self):
+        for second in (0, 30, 31, 59):
+            with self.subTest(second=second):
+                reading = parse_platform_clock(self.make_rows(f"21:23:{second:02d}"), 1200, 500)
+                self.assertIsNotNone(reading)
+                self.assertEqual(reading.second, second)
 
     def test_parses_focused_bottom_status_line_with_split_words(self):
         data = {
@@ -94,87 +77,6 @@ class PlatformClockTests(unittest.TestCase):
         self.assertIsNone(parse_platform_clock(self.make_rows(include_anchor=False), 1200, 500))
         self.assertIsNone(parse_platform_clock(self.make_rows(top=100), 1200, 500))
         self.assertIsNone(parse_platform_clock(self.make_rows("26:23:10"), 1200, 500))
-        self.assertFalse(m1_entry_window_open(None))
-
-
-class PlatformMinuteTransitionTests(unittest.TestCase):
-    @staticmethod
-    def clock(hour, minute, second):
-        return PlatformClockReading(hour, minute, second, 95.0, 0, 0, f"{hour:02d}:{minute:02d}:{second:02d}")
-
-    def test_detects_observed_next_minute_across_hour_and_day_boundaries(self):
-        self.assertTrue(platform_minute_advanced(self.clock(23, 14, 59), self.clock(23, 15, 1)))
-        self.assertTrue(platform_minute_advanced(self.clock(23, 59, 59), self.clock(0, 0, 1)))
-
-    def test_rejects_same_minute_skipped_minutes_and_missing_readings(self):
-        self.assertFalse(platform_minute_advanced(self.clock(23, 14, 30), self.clock(23, 14, 59)))
-        self.assertFalse(platform_minute_advanced(self.clock(23, 14, 59), self.clock(23, 16, 1)))
-        self.assertFalse(platform_minute_advanced(None, self.clock(23, 15, 1)))
-        self.assertFalse(platform_minute_advanced(self.clock(23, 14, 59), None))
-
-    def test_platform_minute_key_supports_one_entry_per_m1_candle(self):
-        first = self.clock(23, 14, 3)
-        same_minute = self.clock(23, 14, 58)
-        next_minute = self.clock(23, 15, 0)
-        next_day = self.clock(0, 0, 0)
-
-        self.assertEqual(platform_minute_key(first), platform_minute_key(same_minute))
-        self.assertNotEqual(platform_minute_key(first), platform_minute_key(next_minute))
-        self.assertEqual(platform_minute_key(next_day), (0, 0))
-        self.assertIsNone(platform_minute_key(None))
-
-    def test_minute_tracker_keeps_same_candle_id_and_advances_for_new_minutes(self):
-        tracker = PlatformMinuteTracker()
-        self.assertIsNone(tracker.update(None))
-        self.assertEqual(tracker.update(self.clock(23, 59, 50)), 0)
-        self.assertEqual(tracker.update(self.clock(23, 59, 59)), 0)
-        self.assertEqual(tracker.update(self.clock(0, 0, 0)), 1)
-        self.assertEqual(tracker.update(self.clock(0, 1, 0)), 2)
-        # A repeated HH:MM after a full platform-clock cycle is still a new candle.
-        self.assertEqual(tracker.update(self.clock(23, 59, 0)), 3)
-        self.assertEqual(tracker.update(self.clock(23, 59, 59)), 3)
-
-    def test_platform_clock_elapsed_seconds_uses_platform_readings(self):
-        self.assertEqual(
-            platform_clock_elapsed_seconds(self.clock(12, 0, 10), self.clock(12, 0, 15)),
-            5,
-        )
-        self.assertEqual(
-            platform_clock_elapsed_seconds(self.clock(12, 0, 58), self.clock(12, 1, 3)),
-            5,
-        )
-        self.assertEqual(
-            platform_clock_elapsed_seconds(self.clock(23, 59, 58), self.clock(0, 0, 2)),
-            4,
-        )
-
-    def test_platform_clock_elapsed_seconds_rejects_invalid_clock_progression(self):
-        self.assertIsNone(
-            platform_clock_elapsed_seconds(self.clock(12, 0, 20), self.clock(12, 0, 19))
-        )
-        self.assertIsNone(
-            platform_clock_elapsed_seconds(self.clock(12, 0, 58), self.clock(12, 2, 3))
-        )
-        self.assertIsNone(platform_clock_elapsed_seconds(None, self.clock(12, 0, 21)))
-        self.assertIsNone(platform_clock_elapsed_seconds(self.clock(12, 0, 20), None))
-
-    def test_minute_offset_distinguishes_waiting_from_n_plus_one_and_skips(self):
-        armed = self.clock(23, 14, 40)
-        self.assertEqual(platform_minute_offset(armed, self.clock(23, 14, 59)), 0)
-        self.assertEqual(platform_minute_offset(armed, self.clock(23, 15, 15)), 1)
-        self.assertEqual(platform_minute_offset(armed, self.clock(23, 16, 1)), 2)
-        self.assertIsNone(platform_minute_offset(None, self.clock(23, 15, 15)))
-
-    def test_n_plus_one_window_requires_exact_next_minute_and_first_30_seconds(self):
-        armed = self.clock(23, 14, 40)
-        self.assertFalse(m1_next_candle_entry_window_open(armed, self.clock(23, 14, 29)))
-        self.assertTrue(m1_next_candle_entry_window_open(armed, self.clock(23, 15, 0)))
-        self.assertTrue(m1_next_candle_entry_window_open(armed, self.clock(23, 15, 30)))
-        self.assertFalse(m1_next_candle_entry_window_open(armed, self.clock(23, 15, 31)))
-        self.assertFalse(m1_next_candle_entry_window_open(armed, self.clock(23, 16, 5)))
-        self.assertTrue(m1_next_candle_entry_window_open(
-            self.clock(23, 59, 50), self.clock(0, 0, 10)
-        ))
 
 
 if __name__ == "__main__":
