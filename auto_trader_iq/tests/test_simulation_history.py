@@ -15,7 +15,10 @@ class SimulationHistoryStoreTests(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def append(self, event, direction="BUY", elapsed=None):
+    def append(
+        self, event, direction="BUY", elapsed=None, armed_clock="", entry_delay=None,
+        clock_source="", generic_armed_clock="", generic_entry_delay=None,
+    ):
         self.store.append_event(
             platform_clock="23:44:21",
             event=event,
@@ -27,25 +30,43 @@ class SimulationHistoryStoreTests(unittest.TestCase):
             signal_y=200,
             elapsed_seconds_m1=elapsed,
             clock_confidence=91.0,
-            clock_source="platform_ocr",
+            armed_platform_clock=armed_clock,
+            entry_delay_platform_seconds=entry_delay,
+            clock_source=clock_source,
+            armed_clock=generic_armed_clock,
+            entry_delay_seconds=generic_entry_delay,
         )
 
     def test_append_creates_csv_with_metadata_only(self):
         self.append("sinal_armado")
         self.append("entrada_simulada", elapsed=15)
+
         with self.path.open(newline="", encoding="utf-8") as handle:
             rows = list(csv.DictReader(handle))
+
         self.assertEqual([row["event"] for row in rows], ["sinal_armado", "entrada_simulada"])
         self.assertEqual(rows[1]["platform_clock"], "23:44:21")
         self.assertEqual(rows[1]["elapsed_seconds_m1"], "15")
         self.assertEqual(rows[1]["ocr_confidence"], "94.5")
         self.assertNotIn("image", " ".join(rows[1].keys()).lower())
 
+    def test_records_platform_arm_clock_and_zero_second_entry_delay(self):
+        self.append(
+            "entrada_demo_clicada",
+            armed_clock="16:13:25",
+            entry_delay=0,
+        )
+
+        row = self.store.load_recent_entries()[0]
+
+        self.assertEqual(row["armed_platform_clock"], "16:13:25")
+        self.assertEqual(row["entry_delay_platform_seconds"], "0")
+
     def test_migrates_legacy_header_and_preserves_existing_rows(self):
         legacy_fields = list(self.store.FIELDNAMES[:-5])
         old_row = {
             "platform_clock": "15:58:07",
-            "event": "entrada_simulada",
+            "event": "entrada_demo_clicada",
             "timeframe": "M1",
             "direction": "SELL",
             "observed_text": "VENDA",
@@ -60,19 +81,39 @@ class SimulationHistoryStoreTests(unittest.TestCase):
             writer.writeheader()
             writer.writerow(old_row)
 
-        self.append("entrada_simulada", direction="BUY", elapsed=5)
+        self.append("entrada_demo_clicada", armed_clock="16:00:01", entry_delay=0)
+
         with self.path.open("r", newline="", encoding="utf-8") as handle:
             rows = list(csv.DictReader(handle))
         self.assertEqual(len(rows), 2)
         self.assertEqual(rows[0]["platform_clock"], "15:58:07")
-        self.assertEqual(rows[1]["elapsed_seconds_m1"], "5")
+        self.assertEqual(rows[0]["armed_platform_clock"], "")
+        self.assertEqual(rows[1]["armed_platform_clock"], "16:00:01")
+        self.assertEqual(rows[1]["entry_delay_platform_seconds"], "0")
+
+    def test_records_local_demo_clock_source_and_generic_delay_fields(self):
+        self.append(
+            "entrada_demo_clicada",
+            clock_source="windows_utc_minus_3",
+            generic_armed_clock="16:13:25",
+            generic_entry_delay=2,
+        )
+
+        row = self.store.load_recent_entries()[0]
+
+        self.assertEqual(row["clock_source"], "windows_utc_minus_3")
+        self.assertEqual(row["armed_clock"], "16:13:25")
+        self.assertEqual(row["entry_delay_seconds"], "2")
+        self.assertEqual(row["entry_delay_platform_seconds"], "")
 
     def test_recent_entries_filters_events_and_returns_latest_limit(self):
         self.append("entrada_simulada", elapsed=10)
         self.append("sinal_armado", direction="SELL")
         self.append("entrada_simulada", direction="SELL", elapsed=15)
         self.append("entrada_simulada", elapsed=20)
+
         rows = self.store.load_recent_entries(limit=2)
+
         self.assertEqual(len(rows), 2)
         self.assertEqual([row["elapsed_seconds_m1"] for row in rows], ["15", "20"])
 
@@ -88,29 +129,44 @@ class SimulationHistoryStoreTests(unittest.TestCase):
             rows = list(csv.DictReader(handle))
         self.assertEqual(len(rows), 2)
 
-    def test_export_writes_simulated_entries_without_intermediate_events(self):
+    def test_export_writes_all_entry_events_without_intermediate_events(self):
         self.append("sinal_armado")
         self.append("entrada_simulada", direction="BUY")
+        self.append("entrada_demo_clicada", direction="SELL")
         self.append("simulacao_cancelada")
         destination = Path(self.temp_dir.name) / "exports" / "entries.csv"
+
         count = self.store.export_entries_csv(destination)
+
         with destination.open("r", newline="", encoding="utf-8") as handle:
             rows = list(csv.DictReader(handle))
-        self.assertEqual(count, 1)
-        self.assertEqual([row["event"] for row in rows], ["entrada_simulada"])
+        self.assertEqual(count, 2)
+        self.assertEqual(
+            [row["event"] for row in rows],
+            ["entrada_simulada", "entrada_demo_clicada"],
+        )
 
     def test_export_refuses_to_overwrite_original_history(self):
-        self.append("entrada_simulada")
+        self.append("entrada_demo_clicada")
         with self.assertRaisesRegex(ValueError, "sobrescrever"):
             self.store.export_entries_csv(self.path)
         self.assertEqual(len(self.store.load_recent_entries()), 1)
 
     def test_clear_removes_persisted_history_and_is_idempotent(self):
-        self.append("entrada_simulada")
+        self.append("entrada_demo_clicada")
         self.store.clear()
         self.store.clear()
         self.assertFalse(self.path.exists())
         self.assertEqual(self.store.load_recent_entries(), [])
+
+    def test_recent_entries_includes_demo_click_but_ignores_other_events(self):
+        self.append("sinal_armado_demo")
+        self.append("entrada_demo_clicada", direction="SELL", elapsed=15)
+
+        rows = self.store.load_recent_entries()
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["event"], "entrada_demo_clicada")
 
 
 if __name__ == "__main__":

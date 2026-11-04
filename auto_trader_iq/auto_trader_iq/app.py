@@ -1,4 +1,4 @@
-"""Interface local de captura OCR e simulação manual assistida."""
+"""Interface com simulação assistida e teste experimental de cliques em conta DEMO."""
 
 from __future__ import annotations
 
@@ -15,18 +15,32 @@ from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageDraw, ImageTk
 
 from .capture import ScreenCapture, ScreenRegion
+from .demo_clock import WindowsUtcMinusThreeClock, demo_entry_second_action
+from .demo_click import (
+    ClickTarget,
+    click_demo_direction,
+    windows_last_input_idle_seconds,
+    windows_mouse_click,
+    windows_mouse_move,
+    windows_mouse_position,
+    windows_window_at_point,
+    windows_window_signature_at_point,
+)
 from .candle_monitor import detect_candle_bars, filter_to_recent_candle
 from .candle_timer import (
     PlatformClockReading,
+    PlatformMinuteTracker,
     m1_entry_window_open,
     m1_next_candle_entry_window_open,
+    platform_clock_elapsed_seconds,
     platform_minute_advanced,
     platform_minute_offset,
 )
 from .region_selector import RegionSelector
 from .sequence_recorder import SequenceRecorder
-from .screen_mask import mask_screen_regions
+from .screen_mask import mask_screen_regions, point_is_masked_with_margin
 from .settings import find_tesseract_executable, load_settings, save_settings
+from .demo_signal_guard import DemoSignalRepeatGuard
 from .signal_detector import SignalCandidate, TesseractSignalDetector
 from .simulation_history import SimulationHistoryStore, append_event_best_effort
 from .simulation import PendingSignal, SimulationWorkflow
@@ -34,9 +48,22 @@ from .windows_power import set_windows_keep_awake
 
 
 APP_NAME = "AUTO TRADER IQ"
+DEMO_CLOCK_SOURCE = "windows_utc_minus_3"
 POLL_MS = 500
 OCR_INTERVAL_SECONDS = 0.5
 TIMER_MAX_AGE_SECONDS = 1.5
+DEFAULT_DEMO_ACTIVATION_TIMEOUT_SECONDS = 75
+MIN_DEMO_ACTIVATION_TIMEOUT_SECONDS = 15
+MAX_DEMO_ACTIVATION_TIMEOUT_SECONDS = 28_800
+DEFAULT_DEMO_ENTRY_SECOND = 5
+MIN_DEMO_ENTRY_SECOND = 0
+MAX_DEMO_ENTRY_SECOND = 30
+DEFAULT_DEMO_MOUSE_KEEPALIVE_SECONDS = 60
+MIN_DEMO_MOUSE_KEEPALIVE_SECONDS = 30
+MAX_DEMO_MOUSE_KEEPALIVE_SECONDS = 600
+DEMO_MOUSE_KEEPALIVE_POLL_MS = 5000
+DEMO_MOUSE_KEEPALIVE_CLEARANCE_PX = 100
+DEMO_MOUSE_KEEPALIVE_NUDGE_PX = 4
 
 
 def _enable_windows_dpi_awareness() -> None:
@@ -73,7 +100,7 @@ class AutoTraderApp(tk.Tk):
     def __init__(self) -> None:
         _enable_windows_dpi_awareness()
         super().__init__()
-        self.title(f"{APP_NAME} — Simulação assistida")
+        self.title(f"{APP_NAME} — Teste DEMO assistido")
         self.geometry("1050x760")
         self.minsize(800, 580)
 
@@ -99,8 +126,37 @@ class AutoTraderApp(tk.Tk):
         self.sequence_recorder = SequenceRecorder(self.data_dir / "sequences")
         self.sequence_status = tk.StringVar(value="Gravação de teste inativa; nenhuma imagem está sendo salva.")
         self.simulation = SimulationWorkflow()
+        self.demo_clock = WindowsUtcMinusThreeClock()
+        self.demo_signal_guard = DemoSignalRepeatGuard()
         self.candidates_by_id: dict[str, SignalCandidate] = {}
         self.simulation_status = tk.StringVar(value="Simulação parada; nenhuma entrada foi registrada.")
+        self.demo_status = tk.StringVar(value="Cliques DEMO desligados; esta opção nunca é reativada automaticamente.")
+        self.demo_automation_enabled = False
+        self.demo_account_confirmed = False
+        self.demo_timeout_after_id: str | None = None
+        self.demo_activation_timeout_var = tk.StringVar(
+            value=str(DEFAULT_DEMO_ACTIVATION_TIMEOUT_SECONDS)
+        )
+        self.demo_entry_second_var = tk.StringVar(value=f"{DEFAULT_DEMO_ENTRY_SECOND:02d}")
+        self.demo_activation_timeout_active = DEFAULT_DEMO_ACTIVATION_TIMEOUT_SECONDS
+        self.demo_entry_second_active = DEFAULT_DEMO_ENTRY_SECOND
+        self.demo_entry_after_id: str | None = None
+        self.demo_entries_this_activation = 0
+        self.demo_minute_tracker = PlatformMinuteTracker()
+        self.pending_demo_candle_id: int | None = None
+        self.last_demo_entry_candle_id: int | None = None
+        self.demo_click_targets: dict[str, ClickTarget | None] = {"BUY": None, "SELL": None}
+        self.demo_click_target_windows: dict[str, int | None] = {"BUY": None, "SELL": None}
+        self.demo_click_target_signatures: dict[str, dict[str, object] | None] = {
+            "BUY": None, "SELL": None
+        }
+        self.demo_mouse_keepalive_target: ClickTarget | None = None
+        self.demo_mouse_keepalive_alternate: ClickTarget | None = None
+        self.demo_mouse_keepalive_window: int | None = None
+        self.demo_mouse_keepalive_signature: dict[str, object] | None = None
+        self.demo_mouse_keepalive_after_id: str | None = None
+        self.demo_mouse_keepalive_last_move_at = 0.0
+        self.demo_mouse_keepalive_use_alternate = False
         self.excluded_regions: list[ScreenRegion] = []
         self.compact_mode = False
 
@@ -113,6 +169,13 @@ class AutoTraderApp(tk.Tk):
         self.keep_awake_status = tk.StringVar(
             value="Economia de energia normal; prevenção de suspensão desligada."
         )
+        self.demo_mouse_keepalive_var = tk.BooleanVar(value=False)
+        self.demo_mouse_keepalive_interval_var = tk.StringVar(
+            value=str(DEFAULT_DEMO_MOUSE_KEEPALIVE_SECONDS)
+        )
+        self.demo_mouse_keepalive_status = tk.StringVar(
+            value="Movimento automático do cursor desligado; nenhum movimento será feito."
+        )
         self.ocr_enabled_var = tk.BooleanVar(value=False)
         self.confidence_var = tk.StringVar(value="70")
         self.tesseract_path_var = tk.StringVar(value=find_tesseract_executable())
@@ -120,6 +183,8 @@ class AutoTraderApp(tk.Tk):
         self.region_vars = {key: tk.StringVar() for key in ("left", "top", "width", "height")}
         self.capture_status = tk.StringVar(value="Captura parada")
         self.heartbeat_status = tk.StringVar(value="Sem captura")
+        self.buy_target_status = tk.StringVar(value="não calibrado")
+        self.sell_target_status = tk.StringVar(value="não calibrado")
         self.exclusion_status = tk.StringVar(value="nenhuma área ocultada")
         self._build_ui()
         self._load_persisted_simulation_history()
@@ -139,12 +204,12 @@ class AutoTraderApp(tk.Tk):
         header = ttk.Frame(self.full_ui, padding=(18, 16))
         header.pack(fill="x")
         ttk.Label(header, text=APP_NAME, font=("Segoe UI", 20, "bold")).pack(anchor="w")
-        ttk.Label(header, text="OCR COMPRA/VENDER · simulação assistida manual",
+        ttk.Label(header, text="OCR COMPRA/VENDER · simulação assistida e teste de clique DEMO",
                   font=("Segoe UI", 10)).pack(anchor="w", pady=(3, 0))
 
         warning = ttk.Label(
             self.full_ui,
-            text="A simulação é manual e não envia ordens à corretora. Confira visualmente os sinais e a vela antes de confirmar.",
+            text="Cliques automáticos são experimentais e desligados por padrão. A ativação DEMO limita-se a uma entrada por vela M1, no segundo configurado; o app não verifica tipo de conta nem aceitação da ordem.",
             foreground="#8a4b08", background="#fff3cd", padding=9, wraplength=760,
         )
         warning.pack(fill="x", padx=18, pady=(0, 10))
@@ -340,7 +405,7 @@ class AutoTraderApp(tk.Tk):
 
         simulation_box = ttk.LabelFrame(
             right_content,
-            text="Simulação assistida manual · nenhuma ordem é enviada",
+            text="Simulação assistida · cliques experimentais apenas em DEMO",
             padding=6,
         )
         simulation_box.pack(fill="x", pady=(8, 0))
@@ -393,6 +458,93 @@ class AutoTraderApp(tk.Tk):
             sim_buttons, text="Cancelar", command=self._cancel_pending_simulation, state="disabled"
         )
         self.cancel_sim_button.pack(side="left", padx=6)
+        self.demo_toggle_button = ttk.Button(
+            sim_buttons, text="Ativar cliques DEMO…", command=self._toggle_demo_automation
+        )
+        self.demo_toggle_button.pack(side="right", padx=6)
+        demo_target_row = ttk.Frame(simulation_box)
+        demo_target_row.pack(fill="x", pady=(4, 0))
+        ttk.Button(
+            demo_target_row, text="Calibrar COMPRAR", command=lambda: self._calibrate_demo_target("BUY")
+        ).pack(side="left", padx=(0, 4))
+        ttk.Label(demo_target_row, textvariable=self.buy_target_status).pack(side="left", padx=(0, 12))
+        ttk.Button(
+            demo_target_row, text="Calibrar VENDER", command=lambda: self._calibrate_demo_target("SELL")
+        ).pack(side="left", padx=(0, 4))
+        ttk.Label(demo_target_row, textvariable=self.sell_target_status).pack(side="left")
+        demo_mouse_keepalive_target_row = ttk.Frame(simulation_box)
+        demo_mouse_keepalive_target_row.pack(fill="x", pady=(4, 0))
+        ttk.Button(
+            demo_mouse_keepalive_target_row,
+            text="Calibrar ponto neutro (sem clique)",
+            command=self._calibrate_demo_mouse_keepalive_target,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Label(demo_mouse_keepalive_target_row, textvariable=self.demo_mouse_keepalive_status).pack(
+            side="left", fill="x", expand=True
+        )
+        demo_mouse_keepalive_options = ttk.Frame(simulation_box)
+        demo_mouse_keepalive_options.pack(fill="x", pady=(3, 0))
+        self.demo_mouse_keepalive_checkbutton = ttk.Checkbutton(
+            demo_mouse_keepalive_options,
+            text="Movimentar cursor sem clicar após inatividade (somente DEMO)",
+            variable=self.demo_mouse_keepalive_var,
+            command=self._on_demo_mouse_keepalive_toggle,
+            state="normal" if sys.platform == "win32" else "disabled",
+        )
+        self.demo_mouse_keepalive_checkbutton.pack(side="left")
+        ttk.Label(demo_mouse_keepalive_options, text="intervalo ocioso (s):").pack(side="left", padx=(8, 3))
+        self.demo_mouse_keepalive_spinbox = ttk.Spinbox(
+            demo_mouse_keepalive_options,
+            from_=MIN_DEMO_MOUSE_KEEPALIVE_SECONDS,
+            to=MAX_DEMO_MOUSE_KEEPALIVE_SECONDS,
+            increment=30,
+            textvariable=self.demo_mouse_keepalive_interval_var,
+            width=5,
+        )
+        self.demo_mouse_keepalive_spinbox.pack(side="left")
+        self.demo_mouse_keepalive_spinbox.bind("<FocusOut>", lambda _event: self._persist_config())
+        self.demo_mouse_keepalive_spinbox.bind("<Return>", lambda _event: self._persist_config())
+        demo_timeout_row = ttk.Frame(simulation_box)
+        demo_timeout_row.pack(fill="x", pady=(3, 0))
+        ttk.Label(
+            demo_timeout_row,
+            text=f"Limite da ativação contínua DEMO ({MIN_DEMO_ACTIVATION_TIMEOUT_SECONDS}–"
+                 f"{MAX_DEMO_ACTIVATION_TIMEOUT_SECONDS} s):",
+        ).pack(side="left", padx=(0, 6))
+        self.demo_timeout_spinbox = ttk.Spinbox(
+            demo_timeout_row,
+            from_=MIN_DEMO_ACTIVATION_TIMEOUT_SECONDS,
+            to=MAX_DEMO_ACTIVATION_TIMEOUT_SECONDS,
+            increment=15,
+            textvariable=self.demo_activation_timeout_var,
+            width=8,
+            command=self._persist_config,
+        )
+        self.demo_timeout_spinbox.pack(side="left")
+        self.demo_timeout_spinbox.bind("<FocusOut>", lambda _event: self._persist_config())
+        self.demo_timeout_spinbox.bind("<Return>", lambda _event: self._persist_config())
+        ttk.Label(demo_timeout_row, text="padrão: 75 s").pack(side="left", padx=(6, 0))
+        demo_entry_second_row = ttk.Frame(simulation_box)
+        demo_entry_second_row.pack(fill="x", pady=(3, 0))
+        ttk.Label(demo_entry_second_row, text="Segundo fixo da entrada DEMO (:SS):").pack(
+            side="left", padx=(0, 6)
+        )
+        self.demo_entry_second_spinbox = ttk.Spinbox(
+            demo_entry_second_row,
+            from_=MIN_DEMO_ENTRY_SECOND,
+            to=MAX_DEMO_ENTRY_SECOND,
+            increment=1,
+            textvariable=self.demo_entry_second_var,
+            width=4,
+            command=self._persist_config,
+        )
+        self.demo_entry_second_spinbox.pack(side="left")
+        self.demo_entry_second_spinbox.bind("<FocusOut>", lambda _event: self._persist_config())
+        self.demo_entry_second_spinbox.bind("<Return>", lambda _event: self._persist_config())
+        ttk.Label(
+            demo_entry_second_row,
+            text=f"tenta em :SS; sinal tardio descartado · padrão :{DEFAULT_DEMO_ENTRY_SECOND:02d}",
+        ).pack(side="left", padx=(6, 0))
         exclusion_row = ttk.Frame(simulation_box)
         exclusion_row.pack(fill="x", pady=(3, 0))
         ttk.Button(
@@ -403,6 +555,7 @@ class AutoTraderApp(tk.Tk):
             exclusion_row, text="Limpar áreas ocultas", command=self._clear_excluded_regions
         ).pack(side="left", padx=(0, 8))
         ttk.Label(exclusion_row, textvariable=self.exclusion_status).pack(side="left")
+        ttk.Label(simulation_box, textvariable=self.demo_status, wraplength=650).pack(anchor="w", pady=(3, 0))
         ttk.Label(simulation_box, textvariable=self.simulation_status, wraplength=650).pack(anchor="w", pady=(4, 0))
 
         def scroll_right(event: tk.Event) -> str:
@@ -502,8 +655,24 @@ class AutoTraderApp(tk.Tk):
         )
         self.compact_cancel_button.pack(side="left", padx=5)
 
+        self.compact_demo_mouse_keepalive_checkbutton = ttk.Checkbutton(
+            self.compact_frame,
+            text="Movimentar cursor sem clicar após inatividade (DEMO)",
+            variable=self.demo_mouse_keepalive_var,
+            command=self._on_demo_mouse_keepalive_toggle,
+            state="normal" if sys.platform == "win32" else "disabled",
+        )
+        self.compact_demo_mouse_keepalive_checkbutton.pack(anchor="w", pady=(3, 0))
+        ttk.Label(
+            self.compact_frame, textvariable=self.demo_mouse_keepalive_status, wraplength=640
+        ).pack(anchor="w", pady=(0, 2))
+
         compact_controls = ttk.Frame(self.compact_frame)
         compact_controls.pack(fill="x", pady=(2, 2))
+        self.compact_demo_toggle_button = ttk.Button(
+            compact_controls, text="Ativar DEMO…", command=self._toggle_demo_automation
+        )
+        self.compact_demo_toggle_button.pack(side="left", padx=(0, 6))
         self.compact_sequence_button = ttk.Button(
             compact_controls, text="Gravar sequência (75 s)", command=self._toggle_sequence_recording
         )
@@ -515,6 +684,9 @@ class AutoTraderApp(tk.Tk):
         ).pack(side="right")
         ttk.Label(self.compact_frame, textvariable=self.sequence_status, wraplength=640).pack(
             anchor="w", pady=(2, 0)
+        )
+        ttk.Label(self.compact_frame, textvariable=self.demo_status, wraplength=640).pack(
+            anchor="w", pady=(3, 0)
         )
         ttk.Label(self.compact_frame, textvariable=self.simulation_status, wraplength=640).pack(
             anchor="w", pady=(3, 0)
@@ -592,6 +764,8 @@ class AutoTraderApp(tk.Tk):
         )
 
     def _open_exclusion_selector(self) -> None:
+        if self.demo_automation_enabled:
+            self._toggle_demo_automation()
         if self.running:
             self._stop_capture("Captura pausada para ocultar os controles da plataforma.")
         index = self._selected_monitor_index()
@@ -645,6 +819,813 @@ class AutoTraderApp(tk.Tk):
     def _mask_excluded_regions(self, image: Image.Image) -> None:
         if self.region is not None:
             mask_screen_regions(image, self.region, self.excluded_regions)
+
+    def _target_is_excluded_or_outside_capture(self, target: ClickTarget) -> bool:
+        if not self._inside_capture_region(target):
+            return True
+        return point_is_masked_with_margin(target.x, target.y, self.excluded_regions)
+
+    def _set_demo_target_label(self, direction: str, target: ClickTarget | None) -> None:
+        label = self.buy_target_status if direction == "BUY" else self.sell_target_status
+        label.set("não calibrado" if target is None else f"{target.x}, {target.y}")
+
+    def _inside_capture_region(self, target: ClickTarget) -> bool:
+        region = self.region
+        return bool(
+            region is not None
+            and region.left <= target.x < region.left + region.width
+            and region.top <= target.y < region.top + region.height
+        )
+
+    def _calibrate_demo_target(self, direction: str) -> None:
+        if sys.platform != "win32":
+            messagebox.showerror(APP_NAME, "A calibração de cliques só funciona no Windows.", parent=self)
+            return
+        if direction not in {"BUY", "SELL"}:
+            return
+        if self.demo_automation_enabled:
+            messagebox.showinfo(APP_NAME, "Desative os cliques DEMO antes de calibrar os botões.", parent=self)
+            return
+        label = "COMPRAR" if direction == "BUY" else "VENDER"
+        consent = messagebox.askyesno(
+            APP_NAME,
+            f"Calibrar o centro do botão {label}. Ao continuar, a janela AUTO TRADER ficará oculta por 5 segundos. "
+            "Mova o cursor para o centro do botão na plataforma e não clique. O app registra a posição e a janela sob o cursor.",
+            parent=self,
+        )
+        if not consent:
+            return
+        self.demo_click_targets[direction] = None
+        self.demo_click_target_windows[direction] = None
+        self.demo_click_target_signatures[direction] = None
+        self.demo_mouse_keepalive_target = None
+        self.demo_mouse_keepalive_alternate = None
+        self.demo_mouse_keepalive_window = None
+        self.demo_mouse_keepalive_signature = None
+        self.demo_mouse_keepalive_var.set(False)
+        self.demo_mouse_keepalive_status.set("Recalibre o ponto neutro após recalibrar botões.")
+        self._set_demo_target_label(direction, None)
+        self._persist_config()
+        self.demo_status.set(f"Calibração {label}: janela oculta por 5 s; posicione o cursor no centro do botão.")
+        self.withdraw()
+        self._calibration_after_id = self.after(5000, lambda: self._finish_demo_calibration(direction))
+
+    def _finish_demo_calibration(self, direction: str) -> None:
+        target: ClickTarget | None = None
+        target_window: int | None = None
+        target_signature: dict[str, object] | None = None
+        error: Exception | None = None
+        try:
+            x, y = windows_mouse_position()
+            target = ClickTarget(x, y)
+            target_window = windows_window_at_point(x, y)
+            target_signature = windows_window_signature_at_point(x, y)
+            if target_window is None or not self._valid_window_signature(target_signature):
+                raise RuntimeError("Não foi possível identificar a janela da plataforma nesse ponto.")
+        except Exception as exc:
+            error = exc
+        finally:
+            try:
+                self.deiconify()
+            except tk.TclError:
+                return
+        if error is not None:
+            messagebox.showerror(APP_NAME, f"Não foi possível ler a posição do mouse:\n{error}", parent=self)
+            return
+        assert target is not None and target_window is not None and target_signature is not None
+        self.demo_click_targets[direction] = target
+        self.demo_click_target_windows[direction] = target_window
+        self.demo_click_target_signatures[direction] = target_signature
+        self._set_demo_target_label(direction, target)
+        self._persist_config()
+        label = "COMPRAR" if direction == "BUY" else "VENDER"
+        if self._inside_capture_region(target) and not self._target_is_excluded_or_outside_capture(target):
+            self.demo_status.set(
+                f"Botão {label} calibrado em {target.x}, {target.y}; marque uma área para ocultar os botões "
+                "antes de ativar cliques DEMO. Nenhum clique foi enviado."
+            )
+        else:
+            self.demo_status.set(f"Botão {label} calibrado em {target.x}, {target.y}; nenhum clique foi enviado.")
+
+    def _demo_mouse_keepalive_geometry_is_safe(
+        self,
+        target: ClickTarget,
+        alternate: ClickTarget,
+        target_window: int,
+        *,
+        check_frontmost: bool = True,
+    ) -> bool:
+        buy_target = self.demo_click_targets["BUY"]
+        sell_target = self.demo_click_targets["SELL"]
+        expected_windows = {
+            self.demo_click_target_windows["BUY"],
+            self.demo_click_target_windows["SELL"],
+        }
+        buy_signature = self.demo_click_target_signatures["BUY"]
+        sell_signature = self.demo_click_target_signatures["SELL"]
+        if (
+            None in expected_windows
+            or expected_windows != {target_window}
+            or buy_signature is None
+            or sell_signature is None
+            or buy_signature != sell_signature
+            or self.demo_mouse_keepalive_signature != buy_signature
+        ):
+            return False
+        for point in (target, alternate):
+            if not self._target_is_excluded_or_outside_capture(point):
+                return False
+            for button_target in (buy_target, sell_target):
+                if button_target is None:
+                    return False
+                dx = point.x - button_target.x
+                dy = point.y - button_target.y
+                if dx * dx + dy * dy < DEMO_MOUSE_KEEPALIVE_CLEARANCE_PX ** 2:
+                    return False
+            if check_frontmost:
+                try:
+                    if (
+                        windows_window_at_point(point.x, point.y) != target_window
+                        or windows_window_signature_at_point(point.x, point.y)
+                        != self.demo_mouse_keepalive_signature
+                    ):
+                        return False
+                except Exception:
+                    return False
+        return True
+
+    def _calibrate_demo_mouse_keepalive_target(self) -> None:
+        if sys.platform != "win32":
+            messagebox.showerror(APP_NAME, "A calibração do cursor só funciona no Windows.", parent=self)
+            return
+        if self.demo_automation_enabled:
+            messagebox.showinfo(APP_NAME, "Desative os cliques DEMO antes de calibrar o ponto neutro.", parent=self)
+            return
+        if any(self.demo_click_targets[direction] is None for direction in ("BUY", "SELL")):
+            messagebox.showinfo(APP_NAME, "Calibre COMPRAR e VENDER antes de calibrar o ponto neutro.", parent=self)
+            return
+        if self.running:
+            self._stop_capture("Captura pausada para calibrar o ponto neutro do cursor.")
+        consent = messagebox.askyesno(
+            APP_NAME,
+            "Calibrar um ponto neutro sem clique. A janela AUTO TRADER ficará oculta por 5 segundos. "
+            "Mova o cursor para uma área vazia da janela da corretora, longe dos botões de ordem e etiquetas; "
+            "não clique. O ponto e uma posição adjacente serão usados apenas quando DEMO estiver autorizado.",
+            parent=self,
+        )
+        if not consent:
+            return
+        self.demo_mouse_keepalive_target = None
+        self.demo_mouse_keepalive_alternate = None
+        self.demo_mouse_keepalive_window = None
+        self.demo_mouse_keepalive_signature = None
+        self.demo_mouse_keepalive_status.set("Calibração: posicione no ponto neutro, sem clicar.")
+        self._persist_config()
+        self.withdraw()
+        self.after(5000, self._finish_demo_mouse_keepalive_calibration)
+
+    def _finish_demo_mouse_keepalive_calibration(self) -> None:
+        try:
+            x, y = windows_mouse_position()
+            target = ClickTarget(x, y)
+            target_window = windows_window_at_point(x, y)
+            target_signature = windows_window_signature_at_point(x, y)
+            if target_window is None or not self._valid_window_signature(target_signature):
+                raise RuntimeError("Não foi possível identificar a janela sob o ponto escolhido.")
+            if (
+                target_signature != self.demo_click_target_signatures["BUY"]
+                or target_signature != self.demo_click_target_signatures["SELL"]
+            ):
+                raise RuntimeError("O ponto neutro precisa estar na mesma janela já calibrada para COMPRAR/VENDER.")
+            self.demo_mouse_keepalive_signature = target_signature
+            alternates: list[ClickTarget] = []
+            for delta_x in (DEMO_MOUSE_KEEPALIVE_NUDGE_PX, -DEMO_MOUSE_KEEPALIVE_NUDGE_PX):
+                try:
+                    alternates.append(ClickTarget(x + delta_x, y))
+                except ValueError:
+                    continue
+            alternate = next((
+                candidate for candidate in alternates
+                if windows_window_at_point(candidate.x, candidate.y) == target_window
+                and self._demo_mouse_keepalive_geometry_is_safe(target, candidate, target_window)
+            ), None)
+            if alternate is None or not self._demo_mouse_keepalive_geometry_is_safe(
+                target, alternate, target_window
+            ):
+                raise RuntimeError(
+                    "Escolha uma área neutra fora da captura ou mascarada, dentro da mesma janela da corretora "
+                    "e a pelo menos 100 px dos botões calibrados."
+                )
+        except Exception as exc:
+            self.deiconify()
+            self.demo_mouse_keepalive_target = None
+            self.demo_mouse_keepalive_alternate = None
+            self.demo_mouse_keepalive_window = None
+            self.demo_mouse_keepalive_signature = None
+            self._persist_config()
+            self.demo_mouse_keepalive_status.set("Ponto neutro não calibrado.")
+            messagebox.showerror(APP_NAME, f"Calibração do ponto neutro recusada:\n{exc}", parent=self)
+            return
+        self.deiconify()
+        self.demo_mouse_keepalive_target = target
+        self.demo_mouse_keepalive_alternate = alternate
+        self.demo_mouse_keepalive_window = target_window
+        self.demo_mouse_keepalive_signature = target_signature
+        self.demo_mouse_keepalive_use_alternate = False
+        self.demo_mouse_keepalive_status.set(
+            f"Ponto neutro calibrado em {target.x},{target.y}; sem clique."
+        )
+        self._persist_config()
+
+    def _demo_mouse_keepalive_interval(self) -> int | None:
+        try:
+            interval = int(self.demo_mouse_keepalive_interval_var.get())
+        except (TypeError, ValueError):
+            return None
+        if not MIN_DEMO_MOUSE_KEEPALIVE_SECONDS <= interval <= MAX_DEMO_MOUSE_KEEPALIVE_SECONDS:
+            return None
+        return interval
+
+    def _on_demo_mouse_keepalive_toggle(self) -> None:
+        if not self.demo_mouse_keepalive_var.get():
+            self._cancel_demo_mouse_keepalive()
+            self.demo_mouse_keepalive_status.set(
+                "Movimento automático do cursor desligado; nenhum movimento será feito."
+            )
+            self._persist_config()
+            return
+        if self.demo_mouse_keepalive_target is None or self.demo_mouse_keepalive_alternate is None:
+            self.demo_mouse_keepalive_var.set(False)
+            self._persist_config()
+            messagebox.showinfo(
+                APP_NAME,
+                "Calibre primeiro o ponto neutro. O movimento não envia cliques e só funciona durante DEMO ativo.",
+                parent=self,
+            )
+            return
+        if self._demo_mouse_keepalive_interval() is None:
+            self.demo_mouse_keepalive_var.set(False)
+            self._persist_config()
+            messagebox.showerror(
+                APP_NAME,
+                f"O intervalo ocioso deve estar entre {MIN_DEMO_MOUSE_KEEPALIVE_SECONDS} e "
+                f"{MAX_DEMO_MOUSE_KEEPALIVE_SECONDS} segundos.",
+                parent=self,
+            )
+            return
+        if self.demo_automation_enabled:
+            self.demo_mouse_keepalive_last_move_at = time.monotonic()
+            self._schedule_demo_mouse_keepalive()
+            self.demo_mouse_keepalive_status.set(
+                "Movimento DEMO sem clique habilitado; aguardando inatividade do usuário."
+            )
+        else:
+            self.demo_mouse_keepalive_status.set(
+                "Ativado; só movimentará o cursor durante uma ativação DEMO autorizada."
+            )
+        self._persist_config()
+
+    def _schedule_demo_mouse_keepalive(self) -> None:
+        if (
+            self.demo_mouse_keepalive_after_id is None
+            and self.running
+            and self.demo_automation_enabled
+            and self.demo_account_confirmed
+            and self.demo_mouse_keepalive_var.get()
+        ):
+            self.demo_mouse_keepalive_after_id = self.after(
+                DEMO_MOUSE_KEEPALIVE_POLL_MS, self._demo_mouse_keepalive_tick
+            )
+
+    def _cancel_demo_mouse_keepalive(self) -> None:
+        if self.demo_mouse_keepalive_after_id is not None:
+            try:
+                self.after_cancel(self.demo_mouse_keepalive_after_id)
+            except tk.TclError:
+                pass
+            self.demo_mouse_keepalive_after_id = None
+
+    def _demo_mouse_keepalive_tick(self) -> None:
+        self.demo_mouse_keepalive_after_id = None
+        if (
+            not self.running
+            or not self.demo_automation_enabled
+            or not self.demo_account_confirmed
+            or not self.demo_mouse_keepalive_var.get()
+        ):
+            return
+        interval = self._demo_mouse_keepalive_interval()
+        target = (
+            self.demo_mouse_keepalive_alternate
+            if self.demo_mouse_keepalive_use_alternate
+            else self.demo_mouse_keepalive_target
+        )
+        neutral_target = self.demo_mouse_keepalive_target
+        alternate = self.demo_mouse_keepalive_alternate
+        safe_window = self.demo_mouse_keepalive_window
+        if (
+            interval is None
+            or target is None
+            or neutral_target is None
+            or alternate is None
+            or safe_window is None
+        ):
+            self.demo_mouse_keepalive_status.set("Movimento suspenso: calibre o ponto e confira o intervalo.")
+            self._schedule_demo_mouse_keepalive()
+            return
+        now = time.monotonic()
+        try:
+            idle_seconds = windows_last_input_idle_seconds()
+            if (
+                idle_seconds >= interval
+                and now - self.demo_mouse_keepalive_last_move_at >= interval
+            ):
+                if not self._demo_mouse_keepalive_geometry_is_safe(
+                    neutral_target, alternate, safe_window
+                ):
+                    self.demo_mouse_keepalive_status.set(
+                        "Movimento suspenso: ponto neutro coberto ou fora da janela calibrada."
+                    )
+                else:
+                    if windows_window_at_point(target.x, target.y) != safe_window:
+                        self.demo_mouse_keepalive_status.set(
+                            "Movimento suspenso: a janela calibrada da corretora não está visível no ponto neutro."
+                        )
+                    else:
+                        cursor_x, cursor_y = windows_mouse_position()
+                        if (cursor_x, cursor_y) == (target.x, target.y):
+                            target = neutral_target if target == alternate else alternate
+                        if windows_window_at_point(target.x, target.y) != safe_window:
+                            self.demo_mouse_keepalive_status.set(
+                                "Movimento suspenso: ponto neutro não está na janela calibrada."
+                            )
+                            self._schedule_demo_mouse_keepalive()
+                            return
+                        windows_mouse_move(target.x, target.y)
+                        self.demo_mouse_keepalive_use_alternate = (
+                            target == self.demo_mouse_keepalive_target
+                        )
+                        self.demo_mouse_keepalive_last_move_at = now
+                        self.demo_mouse_keepalive_status.set(
+                            f"Cursor movido sem clique às {time.strftime('%H:%M:%S')}; "
+                            f"próxima verificação em {interval} s de inatividade."
+                        )
+            elif idle_seconds < interval:
+                self.demo_mouse_keepalive_status.set(
+                    f"Movimento DEMO sem clique aguardando {interval} s de inatividade do usuário."
+                )
+        except Exception as exc:
+            self.demo_mouse_keepalive_status.set(f"Movimento DEMO suspenso por erro: {exc}")
+        self._schedule_demo_mouse_keepalive()
+
+    def _update_demo_toggle_text(self) -> None:
+        text = "Parar cliques DEMO" if self.demo_automation_enabled else "Ativar cliques DEMO…"
+        config_state = "disabled" if self.demo_automation_enabled else "normal"
+        for name in ("demo_toggle_button", "compact_demo_toggle_button"):
+            button = getattr(self, name, None)
+            if button is not None:
+                button.configure(text=text)
+        for name in ("demo_timeout_spinbox", "demo_entry_second_spinbox"):
+            spinbox = getattr(self, name, None)
+            if spinbox is not None:
+                spinbox.configure(state=config_state)
+
+    def _toggle_demo_automation(self) -> None:
+        if self.demo_automation_enabled:
+            self._deactivate_demo_automation()
+            if self.simulation.pending is not None:
+                self._cancel_pending_simulation()
+            self.demo_status.set("Cliques DEMO desligados pelo usuário; nenhum sinal pendente será executado.")
+            return
+        if sys.platform != "win32":
+            messagebox.showerror(APP_NAME, "A automação do mouse só funciona no Windows.", parent=self)
+            return
+        if not self.running or self.detector is None:
+            messagebox.showinfo(APP_NAME, "Inicie a captura com OCR ativo antes de habilitar cliques DEMO.", parent=self)
+            return
+        if self.timeframe_var.get() != "M1":
+            messagebox.showinfo(APP_NAME, "A automação contínua de clique DEMO está limitada ao período M1.", parent=self)
+            return
+        try:
+            activation_timeout = int(self.demo_activation_timeout_var.get())
+        except (TypeError, ValueError):
+            messagebox.showerror(APP_NAME, "Informe o limite da ativação DEMO em segundos.", parent=self)
+            return
+        if not MIN_DEMO_ACTIVATION_TIMEOUT_SECONDS <= activation_timeout <= MAX_DEMO_ACTIVATION_TIMEOUT_SECONDS:
+            messagebox.showerror(
+                APP_NAME,
+                f"O limite precisa estar entre {MIN_DEMO_ACTIVATION_TIMEOUT_SECONDS} e "
+                f"{MAX_DEMO_ACTIVATION_TIMEOUT_SECONDS} segundos.",
+                parent=self,
+            )
+            return
+        try:
+            entry_second = int(self.demo_entry_second_var.get())
+        except (TypeError, ValueError):
+            messagebox.showerror(APP_NAME, "Informe o segundo fixo da entrada DEMO entre :00 e :30.", parent=self)
+            return
+        if not MIN_DEMO_ENTRY_SECOND <= entry_second <= MAX_DEMO_ENTRY_SECOND:
+            messagebox.showerror(
+                APP_NAME,
+                f"O segundo fixo precisa estar entre :{MIN_DEMO_ENTRY_SECOND:02d} e :{MAX_DEMO_ENTRY_SECOND:02d}.",
+                parent=self,
+            )
+            return
+        if self.simulation.pending is not None:
+            messagebox.showinfo(APP_NAME, "Cancele o sinal pendente antes de habilitar cliques DEMO.", parent=self)
+            return
+        buy_target = self.demo_click_targets["BUY"]
+        sell_target = self.demo_click_targets["SELL"]
+        if (
+            buy_target is None
+            or sell_target is None
+            or not self._valid_window_signature(self.demo_click_target_signatures["BUY"])
+            or not self._valid_window_signature(self.demo_click_target_signatures["SELL"])
+        ):
+            messagebox.showinfo(
+                APP_NAME,
+                "Calibre COMPRAR e VENDER uma vez; as posições serão guardadas para próximas sessões.",
+                parent=self,
+            )
+            return
+        if not self._bind_persisted_demo_windows():
+            messagebox.showerror(
+                APP_NAME,
+                "As posições salvas não correspondem à mesma janela/plataforma e geometria. "
+                "Traga a plataforma original para frente e recalibre COMPRAR/VENDER.",
+                parent=self,
+            )
+            return
+        if (
+            self.region is None
+            or not self._target_is_excluded_or_outside_capture(buy_target)
+            or not self._target_is_excluded_or_outside_capture(sell_target)
+        ):
+            messagebox.showerror(
+                APP_NAME,
+                "Cada botão calibrado precisa ficar fora da captura ou dentro de uma área que será ocultada "
+                "antes do OCR e da gravação. Marque a área dos botões e confira que HORA ATUAL permanece visível.",
+                parent=self,
+            )
+            return
+        mouse_keepalive_note = ""
+        if self.demo_mouse_keepalive_var.get():
+            interval = self._demo_mouse_keepalive_interval()
+            target = self.demo_mouse_keepalive_target
+            alternate = self.demo_mouse_keepalive_alternate
+            safe_window = self.demo_mouse_keepalive_window
+            if interval is None:
+                messagebox.showerror(
+                    APP_NAME,
+                    f"O intervalo do movimento deve ficar entre {MIN_DEMO_MOUSE_KEEPALIVE_SECONDS} e "
+                    f"{MAX_DEMO_MOUSE_KEEPALIVE_SECONDS} segundos.",
+                    parent=self,
+                )
+                return
+            if (
+                target is None
+                or alternate is None
+                or safe_window is None
+                or not self._demo_mouse_keepalive_geometry_is_safe(
+                    target, alternate, safe_window, check_frontmost=False
+                )
+            ):
+                messagebox.showerror(
+                    APP_NAME,
+                    "O movimento sem clique exige um ponto neutro calibrado na mesma janela dos botões, "
+                    "longe dos alvos e fora da região capturada ou dentro de uma área mascarada.",
+                    parent=self,
+                )
+                return
+            mouse_keepalive_note = (
+                f" Se não houver atividade do usuário por {interval} s, o cursor alternará entre "
+                "dois pontos neutros calibrados, sem clicar; a posição mudará."
+            )
+        consent = messagebox.askyesno(
+            APP_NAME,
+            "ATENÇÃO — cliques automáticos somente em conta DEMO.\n\n"
+            "Confirme que a plataforma está na conta DEMO e que valor/expiração foram conferidos. "
+            "O app não consegue verificar o tipo de conta nem os valores.\n\n"
+            "A ativação contínua pode enviar no máximo uma entrada por vela M1, somente até :30 do relógio "
+            "do Windows convertido para UTC−3. Esse é um relógio local, não uma leitura da corretora; "
+            "a sincronização do Windows pode divergir em segundos. "
+            f"As entradas visam sempre :{entry_second:02d}: sinais reconhecidos antes aguardam até esse segundo; "
+            "sinais reconhecidos depois são descartados nesta vela. "
+            "Não espera N+1. "
+            f"Ficará ativa por {activation_timeout} s ou até você pará-la; sinais repetidos na mesma vela são bloqueados. "
+            "A identidade da vela e a aceitação da ordem não são verificadas visualmente.\n\n"
+            f"{mouse_keepalive_note}\n\n"
+            "Se a conta não estiver em DEMO, o clique poderá enviar uma ordem real. Ativar agora?",
+            parent=self,
+        )
+        if not consent:
+            return
+        self.demo_clock.reset()
+        self.demo_automation_enabled = True
+        self.demo_account_confirmed = True
+        self.demo_activation_timeout_active = activation_timeout
+        self.demo_entry_second_active = entry_second
+        self.demo_entries_this_activation = 0
+        self.demo_timeout_after_id = self.after(
+            activation_timeout * 1000, self._expire_demo_activation
+        )
+        if self.demo_mouse_keepalive_var.get():
+            self.demo_mouse_keepalive_last_move_at = time.monotonic()
+            self.demo_mouse_keepalive_use_alternate = False
+            self._schedule_demo_mouse_keepalive()
+            self.demo_mouse_keepalive_status.set(
+                "Keep-alive DEMO sem clique ativo; aguardando intervalo de inatividade."
+            )
+        self._persist_config()
+        self._update_demo_toggle_text()
+        self.demo_status.set(
+            f"CLIQUE DEMO CONTÍNUO ATIVO por {activation_timeout} s: sinais legíveis são armados "
+            f"assim que reconhecidos; entrada programada para :{self.demo_entry_second_active:02d}. "
+            "Sinais reconhecidos depois desse segundo são descartados; uma tentativa por minuto "
+            "do relógio Windows UTC−3. Os segundos podem divergir da corretora."
+        )
+
+    def _maybe_auto_arm_demo_signal(self) -> None:
+        if (
+            not self.demo_automation_enabled
+            or not self.running
+            or self.detector is None
+            or self.timeframe_var.get() != "M1"
+            or self.simulation.pending is not None
+        ):
+            return
+        # O relógio Windows UTC−3 é a única referência temporal do DEMO.
+        # A atualização do OCR não impõe um timeout adicional ao clique.
+        clock = self.demo_clock.reading()
+        current_candle_id = self.demo_minute_tracker.update(clock)
+        if current_candle_id is None:
+            return
+        self.demo_signal_guard.advance_candle(current_candle_id)
+        candidates = list(self.candidates_by_id.values())
+        if len(candidates) != 1:
+            if len(candidates) > 1:
+                self.demo_status.set("DEMO contínuo pausado nesta leitura: há mais de um candidato OCR.")
+            else:
+                self.demo_status.set(
+                    "DEMO ativo: nenhum sinal COMPRA/VENDER recente e legível; "
+                    "aguardando nova leitura OCR. O minuto de referência é o Windows UTC−3."
+                )
+            return
+        candidate = candidates[0]
+        if self.last_demo_entry_candle_id == current_candle_id:
+            self.demo_signal_guard.mark_consumed(
+                candidate.direction, candidate.left, candidate.top
+            )
+            self.demo_status.set(
+                f"DEMO ativo: já houve uma tentativa na vela M1 "
+                f"{clock.hour:02d}:{clock.minute:02d} do relógio Windows UTC−3; "
+                "aguardando a próxima virada do minuto do Windows."
+            )
+            return
+        if not m1_entry_window_open(clock, max_elapsed_seconds=30):
+            self.demo_signal_guard.mark_consumed(
+                candidate.direction, candidate.left, candidate.top
+            )
+            self.demo_status.set(
+                f"DEMO ativo: relógio Windows UTC−3 {clock.hour:02d}:{clock.minute:02d}:{clock.second:02d} passou de :30; "
+                "este sinal foi descartado sem clique, aguardando um próximo sinal elegível."
+            )
+            return
+        if self.demo_signal_guard.blocks(candidate):
+            self.demo_status.set(
+                f"DEMO ativo: este sinal já foi consumido na vela M1 "
+                f"{clock.hour:02d}:{clock.minute:02d} do relógio Windows UTC−3; "
+                "aguardando a próxima virada do minuto do Windows."
+            )
+            return
+        try:
+            pending = self.simulation.arm(candidate, dedupe_scope=str(current_candle_id))
+        except ValueError:
+            return
+        self.pending_demo_candle_id = current_candle_id
+        self.pending_armed_clock = clock
+        self.pending_rollover_notified = False
+        label = "COMPRA" if pending.direction == "BUY" else "VENDER"
+        error = self._record_simulation_event(
+            "sinal_armado_demo", direction=pending.direction, observed_text=pending.observed_text,
+            confidence=pending.confidence, signal_x=pending.x, signal_y=pending.y,
+            clock_override=clock, clock_source_override=DEMO_CLOCK_SOURCE,
+            armed_clock_override=clock,
+        )
+        persistence_note = f" Histórico não gravado: {error}" if error else ""
+        self.demo_status.set(
+            f"DEMO: {label} armado automaticamente ({pending.confidence:.0f}%). "
+            f"Entrada programada para :{self.demo_entry_second_active:02d}; "
+            f"uma tentativa nesta vela M1 do relógio Windows UTC−3.{persistence_note}"
+        )
+        self._refresh_simulation_buttons()
+        self._execute_demo_click()
+
+    def _target_window_is_topmost(self, direction: str, target: ClickTarget) -> bool:
+        calibrated_window = self.demo_click_target_windows.get(direction)
+        if calibrated_window is None:
+            return False
+        try:
+            current_window = windows_window_at_point(target.x, target.y)
+            current_signature = windows_window_signature_at_point(target.x, target.y)
+        except Exception:
+            return False
+        return (
+            current_window == calibrated_window
+            and current_signature == self.demo_click_target_signatures.get(direction)
+        )
+
+    def _pending_demo_candidate_is_current(self, pending: PendingSignal) -> bool:
+        candidates = list(self.candidates_by_id.values())
+        if len(candidates) != 1:
+            return False
+        candidate = candidates[0]
+        return (
+            candidate.direction == pending.direction
+            and abs(candidate.left - pending.x) <= self.demo_signal_guard.tolerance_x
+            and abs(candidate.top - pending.y) <= self.demo_signal_guard.tolerance_y
+        )
+
+    def _cancel_scheduled_demo_entry(self) -> None:
+        if self.demo_entry_after_id is not None:
+            try:
+                self.after_cancel(self.demo_entry_after_id)
+            except tk.TclError:
+                pass
+            self.demo_entry_after_id = None
+
+    def _execute_demo_click(self) -> None:
+        self.demo_entry_after_id = None
+        pending = self.simulation.pending
+        if not self.demo_automation_enabled or pending is None:
+            return
+        clock = self.demo_clock.reading()
+        current_candle_id = self.demo_minute_tracker.update(clock)
+        self.demo_signal_guard.advance_candle(current_candle_id)
+        if current_candle_id is None or current_candle_id != self.pending_demo_candle_id:
+            self._cancel_pending_simulation()
+            self.demo_status.set(
+                f"Sinal DEMO expirou: o relógio Windows UTC−3 avançou para "
+                f"{clock.hour:02d}:{clock.minute:02d} antes da tentativa; "
+                "sinal antigo cancelado sem clique."
+            )
+            return
+        target = self.demo_click_targets[pending.direction]
+        if (
+            target is None
+            or not self._target_is_excluded_or_outside_capture(target)
+            or not self._target_window_is_topmost(pending.direction, target)
+        ):
+            self._deactivate_demo_automation()
+            self.demo_status.set(
+                "DEMO bloqueado: o ponto do botão não está sobre a mesma janela calibrada. "
+                "Traga a corretora para frente e recalibre os botões."
+            )
+            self._cancel_pending_simulation()
+            return
+        if not self._pending_demo_candidate_is_current(pending):
+            self.demo_signal_guard.mark_consumed(pending.direction, pending.x, pending.y)
+            self._cancel_pending_simulation()
+            self.demo_status.set(
+                "Sinal DEMO descartado: a etiqueta não está mais presente na leitura OCR recente."
+            )
+            return
+        elapsed = platform_clock_elapsed_seconds(self.pending_armed_clock, clock)
+        if elapsed is None:
+            self.demo_signal_guard.mark_consumed(pending.direction, pending.x, pending.y)
+            self._cancel_pending_simulation()
+            self.demo_status.set(
+                "Sinal descartado: o relógio Windows UTC−3 avançou de forma inválida; nenhum clique."
+            )
+            return
+        action = demo_entry_second_action(clock.second, self.demo_entry_second_active)
+        remaining_to_target = self.demo_entry_second_active - clock.second
+        if action == "wait":
+            self.demo_entry_after_id = self.after(
+                remaining_to_target * 1000, self._execute_demo_click
+            )
+            self.demo_status.set(
+                f"Sinal DEMO armado; aguardando :{self.demo_entry_second_active:02d} "
+                "para padronizar o segundo da entrada."
+            )
+            return
+        if action == "late":
+            self.demo_signal_guard.mark_consumed(pending.direction, pending.x, pending.y)
+            self._cancel_pending_simulation()
+            self.demo_status.set(
+                f"Sinal DEMO descartado: foi reconhecido depois de :{self.demo_entry_second_active:02d}; "
+                "aguardando novo sinal na próxima vela."
+            )
+            return
+        if not m1_entry_window_open(clock, max_elapsed_seconds=30):
+            self.demo_signal_guard.mark_consumed(pending.direction, pending.x, pending.y)
+            self._cancel_pending_simulation()
+            self.demo_status.set(
+                "Sinal descartado porque o relógio UTC−3 do Windows passou de :30; nenhum clique. "
+                "Modo contínuo segue ativo para um sinal novo elegível."
+            )
+            return
+        self.demo_entries_this_activation += 1
+        self.last_demo_entry_candle_id = self.pending_demo_candle_id
+        try:
+            click_demo_direction(
+                pending.direction,
+                buy_target=self.demo_click_targets["BUY"],
+                sell_target=self.demo_click_targets["SELL"],
+                enabled=self.demo_automation_enabled,
+                demo_confirmed=self.demo_account_confirmed,
+                clicker=windows_mouse_click,
+            )
+            entry = self.simulation.confirm_next_candle()
+        except Exception as exc:
+            # A falha pode ter ocorrido depois de o sistema operacional enviar o clique;
+            # nunca repetir ou seguir clicando após um resultado incerto.
+            if self.simulation.pending is not None:
+                try:
+                    failed = self.simulation.cancel_pending()
+                    self.demo_signal_guard.mark_consumed(failed.direction, failed.x, failed.y)
+                    self._record_simulation_event(
+                        "clique_demo_inconclusivo", direction=failed.direction,
+                        observed_text=failed.observed_text, confidence=failed.confidence,
+                        signal_x=failed.x, signal_y=failed.y,
+                        clock_override=self.demo_clock.reading(),
+                        clock_source_override=DEMO_CLOCK_SOURCE,
+                    )
+                except ValueError:
+                    pass
+            self._clear_pending_clock_observation()
+            self._deactivate_demo_automation()
+            self.demo_status.set(
+                f"Resultado do clique DEMO incerto ({exc}); automação encerrada para evitar repetição. "
+                "Verifique a plataforma antes de reativar."
+            )
+            self._refresh_simulation_buttons()
+            return
+
+        label = "COMPRA" if entry.direction == "BUY" else "VENDER"
+        time_text = f"{clock.hour:02d}:{clock.minute:02d}:{clock.second:02d}"
+        armed_clock = self.pending_armed_clock
+        armed_time_text = (
+            f"{armed_clock.hour:02d}:{armed_clock.minute:02d}:{armed_clock.second:02d}"
+            if armed_clock is not None else "—"
+        )
+        log_error = self._record_simulation_event(
+            "entrada_demo_clicada", direction=entry.direction, observed_text=entry.signal_text,
+            confidence=entry.confidence, signal_x=entry.signal_x, signal_y=entry.signal_y,
+            clock_override=clock, clock_source_override=DEMO_CLOCK_SOURCE,
+            armed_clock_override=armed_clock, entry_delay_seconds=elapsed,
+        )
+        self.history_table.insert(
+            "", 0, iid=f"demo-{entry.signal_id}",
+            values=(time_text, label, f"DEMO · atraso relógio Windows UTC−3 {elapsed} s"),
+        )
+        self.demo_signal_guard.mark_consumed(
+            entry.direction, entry.signal_x, entry.signal_y
+        )
+        self._clear_pending_clock_observation()
+        persistence_note = f" Histórico local não gravado: {log_error}" if log_error else ""
+        self.demo_status.set(
+            f"Clique {label} enviado às {time_text} (relógio Windows UTC−3); "
+            f"atraso medido por essa fonte: {elapsed} s "
+            f"desde o armamento às {armed_time_text}. Uma entrada nesta vela M1; "
+            "o mesmo sinal fica bloqueado. "
+            f"Prazo restante da ativação: até {self.demo_activation_timeout_active} s.{persistence_note}"
+        )
+        self.simulation_status.set(
+            "Tentativa DEMO registrada; identidade da vela e aceitação pela plataforma não verificadas. "
+            f"Entradas nesta ativação: {self.demo_entries_this_activation}."
+        )
+        self._refresh_simulation_buttons()
+
+    def _expire_demo_activation(self) -> None:
+        self.demo_timeout_after_id = None
+        if not self.demo_automation_enabled:
+            return
+        timeout = self.demo_activation_timeout_active
+        entries = self.demo_entries_this_activation
+        self._deactivate_demo_automation()
+        if self.simulation.pending is not None:
+            self._cancel_pending_simulation()
+        self.demo_status.set(
+            f"Ativação DEMO encerrada pelo limite de {timeout} s; {entries} entrada(s) tentada(s)."
+        )
+
+    def _deactivate_demo_automation(self) -> None:
+        self._cancel_scheduled_demo_entry()
+        self._cancel_demo_mouse_keepalive()
+        self.demo_automation_enabled = False
+        self.demo_account_confirmed = False
+        if self.demo_mouse_keepalive_var.get():
+            self.demo_mouse_keepalive_status.set(
+                "Keep-alive sem clique parado porque a ativação DEMO terminou."
+            )
+        if self.demo_timeout_after_id is not None:
+            try:
+                self.after_cancel(self.demo_timeout_after_id)
+            except tk.TclError:
+                pass
+            self.demo_timeout_after_id = None
+        self._update_demo_toggle_text()
 
     def _apply_coordinates(self) -> None:
         try:
@@ -774,6 +1755,8 @@ class AutoTraderApp(tk.Tk):
     def _stop_capture(self, reason: str) -> None:
         self._stop_sequence_recording("captura parada")
         self._set_capture_keep_awake(False)
+        if self.demo_automation_enabled:
+            self._toggle_demo_automation()
         self.running = False
         self.start_button.configure(text="Iniciar visualização")
         self.capture_status.set(reason)
@@ -807,13 +1790,17 @@ class AutoTraderApp(tk.Tk):
                     bars = detect_candle_bars(image)
                     self.latest_bar_count = len(bars)
                     self.last_candidates = filter_to_recent_candle(raw_candidates, bars)
+                    self.demo_signal_guard.observe(self.last_candidates)
                     self.last_ocr_at = now
                     self._update_ocr_status(self.last_candidates, len(raw_candidates), len(bars))
+                    self._maybe_auto_arm_demo_signal()
                     # OCR may be slower than one frame; assess freshness after processing,
                     # not against the frame-start timestamp captured before the OCR work.
                     self._update_timer_status()
                 except Exception as exc:
                     # Falha do OCR encerra também qualquer modo que poderia clicar.
+                    if self.demo_automation_enabled:
+                        self._toggle_demo_automation()
                     self.detector = None
                     self.latest_platform_clock = None
                     self.latest_clock_at = None
@@ -1011,6 +1998,11 @@ class AutoTraderApp(tk.Tk):
         )
 
     def _clear_entry_history(self) -> None:
+        if self.demo_automation_enabled:
+            messagebox.showinfo(
+                APP_NAME, "Pare os cliques DEMO antes de limpar o log.", parent=self
+            )
+            return
         if not messagebox.askyesno(
             APP_NAME,
             "Isso apagará permanentemente o CSV local com entradas e eventos. "
@@ -1041,7 +2033,25 @@ class AutoTraderApp(tk.Tk):
             direction = "COMPRA" if row.get("direction") == "BUY" else "VENDER"
             elapsed = row.get("elapsed_seconds_m1", "")
             elapsed_text = f" · M1 +{elapsed}s" if elapsed else ""
-            row_status = f"SIMULADA · N+1{elapsed_text}"
+            if row.get("event") == "entrada_demo_clicada":
+                delay = row.get("entry_delay_seconds", "") or row.get(
+                    "entry_delay_platform_seconds", ""
+                )
+                armed_clock = row.get("armed_clock", "") or row.get(
+                    "armed_platform_clock", ""
+                )
+                if delay:
+                    arm_note = f" desde {armed_clock}" if armed_clock else " desde armamento"
+                    source = (
+                        "relógio Windows UTC−3"
+                        if row.get("clock_source") == DEMO_CLOCK_SOURCE
+                        else "HORA ATUAL OCR"
+                    )
+                    row_status = f"DEMO · atraso {source} {delay}s{arm_note}"
+                else:
+                    row_status = "DEMO · clique enviado; atraso não registrado"
+            else:
+                row_status = f"SIMULADA · N+1{elapsed_text}"
             self.history_table.insert(
                 "", 0, iid=f"persisted-{index}",
                 values=(row.get("platform_clock") or "—", direction, row_status),
@@ -1062,6 +2072,12 @@ class AutoTraderApp(tk.Tk):
         signal_x: int,
         signal_y: int,
         elapsed_seconds_m1: int | None = None,
+        armed_platform_clock: PlatformClockReading | None = None,
+        entry_delay_platform_seconds: int | None = None,
+        clock_override: PlatformClockReading | None = None,
+        clock_source_override: str | None = None,
+        armed_clock_override: PlatformClockReading | None = None,
+        entry_delay_seconds: int | None = None,
     ) -> str | None:
         now = time.monotonic()
         clock_is_fresh = (
@@ -1069,8 +2085,13 @@ class AutoTraderApp(tk.Tk):
             and self.latest_clock_at is not None
             and now - self.latest_clock_at <= TIMER_MAX_AGE_SECONDS
         )
-        clock = self.latest_platform_clock if clock_is_fresh else None
-        # A falha de persistência não bloqueia a confirmação manual.
+        clock = clock_override or (self.latest_platform_clock if clock_is_fresh else None)
+        clock_source = (
+            clock_source_override
+            if clock_override is not None
+            else ("platform_ocr" if clock is not None else "")
+        )
+        # Persistência é best-effort: nunca deve bloquear confirmação assistida.
         return append_event_best_effort(
             self.simulation_history,
             platform_clock=(
@@ -1084,8 +2105,23 @@ class AutoTraderApp(tk.Tk):
             signal_x=signal_x,
             signal_y=signal_y,
             elapsed_seconds_m1=elapsed_seconds_m1,
-            clock_confidence=clock.confidence if clock is not None else None,
-            clock_source="platform_ocr" if clock is not None else "",
+            clock_confidence=(
+                clock.confidence
+                if clock is not None and clock_source != DEMO_CLOCK_SOURCE else None
+            ),
+            armed_platform_clock=(
+                f"{armed_platform_clock.hour:02d}:{armed_platform_clock.minute:02d}:"
+                f"{armed_platform_clock.second:02d}"
+                if armed_platform_clock is not None else ""
+            ),
+            entry_delay_platform_seconds=entry_delay_platform_seconds,
+            clock_source=clock_source,
+            armed_clock=(
+                f"{armed_clock_override.hour:02d}:{armed_clock_override.minute:02d}:"
+                f"{armed_clock_override.second:02d}"
+                if armed_clock_override is not None else ""
+            ),
+            entry_delay_seconds=entry_delay_seconds,
         )
 
     def _arm_selected_candidate(self) -> None:
@@ -1103,6 +2139,9 @@ class AutoTraderApp(tk.Tk):
         self._arm_candidate_id(selection[0])
 
     def _arm_candidate_id(self, item_id: str) -> None:
+        if self.demo_automation_enabled:
+            self.simulation_status.set("No modo DEMO, os candidatos são armados automaticamente; use Cancelar para abortar.")
+            return
         candidate = self.candidates_by_id.get(item_id)
         if candidate is None:
             self.simulation_status.set("O candidato não está mais no quadro atual; aguarde a próxima leitura.")
@@ -1142,6 +2181,7 @@ class AutoTraderApp(tk.Tk):
     def _observe_pending_platform_minute(self) -> None:
         if (
             self.timeframe_var.get() != "M1"
+            or self.demo_automation_enabled
             or self.simulation.pending is None
             or self.pending_rollover_notified
             or not platform_minute_advanced(self.pending_armed_clock, self.latest_platform_clock)
@@ -1167,6 +2207,7 @@ class AutoTraderApp(tk.Tk):
     def _clear_pending_clock_observation(self) -> None:
         self.pending_armed_clock = None
         self.pending_rollover_notified = False
+        self.pending_demo_candle_id = None
 
     def _confirm_next_candle(self) -> None:
         elapsed_seconds = None
@@ -1227,6 +2268,7 @@ class AutoTraderApp(tk.Tk):
             button.configure(state="disabled")
 
     def _cancel_pending_simulation(self) -> None:
+        self._cancel_scheduled_demo_entry()
         try:
             pending = self.simulation.cancel_pending()
         except ValueError as exc:
@@ -1263,7 +2305,7 @@ class AutoTraderApp(tk.Tk):
 
     def _refresh_simulation_buttons(self) -> None:
         pending = self.simulation.pending is not None
-        confirm_allowed = pending and (
+        confirm_allowed = pending and not self.demo_automation_enabled and (
             self.timeframe_var.get() != "M1" or self._m1_window_valid()
         )
         for button in (self.confirm_candle_button, self.compact_confirm_button):
@@ -1280,6 +2322,26 @@ class AutoTraderApp(tk.Tk):
             self._refresh_simulation_buttons()
             return
         observed_at = time.monotonic() if now is None else now
+        if self.demo_automation_enabled:
+            demo_clock = self.demo_clock.reading()
+            pending = self.simulation.pending
+            prefix = "M1 DEMO · referência temporal somente Windows UTC−3"
+            if pending is not None:
+                elapsed = platform_clock_elapsed_seconds(self.pending_armed_clock, demo_clock)
+                self.timer_status.set(
+                    f"{prefix}: {demo_clock.hour:02d}:{demo_clock.minute:02d}:"
+                    f"{demo_clock.second:02d}; armamento +{elapsed if elapsed is not None else '—'} s; "
+                    f"entrada no segundo :{self.demo_entry_second_active:02d} (até :30)."
+                )
+            else:
+                self.timer_status.set(
+                    f"{prefix}: {demo_clock.hour:02d}:{demo_clock.minute:02d}:"
+                    f"{demo_clock.second:02d}; entrada DEMO no segundo :{self.demo_entry_second_active:02d}, "
+                    "máximo uma tentativa por minuto do Windows, até :30."
+                )
+            self._refresh_simulation_buttons()
+            return
+
         platform_clock = self.latest_platform_clock
         fresh = (
             self.latest_clock_at is not None
@@ -1316,6 +2378,11 @@ class AutoTraderApp(tk.Tk):
                 else "a leitura avançou mais de um minuto ou voltou no tempo"
             )
             self.timer_status.set(f"M1: entrada bloqueada — {expire_reason}.")
+        elif self.demo_automation_enabled:
+            self.timer_status.set(
+                f"M1: HORA ATUAL {platform_clock.hour:02d}:{platform_clock.minute:02d}:"
+                f"{platform_clock.second:02d}; contínuo: no máximo uma entrada nesta vela, só até :30."
+            )
         elif 0 <= elapsed <= 30:
             self.timer_status.set(
                 f"M1: HORA ATUAL {platform_clock.hour:02d}:{platform_clock.minute:02d}:"
@@ -1333,6 +2400,9 @@ class AutoTraderApp(tk.Tk):
                 observed_text=expired.observed_text, confidence=expired.confidence,
                 signal_x=expired.x, signal_y=expired.y,
             )
+            if self.demo_automation_enabled:
+                self._deactivate_demo_automation()
+                self.demo_status.set("Teste DEMO encerrado sem clique: janela M1/N+1 não foi válida.")
             persistence_note = f" Histórico local não gravado: {log_error}" if log_error else ""
             self.simulation_status.set(
                 f"Sinal {label} descartado: {expire_reason}; nenhuma entrada enviada."
@@ -1341,6 +2411,8 @@ class AutoTraderApp(tk.Tk):
         self._refresh_simulation_buttons()
 
     def _on_timeframe_change(self, _event: tk.Event | None = None) -> None:
+        if self.demo_automation_enabled and self.timeframe_var.get() != "M1":
+            self._toggle_demo_automation()
         self._persist_config()
         self._update_timer_status()
 
@@ -1387,20 +2459,154 @@ class AutoTraderApp(tk.Tk):
         except OSError as exc:
             messagebox.showerror(APP_NAME, f"Não foi possível salvar a imagem:\n{exc}", parent=self)
 
-    def _load_persisted_excluded_regions(self, config: dict[str, object]) -> None:
-        raw_regions = config.get("excluded_regions", [])
-        if not isinstance(raw_regions, list):
-            return
-        restored: list[ScreenRegion] = []
-        for item in raw_regions:
-            try:
-                restored.append(ScreenRegion.from_dict(item))
-            except (TypeError, ValueError):
-                continue
-        self.excluded_regions = restored
-        self.exclusion_status.set(
-            f"{len(restored)} área(s) ocultada(s)" if restored else "nenhuma área ocultada"
+    def _screen_layout_signature(self) -> list[dict[str, int]]:
+        layout = [
+            {key: int(monitor[key]) for key in ("left", "top", "width", "height")}
+            for monitor in self.monitors
+        ]
+        return sorted(
+            layout,
+            key=lambda item: (item["left"], item["top"], item["width"], item["height"]),
         )
+
+    @staticmethod
+    def _valid_window_signature(value: object) -> bool:
+        if not isinstance(value, dict):
+            return False
+        process_id = value.get("process_id")
+        class_name = value.get("class_name")
+        rect = value.get("rect")
+        return (
+            isinstance(process_id, int) and not isinstance(process_id, bool) and process_id > 0
+            and isinstance(class_name, str) and bool(class_name)
+            and isinstance(rect, list) and len(rect) == 4
+            and all(isinstance(item, int) and not isinstance(item, bool) for item in rect)
+            and rect[2] > rect[0] and rect[3] > rect[1]
+        )
+
+    def _load_persisted_calibrations(self, config: dict[str, object]) -> None:
+        has_saved_calibration = any(
+            bool(config.get(key))
+            for key in ("excluded_regions", "demo_click_targets", "demo_mouse_keepalive")
+        )
+        if not has_saved_calibration:
+            return
+        if config.get("screen_layout") != self._screen_layout_signature():
+            self.demo_status.set(
+                "Calibrações antigas não restauradas: a disposição dos monitores mudou; "
+                "selecione novamente as áreas e calibre os pontos."
+            )
+            return
+
+        raw_regions = config.get("excluded_regions", [])
+        if isinstance(raw_regions, list):
+            for value in raw_regions:
+                try:
+                    region = ScreenRegion.from_dict(value)
+                except (TypeError, ValueError, KeyError):
+                    continue
+                if self.region is not None and self._regions_intersect(region, self.region):
+                    self.excluded_regions.append(region)
+        self.exclusion_status.set(
+            f"{len(self.excluded_regions)} área(s) ocultada(s) restaurada(s)"
+            if self.excluded_regions else "nenhuma área ocultada"
+        )
+
+        raw_targets = config.get("demo_click_targets", {})
+        if isinstance(raw_targets, dict):
+            for direction in ("BUY", "SELL"):
+                item = raw_targets.get(direction)
+                if not isinstance(item, dict):
+                    continue
+                point = item.get("target")
+                signature = item.get("window_signature")
+                if not isinstance(point, dict) or not self._valid_window_signature(signature):
+                    continue
+                try:
+                    target = ClickTarget(point.get("x"), point.get("y"))
+                except (TypeError, ValueError):
+                    continue
+                left, top, right, bottom = signature["rect"]
+                if not (left <= target.x < right and top <= target.y < bottom):
+                    continue
+                self.demo_click_targets[direction] = target
+                self.demo_click_target_signatures[direction] = signature
+                self._set_demo_target_label(direction, target)
+
+        raw_keepalive = config.get("demo_mouse_keepalive")
+        if isinstance(raw_keepalive, dict):
+            signature = raw_keepalive.get("window_signature")
+            if self._valid_window_signature(signature):
+                try:
+                    point_data = raw_keepalive.get("target")
+                    alternate_data = raw_keepalive.get("alternate")
+                    if not isinstance(point_data, dict) or not isinstance(alternate_data, dict):
+                        raise ValueError("coordenadas ausentes")
+                    self.demo_mouse_keepalive_target = ClickTarget(
+                        point_data.get("x"), point_data.get("y")
+                    )
+                    self.demo_mouse_keepalive_alternate = ClickTarget(
+                        alternate_data.get("x"), alternate_data.get("y")
+                    )
+                    left, top, right, bottom = signature["rect"]
+                    for saved_point in (
+                        self.demo_mouse_keepalive_target,
+                        self.demo_mouse_keepalive_alternate,
+                    ):
+                        if not (left <= saved_point.x < right and top <= saved_point.y < bottom):
+                            raise ValueError("ponto neutro fora da janela calibrada")
+                    self.demo_mouse_keepalive_signature = signature
+                    self.demo_mouse_keepalive_status.set(
+                        f"Ponto neutro salvo em {self.demo_mouse_keepalive_target.x},"
+                        f"{self.demo_mouse_keepalive_target.y}; será revalidado antes do uso."
+                    )
+                except (TypeError, ValueError):
+                    self.demo_mouse_keepalive_target = None
+                    self.demo_mouse_keepalive_alternate = None
+                    self.demo_mouse_keepalive_signature = None
+
+        if any(self.demo_click_targets.values()) or self.excluded_regions:
+            self.demo_status.set(
+                "Calibrações locais restauradas; janela e posição serão revalidadas antes de qualquer movimento/clique."
+            )
+
+    def _bind_persisted_demo_windows(self) -> bool:
+        """Rebind stored screen points only if the exact calibrated window is still there."""
+        rebound: dict[str, int] = {}
+        for direction in ("BUY", "SELL"):
+            target = self.demo_click_targets[direction]
+            expected_signature = self.demo_click_target_signatures[direction]
+            if target is None or not self._valid_window_signature(expected_signature):
+                return False
+            try:
+                current_window = windows_window_at_point(target.x, target.y)
+                current_signature = windows_window_signature_at_point(target.x, target.y)
+            except Exception:
+                return False
+            if current_window is None or current_signature != expected_signature:
+                return False
+            rebound[direction] = current_window
+
+        if rebound["BUY"] != rebound["SELL"]:
+            return False
+        self.demo_click_target_windows.update(rebound)
+
+        neutral = self.demo_mouse_keepalive_target
+        neutral_signature = self.demo_mouse_keepalive_signature
+        if neutral is not None and self._valid_window_signature(neutral_signature):
+            try:
+                neutral_window = windows_window_at_point(neutral.x, neutral.y)
+                current_signature = windows_window_signature_at_point(neutral.x, neutral.y)
+            except Exception:
+                neutral_window = None
+                current_signature = None
+            if (
+                neutral_window == rebound["BUY"]
+                and current_signature == neutral_signature
+                and neutral_signature == self.demo_click_target_signatures["BUY"]
+            ):
+                self.demo_mouse_keepalive_window = neutral_window
+        return True
 
     def _persist_config(self) -> None:
         payload: dict[str, object] = {
@@ -1409,10 +2615,45 @@ class AutoTraderApp(tk.Tk):
             "ocr_enabled": self.ocr_enabled_var.get(),
             "compact_during_capture": self.compact_during_capture_var.get(),
             "tesseract_executable": self.tesseract_path_var.get().strip().strip('"'),
-            "excluded_regions": [region.as_mss_dict() for region in self.excluded_regions],
+            "demo_entry_second": self.demo_entry_second_var.get(),
+            "demo_mouse_keepalive_enabled": bool(self.demo_mouse_keepalive_var.get()),
+            "demo_mouse_keepalive_interval_seconds": self.demo_mouse_keepalive_interval_var.get(),
         }
+        try:
+            timeout_seconds = int(self.demo_activation_timeout_var.get())
+            if MIN_DEMO_ACTIVATION_TIMEOUT_SECONDS <= timeout_seconds <= MAX_DEMO_ACTIVATION_TIMEOUT_SECONDS:
+                payload["demo_activation_timeout_seconds"] = timeout_seconds
+        except (AttributeError, TypeError, ValueError):
+            pass
         if self.region is not None:
             payload["region"] = self.region.as_mss_dict()
+        payload["screen_layout"] = self._screen_layout_signature()
+        payload["excluded_regions"] = [region.as_mss_dict() for region in self.excluded_regions]
+        payload["demo_click_targets"] = {
+            direction: {
+                "target": {"x": target.x, "y": target.y},
+                "window_signature": self.demo_click_target_signatures[direction],
+            }
+            for direction, target in self.demo_click_targets.items()
+            if target is not None
+            and self._valid_window_signature(self.demo_click_target_signatures[direction])
+        }
+        if (
+            self.demo_mouse_keepalive_target is not None
+            and self.demo_mouse_keepalive_alternate is not None
+            and self._valid_window_signature(self.demo_mouse_keepalive_signature)
+        ):
+            payload["demo_mouse_keepalive"] = {
+                "target": {
+                    "x": self.demo_mouse_keepalive_target.x,
+                    "y": self.demo_mouse_keepalive_target.y,
+                },
+                "alternate": {
+                    "x": self.demo_mouse_keepalive_alternate.x,
+                    "y": self.demo_mouse_keepalive_alternate.y,
+                },
+                "window_signature": self.demo_mouse_keepalive_signature,
+            }
         monitor_index = self._selected_monitor_index()
         if monitor_index is not None:
             payload["monitor_index"] = monitor_index
@@ -1432,6 +2673,17 @@ class AutoTraderApp(tk.Tk):
             timeframe = config.get("timeframe")
             if timeframe in {"M1", "M5", "M15", "M30"}:
                 self.timeframe_var.set(timeframe)
+            timeout_seconds = int(config.get(
+                "demo_activation_timeout_seconds", DEFAULT_DEMO_ACTIVATION_TIMEOUT_SECONDS
+            ))
+            if MIN_DEMO_ACTIVATION_TIMEOUT_SECONDS <= timeout_seconds <= MAX_DEMO_ACTIVATION_TIMEOUT_SECONDS:
+                self.demo_activation_timeout_var.set(str(timeout_seconds))
+            try:
+                entry_second = int(config.get("demo_entry_second", DEFAULT_DEMO_ENTRY_SECOND))
+            except (TypeError, ValueError):
+                entry_second = DEFAULT_DEMO_ENTRY_SECOND
+            if MIN_DEMO_ENTRY_SECOND <= entry_second <= MAX_DEMO_ENTRY_SECOND:
+                self.demo_entry_second_var.set(f"{entry_second:02d}")
             confidence = config.get("confidence")
             if confidence is not None:
                 self.confidence_var.set(str(confidence))
@@ -1439,10 +2691,29 @@ class AutoTraderApp(tk.Tk):
                 self.ocr_enabled_var.set(config["ocr_enabled"])
             if isinstance(config.get("compact_during_capture"), bool):
                 self.compact_during_capture_var.set(config["compact_during_capture"])
+            if isinstance(config.get("demo_mouse_keepalive_enabled"), bool):
+                self.demo_mouse_keepalive_var.set(config["demo_mouse_keepalive_enabled"])
+            try:
+                keepalive_interval = int(config.get(
+                    "demo_mouse_keepalive_interval_seconds", DEFAULT_DEMO_MOUSE_KEEPALIVE_SECONDS
+                ))
+            except (TypeError, ValueError):
+                keepalive_interval = DEFAULT_DEMO_MOUSE_KEEPALIVE_SECONDS
+            if MIN_DEMO_MOUSE_KEEPALIVE_SECONDS <= keepalive_interval <= MAX_DEMO_MOUSE_KEEPALIVE_SECONDS:
+                self.demo_mouse_keepalive_interval_var.set(str(keepalive_interval))
             tesseract_executable = config.get("tesseract_executable")
             if isinstance(tesseract_executable, str) and tesseract_executable.strip():
                 self.tesseract_path_var.set(tesseract_executable.strip().strip('"'))
-            self._load_persisted_excluded_regions(config)
+            self._load_persisted_calibrations(config)
+            if self.demo_mouse_keepalive_var.get():
+                if self.demo_mouse_keepalive_target is None:
+                    self.demo_mouse_keepalive_status.set(
+                        "Opção salva marcada; calibre o ponto neutro. Só moverá durante ativação DEMO autorizada."
+                    )
+                else:
+                    self.demo_mouse_keepalive_status.set(
+                        "Ponto neutro salvo e revalidado antes do uso; movimento só durante ativação DEMO autorizada."
+                    )
         except FileNotFoundError:
             pass
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
@@ -1451,6 +2722,8 @@ class AutoTraderApp(tk.Tk):
     def _on_close(self) -> None:
         self._stop_sequence_recording("aplicativo fechado")
         self._set_capture_keep_awake(False)
+        if self.demo_automation_enabled:
+            self._toggle_demo_automation()
         self._persist_config()
         self.running = False
         self.destroy()

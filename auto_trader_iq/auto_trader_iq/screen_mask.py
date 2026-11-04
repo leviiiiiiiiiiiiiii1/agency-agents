@@ -23,3 +23,29 @@ def mask_screen_regions(
         bottom = min(image.height, excluded.top + excluded.height - capture_region.top)
         if left < right and top < bottom:
             draw.rectangle((left, top, right - 1, bottom - 1), fill=(0, 0, 0))
+
+
+def point_inside_region(x: int, y: int, region: ScreenRegion) -> bool:
+    return region.left <= x < region.left + region.width and region.top <= y < region.top + region.height
+
+
+def point_is_masked(x: int, y: int, excluded_regions: list[ScreenRegion]) -> bool:
+    return any(point_inside_region(x, y, region) for region in excluded_regions)
+
+
+def point_is_masked_with_margin(
+    x: int,
+    y: int,
+    excluded_regions: list[ScreenRegion],
+    *,
+    margin_x: int = 50,
+    margin_y: int = 50,
+) -> bool:
+    """Require a calibrated button point and a surrounding OCR-safety margin to be masked."""
+    return any(
+        region.left <= x - margin_x
+        and x + margin_x < region.left + region.width
+        and region.top <= y - margin_y
+        and y + margin_y < region.top + region.height
+        for region in excluded_regions
+    )
