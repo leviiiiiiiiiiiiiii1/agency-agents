@@ -1,3 +1,6 @@
-"""AUTO TRADER IQ — captura de tela e reconhecimento OCR local de sinais."""
+"""AUTO TRADER IQ — captura, OCR e simulação assistida de sinais.
 
-__version__ = "1.0.0"
+Nenhuma corretora é controlada e nenhuma ordem é enviada.
+"""
+
+__version__ = "0.3.0"

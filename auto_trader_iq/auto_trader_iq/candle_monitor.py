@@ -106,7 +106,7 @@ def filter_to_recent_candle(
     Mantemos a última vela e a imediatamente anterior porque o indicador mostra o
     sinal quando a vela de referência fechou; a vela seguinte pode já estar visível.
     Se não for possível detectar pelo menos duas barras, falha fechado e não libera
-    candidatos de sinal OCR.
+    candidatos ao simulador.
     """
     if recent_bars < 1:
         raise ValueError("recent_bars precisa ser pelo menos 1.")
