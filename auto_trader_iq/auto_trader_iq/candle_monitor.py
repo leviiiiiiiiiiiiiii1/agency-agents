@@ -51,19 +51,27 @@ def detect_candle_bars(image, downscale: int = 2) -> list[CandleBar]:
     sample = image.convert("RGB").resize((width, height), Image.Resampling.NEAREST)
     pixels = sample.load()
 
-    column_color: dict[int, str] = {}
+    column_stats: dict[int, tuple[str, int, int, int]] = {}
     for x in range(width):
-        positions_by_color: dict[str, list[int]] = {}
+        counts: dict[str, int] = {}
+        bounds: dict[str, list[int]] = {}
         for y in range(height):
             color = _candle_pixel_color(*pixels[x, y])
-            if color is not None:
-                positions_by_color.setdefault(color, []).append(y)
-        if not positions_by_color:
+            if color is None:
+                continue
+            counts[color] = counts.get(color, 0) + 1
+            if color not in bounds:
+                bounds[color] = [y, y]
+            else:
+                bounds[color][1] = y
+        if not counts:
             continue
-        dominant, positions = max(positions_by_color.items(), key=lambda item: len(item[1]))
+        dominant = max(counts, key=counts.get)
         # Corpo/pavio ocupa muitas linhas no mesmo x; letras e retículos, poucas.
-        if len(positions) >= 5:
-            column_color[x] = dominant
+        if counts[dominant] >= 5:
+            top, bottom = bounds[dominant]
+            column_stats[x] = (dominant, top, bottom, counts[dominant])
+    column_color = {x: stats[0] for x, stats in column_stats.items()}
 
     runs: list[tuple[int, int, str]] = []
     active = sorted(column_color)
@@ -85,16 +93,16 @@ def detect_candle_bars(image, downscale: int = 2) -> list[CandleBar]:
         run_width = right - left + 1
         if run_width < 3:
             continue
-        ys: list[int] = []
-        color_pixels = 0
-        for x in range(left, right + 1):
-            for y in range(height):
-                if _candle_pixel_color(*pixels[x, y]) == color:
-                    ys.append(y)
-                    color_pixels += 1
-        if not ys:
+        run_stats = [
+            column_stats[x]
+            for x in range(left, right + 1)
+            if x in column_stats and column_stats[x][0] == color
+        ]
+        if not run_stats:
             continue
-        top, bottom = min(ys), max(ys)
+        top = min(stats[1] for stats in run_stats)
+        bottom = max(stats[2] for stats in run_stats)
+        color_pixels = sum(stats[3] for stats in run_stats)
         if bottom - top + 1 < 9 or color_pixels < 24:
             continue
         bars.append(CandleBar(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+from concurrent.futures import Future, ThreadPoolExecutor
 import os
 import sys
 import time
@@ -49,7 +50,7 @@ from .windows_power import set_windows_keep_awake
 
 APP_NAME = "AUTO TRADER IQ"
 DEMO_CLOCK_SOURCE = "windows_utc_minus_3"
-POLL_MS = 500
+POLL_MS = 250
 OCR_INTERVAL_SECONDS = 0.5
 TIMER_MAX_AGE_SECONDS = 1.5
 DEFAULT_DEMO_ACTIVATION_TIMEOUT_SECONDS = 75
@@ -64,6 +65,23 @@ MAX_DEMO_MOUSE_KEEPALIVE_SECONDS = 600
 DEMO_MOUSE_KEEPALIVE_POLL_MS = 5000
 DEMO_MOUSE_KEEPALIVE_CLEARANCE_PX = 100
 DEMO_MOUSE_KEEPALIVE_NUDGE_PX = 4
+
+
+def _analyze_ocr_frame(detector: TesseractSignalDetector, image: Image.Image):
+    """Run CPU-heavy OCR and candle detection away from Tk's UI thread."""
+    raw_candidates, clock = detector.detect_frame(image)
+    raw_count = detector.last_candidate_count
+    color_rejected_count = detector.last_color_rejected_count
+    bars = detect_candle_bars(image)
+    candidates = filter_to_recent_candle(raw_candidates, bars)
+    return (
+        candidates,
+        clock,
+        raw_count,
+        color_rejected_count,
+        len(bars),
+        detector.last_clock_ocr_text,
+    )
 
 
 def _enable_windows_dpi_awareness() -> None:
@@ -116,9 +134,16 @@ class AutoTraderApp(tk.Tk):
         self.preview_photo: ImageTk.PhotoImage | None = None
         self.compact_preview_photo: ImageTk.PhotoImage | None = None
         self.detector: TesseractSignalDetector | None = None
+        self._ocr_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="auto-trader-ocr")
+        self._ocr_future: Future | None = None
+        self._ocr_frame_captured_at: float | None = None
+        self._ocr_future_generation = 0
+        self._capture_generation = 0
+        self._closing = False
         self.last_candidates: list[SignalCandidate] = []
         self.last_ocr_at = 0.0
         self.latest_platform_clock: PlatformClockReading | None = None
+        self.latest_clock_ocr_text = ""
         self.latest_clock_at: float | None = None
         self.pending_armed_clock: PlatformClockReading | None = None
         self.pending_rollover_notified = False
@@ -1690,6 +1715,7 @@ class AutoTraderApp(tk.Tk):
             if self.region is None:
                 return
         self._persist_config()
+        self._capture_generation += 1
         self.detector = None
         if self.ocr_enabled_var.get():
             try:
@@ -1708,6 +1734,7 @@ class AutoTraderApp(tk.Tk):
         self.last_ocr_at = 0.0
         self.latest_platform_clock = None
         self.latest_clock_at = None
+        self.latest_clock_ocr_text = ""
         self.latest_bar_count = 0
         self._update_timer_status()
         self.running = True
@@ -1757,6 +1784,7 @@ class AutoTraderApp(tk.Tk):
         self._set_capture_keep_awake(False)
         if self.demo_automation_enabled:
             self._toggle_demo_automation()
+        self._capture_generation += 1
         self.running = False
         self.start_button.configure(text="Iniciar visualização")
         self.capture_status.set(reason)
@@ -1769,6 +1797,7 @@ class AutoTraderApp(tk.Tk):
         try:
             image = ScreenCapture.capture(self.region)
             self._mask_excluded_regions(image)
+            captured_at = time.monotonic()
             self.last_pil_image = image
             digest = hashlib.blake2b(image.tobytes(), digest_size=8).hexdigest()
             now = time.monotonic()
@@ -1782,38 +1811,16 @@ class AutoTraderApp(tk.Tk):
                     f"Sem mudança visual há {unchanged}s (heurística; não confirma congelamento)"
                     if unchanged >= 5 else "Captura ativa; quadro sem mudança momentânea"
                 )
-            if self.detector is not None and now - self.last_ocr_at >= OCR_INTERVAL_SECONDS:
-                try:
-                    raw_candidates, self.latest_platform_clock = self.detector.detect_frame(image)
-                    raw_candidate_count = self.detector.last_candidate_count
-                    color_rejected_count = self.detector.last_color_rejected_count
-                    self.latest_clock_at = now if self.latest_platform_clock is not None else None
-                    self._observe_pending_platform_minute()
-                    bars = detect_candle_bars(image)
-                    self.latest_bar_count = len(bars)
-                    self.last_candidates = filter_to_recent_candle(raw_candidates, bars)
-                    self.demo_signal_guard.observe(self.last_candidates)
-                    self.last_ocr_at = now
-                    self._update_ocr_status(
-                        self.last_candidates, raw_candidate_count, len(bars), color_rejected_count
-                    )
-                    self._maybe_auto_arm_demo_signal()
-                    # OCR may be slower than one frame; assess freshness after processing,
-                    # not against the frame-start timestamp captured before the OCR work.
-                    self._update_timer_status()
-                except Exception as exc:
-                    # Falha do OCR encerra também qualquer modo que poderia clicar.
-                    if self.demo_automation_enabled:
-                        self._toggle_demo_automation()
-                    self.detector = None
-                    self.latest_platform_clock = None
-                    self.latest_clock_at = None
-                    self.ocr_status.set(f"OCR interrompido por erro: {exc}")
-                    self._update_timer_status()
-                    self._stop_sequence_recording("parada por falha de OCR")
+            if (
+                self.detector is not None
+                and self._ocr_future is None
+                and now - self.last_ocr_at >= OCR_INTERVAL_SECONDS
+            ):
+                self._submit_ocr_frame(image, captured_at)
+            self._update_timer_status(now)
             self._update_sequence_recording(image, now)
             self._show_preview(image)
-            self.capture_status.set(f"Captura ativa · {image.width}×{image.height} px · 2 quadros/s")
+            self.capture_status.set(f"Captura ativa · {image.width}×{image.height} px · até 4 quadros/s")
         except Exception as exc:
             self._stop_capture(f"Erro de captura: {exc}")
             if self.state() == "iconic":
@@ -1821,6 +1828,90 @@ class AutoTraderApp(tk.Tk):
             messagebox.showerror(APP_NAME, f"A captura foi interrompida:\n{exc}", parent=self)
             return
         self.after(POLL_MS, self._capture_tick)
+
+    def _submit_ocr_frame(self, image: Image.Image, captured_at: float) -> None:
+        detector = self.detector
+        if detector is None or self._ocr_future is not None:
+            return
+        self.last_ocr_at = captured_at
+        self._ocr_frame_captured_at = captured_at
+        self._ocr_future_generation = self._capture_generation
+        self._ocr_future = self._ocr_executor.submit(
+            _analyze_ocr_frame, detector, image.copy()
+        )
+        self.after(50, self._poll_ocr_result)
+
+    def _poll_ocr_result(self) -> None:
+        if self._closing:
+            return
+        future = self._ocr_future
+        if future is None:
+            return
+        if not future.done():
+            self.after(50, self._poll_ocr_result)
+            return
+
+        captured_at = self._ocr_frame_captured_at
+        generation = self._ocr_future_generation
+        self._ocr_future = None
+        self._ocr_frame_captured_at = None
+        if future.cancelled():
+            return
+        try:
+            result = future.result()
+        except Exception as exc:
+            if self.running and generation == self._capture_generation:
+                self._handle_ocr_failure(exc)
+            return
+        if not self.running or generation != self._capture_generation or captured_at is None:
+            return
+
+        now = time.monotonic()
+        frame_age = now - captured_at
+        if frame_age > TIMER_MAX_AGE_SECONDS:
+            self.latest_platform_clock = None
+            self.latest_clock_at = None
+            self.latest_clock_ocr_text = result[5]
+            self.last_candidates = []
+            self.latest_bar_count = result[4]
+            self.demo_signal_guard.observe([])
+            self._update_candidate_table([])
+            self.ocr_status.set(
+                f"OCR atrasado ({frame_age:.1f} s); quadro descartado para evitar sinais defasados."
+            )
+            self._update_timer_status(now)
+            return
+
+        (
+            self.last_candidates,
+            self.latest_platform_clock,
+            raw_candidate_count,
+            color_rejected_count,
+            self.latest_bar_count,
+            self.latest_clock_ocr_text,
+        ) = result
+        self.latest_clock_at = captured_at if self.latest_platform_clock is not None else None
+        self._observe_pending_platform_minute()
+        self.demo_signal_guard.observe(self.last_candidates)
+        self._update_ocr_status(
+            self.last_candidates,
+            raw_candidate_count,
+            self.latest_bar_count,
+            color_rejected_count,
+        )
+        self._maybe_auto_arm_demo_signal()
+        self._update_timer_status(now)
+
+    def _handle_ocr_failure(self, exc: Exception) -> None:
+        if self.demo_automation_enabled:
+            self._toggle_demo_automation()
+        self.detector = None
+        self.latest_platform_clock = None
+        self.latest_clock_at = None
+        self.latest_clock_ocr_text = ""
+        self.ocr_status.set(f"OCR interrompido por erro: {exc}")
+        self._update_timer_status()
+        self._stop_sequence_recording("parada por falha de OCR")
 
     def _set_sequence_button_text(self, recording: bool) -> None:
         text = "Parar gravação de teste" if recording else "Gravar sequência de teste (75 s)"
@@ -1897,7 +1988,7 @@ class AutoTraderApp(tk.Tk):
                 now,
                 platform_clock=clock_text,
                 clock_confidence=clock_confidence,
-                clock_ocr_excerpt=(self.detector.last_clock_ocr_text if self.detector is not None else ""),
+                clock_ocr_excerpt=self.latest_clock_ocr_text,
                 candle_count=self.latest_bar_count,
                 candidates=candidate_labels,
             )
@@ -2444,22 +2535,18 @@ class AutoTraderApp(tk.Tk):
                           f"{label} {item.confidence:.0f}%", fill=color)
 
         if self.full_ui.winfo_viewable():
-            full_width = max(200, self.preview.winfo_width() - 20)
-            full_height = max(150, self.preview.winfo_height() - 20)
-        else:
-            full_width, full_height = 900, 480
-        full_image = annotated.copy()
-        full_image.thumbnail((full_width, full_height), Image.Resampling.LANCZOS)
-        self.preview_photo = ImageTk.PhotoImage(full_image)
-        self.preview.configure(image=self.preview_photo, text="")
-
-        compact_width = self.compact_preview_label.winfo_width()
-        if compact_width <= 1:
-            compact_width = 640
-        compact_image = annotated.copy()
-        compact_image.thumbnail((min(640, max(240, compact_width - 12)), 220), Image.Resampling.LANCZOS)
-        self.compact_preview_photo = ImageTk.PhotoImage(compact_image)
-        self.compact_preview_label.configure(image=self.compact_preview_photo, text="")
+            preview_width = max(200, self.preview.winfo_width() - 20)
+            preview_height = max(150, self.preview.winfo_height() - 20)
+            annotated.thumbnail((preview_width, preview_height), Image.Resampling.LANCZOS)
+            self.preview_photo = ImageTk.PhotoImage(annotated)
+            self.preview.configure(image=self.preview_photo, text="")
+        elif self.compact_frame.winfo_viewable():
+            compact_width = self.compact_preview_label.winfo_width()
+            if compact_width <= 1:
+                compact_width = 640
+            annotated.thumbnail((min(640, max(240, compact_width - 12)), 220), Image.Resampling.LANCZOS)
+            self.compact_preview_photo = ImageTk.PhotoImage(annotated)
+            self.compact_preview_label.configure(image=self.compact_preview_photo, text="")
 
     def _save_snapshot(self) -> None:
         if self.last_pil_image is None:
@@ -2741,6 +2828,9 @@ class AutoTraderApp(tk.Tk):
             self._toggle_demo_automation()
         self._persist_config()
         self.running = False
+        self._closing = True
+        self._capture_generation += 1
+        self._ocr_executor.shutdown(wait=False, cancel_futures=True)
         self.destroy()
 
 
