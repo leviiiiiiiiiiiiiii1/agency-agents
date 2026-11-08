@@ -18,6 +18,8 @@ A simulação manual continua disponível: o usuário arma um candidato e confir
 
 A confiança do Tesseract não é uma probabilidade calibrada. Quando a leitura normal não encontra etiquetas, o app faz uma segunda leitura OCR isolando pixels verdes/vermelhos; candidatos desse recurso só passam quando a cor confirma COMPRA/BUY (verde) ou VENDER/SELL (vermelho). Na leitura normal, conflito de cor também descarta o candidato, enquanto texto sem cor confiável continua dependendo do OCR. O filtro visual de velas reconhece, entre outras, as paletas verde/vermelha e branca/roxa e tenta associar etiquetas às barras recentes. Essas heurísticas não comprovam a identidade da vela; confira os candidatos e a prévia antes de qualquer ação.
 
+O painel **Contexto do gráfico** é somente informativo e analisa até as 12 velas visíveis mais recentes por cores e geometria. Estima lateralização por sobreposição e pouco deslocamento, pavios/retrações pela proporção dos pavios ao corpo e fluxo comprador/vendedor pela progressão dos fechamentos. “Fluxo” aqui significa movimento de preço visível, não dados de book/negócios; a classificação é heurística, pode oscilar com zoom/tema e não habilita nem altera cliques automáticos.
+
 ## Instalação e execução no Windows
 
 1. Instale Python 3.12 ou superior e confirme que `python -m tkinter` funciona.

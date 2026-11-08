@@ -27,7 +27,7 @@ from .demo_click import (
     windows_window_at_point,
     windows_window_signature_at_point,
 )
-from .candle_monitor import detect_candle_bars, filter_to_recent_candle
+from .candle_monitor import classify_market_context, detect_candle_bars, filter_to_recent_candle
 from .candle_timer import (
     PlatformClockReading,
     PlatformMinuteTracker,
@@ -52,6 +52,7 @@ APP_NAME = "AUTO TRADER IQ"
 DEMO_CLOCK_SOURCE = "windows_utc_minus_3"
 POLL_MS = 250
 OCR_INTERVAL_SECONDS = 0.5
+CONTEXT_INTERVAL_SECONDS = 1.0
 TIMER_MAX_AGE_SECONDS = 1.5
 DEFAULT_DEMO_ACTIVATION_TIMEOUT_SECONDS = 75
 MIN_DEMO_ACTIVATION_TIMEOUT_SECONDS = 15
@@ -67,20 +68,30 @@ DEMO_MOUSE_KEEPALIVE_CLEARANCE_PX = 100
 DEMO_MOUSE_KEEPALIVE_NUDGE_PX = 4
 
 
-def _analyze_ocr_frame(detector: TesseractSignalDetector, image: Image.Image):
-    """Run CPU-heavy OCR and candle detection away from Tk's UI thread."""
-    raw_candidates, clock = detector.detect_frame(image)
-    raw_count = detector.last_candidate_count
-    color_rejected_count = detector.last_color_rejected_count
+def _analyze_ocr_frame(detector: TesseractSignalDetector | None, image: Image.Image):
+    """Run OCR and visual-context analysis away from Tk's UI thread."""
+    if detector is None:
+        raw_candidates = []
+        clock = None
+        raw_count = color_rejected_count = 0
+        clock_ocr_text = ""
+    else:
+        raw_candidates, clock = detector.detect_frame(image)
+        raw_count = detector.last_candidate_count
+        color_rejected_count = detector.last_color_rejected_count
+        clock_ocr_text = detector.last_clock_ocr_text
     bars = detect_candle_bars(image)
     candidates = filter_to_recent_candle(raw_candidates, bars)
+    market_context = classify_market_context(image, bars)
     return (
         candidates,
         clock,
         raw_count,
         color_rejected_count,
         len(bars),
-        detector.last_clock_ocr_text,
+        clock_ocr_text,
+        market_context,
+        detector is not None,
     )
 
 
@@ -138,6 +149,7 @@ class AutoTraderApp(tk.Tk):
         self._ocr_future: Future | None = None
         self._ocr_frame_captured_at: float | None = None
         self._ocr_future_generation = 0
+        self._ocr_future_has_ocr = False
         self._capture_generation = 0
         self._closing = False
         self.last_candidates: list[SignalCandidate] = []
@@ -205,6 +217,7 @@ class AutoTraderApp(tk.Tk):
         self.confidence_var = tk.StringVar(value="70")
         self.tesseract_path_var = tk.StringVar(value=find_tesseract_executable())
         self.ocr_status = tk.StringVar(value="OCR desligado; nenhuma operação é executada.")
+        self.market_context_status = tk.StringVar(value="Contexto visual: aguardando captura.")
         self.region_vars = {key: tk.StringVar() for key in ("left", "top", "width", "height")}
         self.capture_status = tk.StringVar(value="Captura parada")
         self.heartbeat_status = tk.StringVar(value="Sem captura")
@@ -428,6 +441,10 @@ class AutoTraderApp(tk.Tk):
         )
         self.preview.pack(fill="both", expand=True)
 
+        context_box = ttk.LabelFrame(right_content, text="Contexto do gráfico · heurística visual", padding=6)
+        context_box.pack(fill="x", pady=(6, 0))
+        ttk.Label(context_box, textvariable=self.market_context_status, wraplength=650).pack(anchor="w")
+
         simulation_box = ttk.LabelFrame(
             right_content,
             text="Simulação manual · cliques automáticos opcionais",
@@ -625,6 +642,9 @@ class AutoTraderApp(tk.Tk):
             wraplength=640,
         ).pack(anchor="w", pady=(2, 4))
         ttk.Label(self.compact_frame, textvariable=self.ocr_status, wraplength=640).pack(
+            anchor="w", pady=(0, 2)
+        )
+        ttk.Label(self.compact_frame, textvariable=self.market_context_status, wraplength=640).pack(
             anchor="w", pady=(0, 2)
         )
         ttk.Label(self.compact_frame, textvariable=self.timer_status, wraplength=640).pack(
@@ -1736,6 +1756,7 @@ class AutoTraderApp(tk.Tk):
         self.latest_clock_at = None
         self.latest_clock_ocr_text = ""
         self.latest_bar_count = 0
+        self.market_context_status.set("Contexto visual: analisando as velas recentes…")
         self._update_timer_status()
         self.running = True
         if self.keep_awake_var.get():
@@ -1811,11 +1832,10 @@ class AutoTraderApp(tk.Tk):
                     f"Sem mudança visual há {unchanged}s (heurística; não confirma congelamento)"
                     if unchanged >= 5 else "Captura ativa; quadro sem mudança momentânea"
                 )
-            if (
-                self.detector is not None
-                and self._ocr_future is None
-                and now - self.last_ocr_at >= OCR_INTERVAL_SECONDS
-            ):
+            analysis_interval = (
+                OCR_INTERVAL_SECONDS if self.detector is not None else CONTEXT_INTERVAL_SECONDS
+            )
+            if self._ocr_future is None and now - self.last_ocr_at >= analysis_interval:
                 self._submit_ocr_frame(image, captured_at)
             self._update_timer_status(now)
             self._update_sequence_recording(image, now)
@@ -1831,11 +1851,12 @@ class AutoTraderApp(tk.Tk):
 
     def _submit_ocr_frame(self, image: Image.Image, captured_at: float) -> None:
         detector = self.detector
-        if detector is None or self._ocr_future is not None:
+        if self._ocr_future is not None:
             return
         self.last_ocr_at = captured_at
         self._ocr_frame_captured_at = captured_at
         self._ocr_future_generation = self._capture_generation
+        self._ocr_future_has_ocr = detector is not None
         self._ocr_future = self._ocr_executor.submit(
             _analyze_ocr_frame, detector, image.copy()
         )
@@ -1853,6 +1874,7 @@ class AutoTraderApp(tk.Tk):
 
         captured_at = self._ocr_frame_captured_at
         generation = self._ocr_future_generation
+        requested_ocr = self._ocr_future_has_ocr
         self._ocr_future = None
         self._ocr_frame_captured_at = None
         if future.cancelled():
@@ -1861,7 +1883,10 @@ class AutoTraderApp(tk.Tk):
             result = future.result()
         except Exception as exc:
             if self.running and generation == self._capture_generation:
-                self._handle_ocr_failure(exc)
+                if requested_ocr:
+                    self._handle_ocr_failure(exc)
+                else:
+                    self.market_context_status.set(f"Contexto visual indisponível: {exc}")
             return
         if not self.running or generation != self._capture_generation or captured_at is None:
             return
@@ -1876,9 +1901,13 @@ class AutoTraderApp(tk.Tk):
             self.latest_bar_count = result[4]
             self.demo_signal_guard.observe([])
             self._update_candidate_table([])
-            self.ocr_status.set(
-                f"OCR atrasado ({frame_age:.1f} s); quadro descartado para evitar sinais defasados."
+            self.market_context_status.set(
+                f"Contexto visual: análise atrasada ({frame_age:.1f} s); aguardando quadro recente."
             )
+            if requested_ocr:
+                self.ocr_status.set(
+                    f"OCR atrasado ({frame_age:.1f} s); quadro descartado para evitar sinais defasados."
+                )
             self._update_timer_status(now)
             return
 
@@ -1889,7 +1918,18 @@ class AutoTraderApp(tk.Tk):
             color_rejected_count,
             self.latest_bar_count,
             self.latest_clock_ocr_text,
+            market_context,
+            has_ocr,
         ) = result
+        self.market_context_status.set(market_context)
+        if not has_ocr:
+            self.last_candidates = []
+            self.latest_platform_clock = None
+            self.latest_clock_at = None
+            self.demo_signal_guard.observe([])
+            self._update_candidate_table([])
+            self._update_timer_status(now)
+            return
         self.latest_clock_at = captured_at if self.latest_platform_clock is not None else None
         self._observe_pending_platform_minute()
         self.demo_signal_guard.observe(self.last_candidates)
@@ -1909,6 +1949,9 @@ class AutoTraderApp(tk.Tk):
         self.latest_platform_clock = None
         self.latest_clock_at = None
         self.latest_clock_ocr_text = ""
+        self.last_candidates = []
+        self.demo_signal_guard.observe([])
+        self._update_candidate_table([])
         self.ocr_status.set(f"OCR interrompido por erro: {exc}")
         self._update_timer_status()
         self._stop_sequence_recording("parada por falha de OCR")

@@ -119,6 +119,155 @@ def detect_candle_bars(image, downscale: int = 2) -> list[CandleBar]:
     return sorted(bars, key=lambda bar: bar.center_x)
 
 
+@dataclass(frozen=True, slots=True)
+class MarketCandle:
+    center_x: float
+    high: int
+    low: int
+    body_top: int
+    body_bottom: int
+    open_y: int
+    close_y: int
+    upper_wick: int
+    lower_wick: int
+
+
+def _market_candles_from_bars(image, bars: list[CandleBar]) -> list[MarketCandle]:
+    """Estimate candle bodies/wicks from color density around detected bars."""
+    if len(bars) < 2:
+        return []
+    from math import ceil
+    from PIL import Image
+
+    source = image.convert("RGB")
+    pixels = source.load()
+    gaps = [bars[i + 1].center_x - bars[i].center_x for i in range(len(bars) - 1)]
+    spacing = median([gap for gap in gaps if gap > 0]) if any(gap > 0 for gap in gaps) else 24
+    radius = max(2, min(10, round(spacing * 0.12)))
+    observations: list[MarketCandle] = []
+
+    for bar in bars:
+        left = max(0, int(round(bar.center_x)) - radius)
+        right = min(source.width, int(round(bar.center_x)) + radius + 1)
+        top = max(0, bar.top)
+        bottom = min(source.height, bar.bottom)
+        if right <= left or bottom <= top:
+            continue
+        row_counts = [0] * (bottom - top)
+        for x in range(left, right):
+            for y in range(top, bottom):
+                if _candle_pixel_color(*pixels[x, y]) == bar.color:
+                    row_counts[y - top] += 1
+        threshold = max(2, ceil((right - left) * 0.35))
+        segments: list[tuple[int, int]] = []
+        start: int | None = None
+        for row, count in enumerate(row_counts):
+            if count >= threshold and start is None:
+                start = row
+            elif count < threshold and start is not None:
+                segments.append((start, row - 1))
+                start = None
+        if start is not None:
+            segments.append((start, len(row_counts) - 1))
+        if not segments:
+            continue
+        body_start, body_end = max(
+            segments,
+            key=lambda segment: sum(row_counts[segment[0]:segment[1] + 1]),
+        )
+        body_top = top + body_start
+        body_bottom = top + body_end
+        if body_bottom < body_top:
+            continue
+        # Follow colored pixels contiguous to the body; isolated horizontal chart
+        # levels elsewhere in the candle's x-band must not inflate its wick/range.
+        high_index = body_start
+        while high_index > 0 and row_counts[high_index - 1] > 0:
+            high_index -= 1
+        low_index = body_end
+        while low_index + 1 < len(row_counts) and row_counts[low_index + 1] > 0:
+            low_index += 1
+        candle_high = top + high_index
+        candle_low = top + low_index
+        # Green/white candles conventionally close at their top; red/purple at bottom.
+        bullish_color = bar.color in {"green", "white"}
+        open_y = body_bottom if bullish_color else body_top
+        close_y = body_top if bullish_color else body_bottom
+        observations.append(MarketCandle(
+            center_x=bar.center_x,
+            high=candle_high,
+            low=candle_low,
+            body_top=body_top,
+            body_bottom=body_bottom,
+            open_y=open_y,
+            close_y=close_y,
+            upper_wick=max(0, body_top - candle_high),
+            lower_wick=max(0, candle_low - body_bottom),
+        ))
+    return observations
+
+
+def classify_market_context(image, bars: list[CandleBar] | None = None, lookback: int = 12) -> str:
+    """Describe recent chart structure; heuristic/read-only, never a trade signal."""
+    if lookback < 6:
+        raise ValueError("lookback precisa ser pelo menos 6 velas.")
+    bars = detect_candle_bars(image) if bars is None else bars
+    candles = _market_candles_from_bars(image, bars)[-lookback:]
+    if len(candles) < 6:
+        return f"Contexto visual: aguardando velas suficientes ({len(candles)}/6)."
+
+    ranges = [max(1, candle.low - candle.high) for candle in candles]
+    typical_range = max(1.0, median(ranges))
+    flat_tolerance = max(2.0, typical_range * 0.12)
+    upward_steps = downward_steps = 0
+    for previous, current in zip(candles, candles[1:]):
+        move = previous.close_y - current.close_y
+        if move > flat_tolerance:
+            upward_steps += 1
+        elif move < -flat_tolerance:
+            downward_steps += 1
+    steps = max(1, len(candles) - 1)
+    net_move = candles[0].close_y - candles[-1].close_y
+    net_strength = abs(net_move) / typical_range
+    direction_count = upward_steps if net_move > 0 else downward_steps
+    direction_ratio = direction_count / steps
+
+    long_wicks = 0
+    for candle in candles:
+        body = max(1, candle.body_bottom - candle.body_top + 1)
+        longest_wick = max(candle.upper_wick, candle.lower_wick)
+        if longest_wick >= max(6, body * 1.25) or (
+            candle.upper_wick + candle.lower_wick >= max(8, body * 1.8)
+        ):
+            long_wicks += 1
+    wick_ratio = long_wicks / len(candles)
+
+    overlaps: list[float] = []
+    for previous, current in zip(candles, candles[1:]):
+        overlap = max(0, min(previous.low, current.low) - max(previous.high, current.high))
+        smaller_range = max(1, min(previous.low - previous.high, current.low - current.high))
+        overlaps.append(overlap / smaller_range)
+    overlapping_pairs = sum(value >= 0.35 for value in overlaps)
+    overlap_ratio = sum(overlaps) / max(1, len(overlaps))
+
+    evidence = f"pavios longos em {long_wicks}/{len(candles)} velas"
+    if wick_ratio >= 0.45:
+        return f"PAVIOS/RETRAÇÕES FREQUENTES · {evidence}"
+    if direction_ratio >= 0.65 and net_strength >= 1.15:
+        direction = "COMPRADOR" if net_move > 0 else "VENDEDOR"
+        note = f" · {evidence}" if long_wicks else ""
+        return (
+            f"FLUXO {direction} · {direction_count}/{steps} fechamentos alinhados; "
+            f"deslocamento {net_strength:.1f}× a faixa típica{note}"
+        )
+    if overlap_ratio >= 0.4 or (net_strength < 1.0 and overlapping_pairs >= steps // 2):
+        return (
+            f"LATERALIZADO · faixas sobrepostas em {overlapping_pairs}/{steps} pares; "
+            f"{evidence}"
+        )
+    return f"MISTO/INDEFINIDO · sem direção consistente; {evidence}"
+
+
 def filter_to_recent_candle(
     candidates: list[SignalCandidate],
     bars: list[CandleBar],
