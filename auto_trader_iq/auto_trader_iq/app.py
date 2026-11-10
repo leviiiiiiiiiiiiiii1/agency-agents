@@ -77,14 +77,20 @@ MAX_DEMO_MOUSE_KEEPALIVE_SECONDS = 600
 DEMO_MOUSE_KEEPALIVE_POLL_MS = 5000
 DEMO_MOUSE_KEEPALIVE_CLEARANCE_PX = 100
 DEMO_MOUSE_KEEPALIVE_NUDGE_PX = 4
+CANDLE_PALETTE_MAPS: dict[str, dict[str, str]] = {
+    "Não calibrada": {},
+    "Verde = alta / branca = baixa": {"green": "BUY", "white": "SELL"},
+    "Verde = baixa / branca = alta": {"green": "SELL", "white": "BUY"},
+}
 
 
 def _analyze_ocr_frame(
     detector: TesseractSignalDetector,
     image: Image.Image,
+    palette_colors: set[str] | None = None,
 ):
     """OCR labels and match them against candles detected in this exact frame."""
-    bars = detect_candle_bars(image)
+    bars = detect_candle_bars(image, palette_colors=palette_colors)
     raw_candidates, clock = detector.detect_frame(image)
     candidates = filter_to_recent_candle(raw_candidates, bars)
     label_counts = count_signal_labels_by_candle(raw_candidates, bars, lookback=12)
@@ -100,10 +106,16 @@ def _analyze_ocr_frame(
     )
 
 
-def _analyze_market_context_frame(image: Image.Image):
-    """Classify candle context independently so slow OCR cannot delay the panel."""
-    bars = detect_candle_bars(image)
-    return bars, classify_market_context(image, bars)
+def _analyze_market_context_frame(
+    image: Image.Image,
+    color_direction_map: dict[str, str] | None = None,
+):
+    """Classify using only candle colors explicitly calibrated for this profile."""
+    palette_colors = set(color_direction_map) if color_direction_map else None
+    bars = detect_candle_bars(image, palette_colors=palette_colors)
+    return bars, classify_market_context(
+        image, bars, color_direction_map=color_direction_map
+    )
 
 
 def _enable_windows_dpi_awareness() -> None:
@@ -266,6 +278,8 @@ class AutoTraderApp(tk.Tk):
         self.tesseract_path_var = tk.StringVar(value=find_tesseract_executable())
         self.ocr_status = tk.StringVar(value="OCR desligado; nenhuma operação é executada.")
         self.market_context_status = tk.StringVar(value="Contexto visual: aguardando captura.")
+        self.candle_palette_var = tk.StringVar(value="Não calibrada")
+        self.candle_palette_profile_id: str | None = None
         self.market_context_display_text = "Contexto visual: aguardando captura."
         self.signal_label_counts = {"BUY": 0, "SELL": 0}
         self.signal_label_context_at: float | None = None
@@ -499,6 +513,18 @@ class AutoTraderApp(tk.Tk):
         context_box = ttk.LabelFrame(right_content, text="Contexto do gráfico · heurística visual", padding=6)
         context_box.pack(fill="x", pady=(6, 0))
         ttk.Label(context_box, textvariable=self.market_context_status, wraplength=650).pack(anchor="w")
+        palette_row = ttk.Frame(context_box)
+        palette_row.pack(fill="x", pady=(4, 0))
+        ttk.Label(palette_row, text="Calibração desta captura:").pack(side="left", padx=(0, 5))
+        self.candle_palette_combo = ttk.Combobox(
+            palette_row,
+            textvariable=self.candle_palette_var,
+            values=tuple(CANDLE_PALETTE_MAPS),
+            state="readonly",
+            width=34,
+        )
+        self.candle_palette_combo.pack(side="left", fill="x", expand=True)
+        self.candle_palette_combo.bind("<<ComboboxSelected>>", self._on_candle_palette_change)
 
         simulation_box = ttk.LabelFrame(
             right_content,
@@ -878,6 +904,14 @@ class AutoTraderApp(tk.Tk):
         if self.running and self.region != region:
             self._stop_capture("Captura parada: a região mudou e exige nova linha de base visual.")
         self.region = region
+        if self.candle_palette_profile_id is not None:
+            try:
+                profile_matches = self.candle_palette_profile_id == self._capture_profile_id()
+            except Exception:
+                profile_matches = False
+            if not profile_matches:
+                self.candle_palette_var.set("Não calibrada")
+                self.candle_palette_profile_id = None
         for key, value in (("left", region.left), ("top", region.top),
                            ("width", region.width), ("height", region.height)):
             self.region_vars[key].set(str(value))
@@ -1352,6 +1386,55 @@ class AutoTraderApp(tk.Tk):
             spinbox = getattr(self, name, None)
             if spinbox is not None:
                 spinbox.configure(state="disabled")
+
+    def _active_candle_color_direction_map(self) -> dict[str, str]:
+        if self.region is None or self.candle_palette_profile_id is None:
+            return {}
+        try:
+            current_profile_id = self._capture_profile_id()
+        except Exception:
+            return {}
+        if current_profile_id != self.candle_palette_profile_id:
+            return {}
+        return dict(CANDLE_PALETTE_MAPS.get(self.candle_palette_var.get(), {}))
+
+    def _on_candle_palette_change(self, _event: tk.Event | None = None) -> None:
+        palette_name = self.candle_palette_var.get()
+        if palette_name not in CANDLE_PALETTE_MAPS:
+            self.candle_palette_var.set("Não calibrada")
+            return
+        if palette_name == "Não calibrada":
+            self.candle_palette_profile_id = None
+        else:
+            if self.region is None:
+                self.candle_palette_var.set("Não calibrada")
+                messagebox.showwarning(
+                    APP_NAME,
+                    "Defina a região do gráfico antes de calibrar as cores das velas.",
+                    parent=self,
+                )
+                return
+            try:
+                self.candle_palette_profile_id = self._capture_profile_id()
+            except Exception as exc:
+                self.candle_palette_var.set("Não calibrada")
+                self.candle_palette_profile_id = None
+                messagebox.showwarning(APP_NAME, f"Calibração não salva: {exc}", parent=self)
+                return
+        if self.running:
+            if self.simulation.pending is not None:
+                self._cancel_pending_simulation()
+            self._stop_capture(
+                "Captura parada: paleta alterada; reinicie para estabelecer nova linha de base."
+            )
+        self.market_context_regime = "unknown"
+        self.market_context_direction = None
+        self.market_context_at = None
+        self.market_context_display_text = (
+            "Contexto visual: aguardando nova captura com a paleta calibrada."
+        )
+        self._refresh_market_context_status()
+        self._persist_config()
 
     def _on_operation_mode_change(self, _event: tk.Event | None = None) -> None:
         try:
@@ -1981,6 +2064,9 @@ class AutoTraderApp(tk.Tk):
                 )
                 if normalized_layout != self.active_screen_layout:
                     self.monitors = current_monitors
+                    self.candle_palette_var.set("Não calibrada")
+                    self.candle_palette_profile_id = None
+                    self._persist_config()
                     self._stop_capture(
                         "Captura parada: resolução ou disposição de monitores mudou; "
                         "selecione a região e estabeleça nova linha de base."
@@ -2102,8 +2188,12 @@ class AutoTraderApp(tk.Tk):
             self._ocr_frame_quality["freshness"] = asdict(self.latest_frame_freshness)
             self.last_ocr_change_sequence = self.latest_frame_freshness.change_sequence
         self._ocr_future_generation = self._capture_generation
+        color_map = self._active_candle_color_direction_map()
         self._ocr_future = self._ocr_executor.submit(
-            _analyze_ocr_frame, detector, image.copy()
+            _analyze_ocr_frame,
+            detector,
+            image.copy(),
+            set(color_map) if color_map else None,
         )
         self.after(50, self._poll_ocr_result)
 
@@ -2115,8 +2205,11 @@ class AutoTraderApp(tk.Tk):
         if self.latest_frame_freshness is not None:
             self.last_context_change_sequence = self.latest_frame_freshness.change_sequence
         self._context_future_generation = self._capture_generation
+        color_map = self._active_candle_color_direction_map()
         self._context_future = self._context_executor.submit(
-            _analyze_market_context_frame, image.copy()
+            _analyze_market_context_frame,
+            image.copy(),
+            color_map if color_map else None,
         )
         self.after(50, self._poll_context_result)
 
@@ -3428,6 +3521,8 @@ class AutoTraderApp(tk.Tk):
             "ocr_enabled": self.ocr_enabled_var.get(),
             "compact_during_capture": self.compact_during_capture_var.get(),
             "tesseract_executable": self.tesseract_path_var.get().strip().strip('"'),
+            "candle_palette": self.candle_palette_var.get(),
+            "candle_palette_profile_id": self.candle_palette_profile_id,
             "demo_entry_second": self.demo_entry_second_var.get(),
             "demo_mouse_keepalive_enabled": bool(self.demo_mouse_keepalive_var.get()),
             "demo_mouse_keepalive_interval_seconds": self.demo_mouse_keepalive_interval_var.get(),
@@ -3480,6 +3575,23 @@ class AutoTraderApp(tk.Tk):
             config = load_settings(self.config_path)
             if "region" in config:
                 self._set_region(ScreenRegion.from_dict(config["region"]))
+            saved_palette = config.get("candle_palette")
+            saved_palette_profile = config.get("candle_palette_profile_id")
+            try:
+                current_palette_profile = self._capture_profile_id()
+            except Exception:
+                current_palette_profile = None
+            if (
+                saved_palette in CANDLE_PALETTE_MAPS
+                and saved_palette != "Não calibrada"
+                and saved_palette_profile == current_palette_profile
+                and isinstance(saved_palette_profile, str)
+            ):
+                self.candle_palette_var.set(saved_palette)
+                self.candle_palette_profile_id = saved_palette_profile
+            else:
+                self.candle_palette_var.set("Não calibrada")
+                self.candle_palette_profile_id = None
             saved_mode = config.get("operation_mode")
             try:
                 requested_mode = OperationMode(saved_mode)

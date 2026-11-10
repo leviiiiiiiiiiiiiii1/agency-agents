@@ -7,6 +7,7 @@ não um identificador de candle de produção.
 
 from __future__ import annotations
 
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from statistics import median
 
@@ -34,7 +35,9 @@ def _candle_pixel_color(r: int, g: int, b: int) -> str | None:
     return None
 
 
-def detect_candle_bars(image, downscale: int = 2) -> list[CandleBar]:
+def detect_candle_bars(
+    image, downscale: int = 2, *, palette_colors: Collection[str] | None = None
+) -> list[CandleBar]:
     """Localiza corpos/pavios em paletas verde/vermelha ou branca/roxa.
 
     Reduz a imagem para acelerar a varredura; exige largura, área e altura mínimas
@@ -44,6 +47,9 @@ def detect_candle_bars(image, downscale: int = 2) -> list[CandleBar]:
     """
     if downscale < 1:
         raise ValueError("downscale precisa ser pelo menos 1.")
+    allowed_colors = {"green", "red", "white", "purple"}
+    if palette_colors is not None and not set(palette_colors) <= allowed_colors:
+        raise ValueError("palette_colors contém uma cor não suportada.")
     from PIL import Image
 
     width = max(1, image.width // downscale)
@@ -112,11 +118,16 @@ def detect_candle_bars(image, downscale: int = 2) -> list[CandleBar]:
             top=top * downscale,
             bottom=(bottom + 1) * downscale,
         ))
-    light_palette_bars = [bar for bar in bars if bar.color in {"white", "purple"}]
-    if len(light_palette_bars) >= 2:
-        bars = light_palette_bars
+    if palette_colors is not None:
+        bars = [bar for bar in bars if bar.color in palette_colors]
     else:
-        bars = [bar for bar in bars if bar.color in {"green", "red"}]
+        # Sem calibração explícita, mantém apenas a heurística de geometria antiga
+        # para associação espacial; não atribui direção de mercado às cores claras.
+        light_palette_bars = [bar for bar in bars if bar.color in {"white", "purple"}]
+        if len(light_palette_bars) >= 2:
+            bars = light_palette_bars
+        else:
+            bars = [bar for bar in bars if bar.color in {"green", "red"}]
     return sorted(bars, key=lambda bar: bar.center_x)
 
 
@@ -153,8 +164,18 @@ class MarketContext:
         return f"MISTO/INDEFINIDO · {self.evidence}"
 
 
-def _market_candles_from_bars(image, bars: list[CandleBar]) -> list[MarketCandle]:
-    """Estimate candle bodies/wicks from color density around detected bars."""
+def _market_candles_from_bars(
+    image,
+    bars: list[CandleBar],
+    *,
+    color_direction_map: Mapping[str, str] | None = None,
+) -> list[MarketCandle]:
+    """Estimate candle bodies/wicks using only explicitly calibrated color semantics."""
+    direction_map = dict(color_direction_map or {})
+    if any(color not in {"green", "red", "white", "purple"} for color in direction_map):
+        raise ValueError("color_direction_map contém uma cor não suportada.")
+    if any(direction not in {"BUY", "SELL"} for direction in direction_map.values()):
+        raise ValueError("direções da paleta devem ser BUY ou SELL.")
     if len(bars) < 2:
         return []
     from math import ceil
@@ -168,6 +189,11 @@ def _market_candles_from_bars(image, bars: list[CandleBar]) -> list[MarketCandle
     observations: list[MarketCandle] = []
 
     for bar in bars:
+        direction = direction_map.get(bar.color)
+        if direction is None:
+            # A geometrically detected candle without user-confirmed semantics
+            # must not influence a directional market-context estimate.
+            continue
         left = max(0, int(round(bar.center_x)) - radius)
         right = min(source.width, int(round(bar.center_x)) + radius + 1)
         top = max(0, bar.top)
@@ -210,8 +236,7 @@ def _market_candles_from_bars(image, bars: list[CandleBar]) -> list[MarketCandle
             low_index += 1
         candle_high = top + high_index
         candle_low = top + low_index
-        # Green/white candles conventionally close at their top; red/purple at bottom.
-        bullish_color = bar.color in {"green", "white"}
+        bullish_color = direction == "BUY"
         open_y = body_bottom if bullish_color else body_top
         close_y = body_top if bullish_color else body_bottom
         observations.append(MarketCandle(
@@ -229,13 +254,19 @@ def _market_candles_from_bars(image, bars: list[CandleBar]) -> list[MarketCandle
 
 
 def classify_market_context(
-    image, bars: list[CandleBar] | None = None, lookback: int = 12
+    image,
+    bars: list[CandleBar] | None = None,
+    lookback: int = 12,
+    *,
+    color_direction_map: Mapping[str, str] | None = None,
 ) -> MarketContext:
-    """Describe recent chart structure; heuristic/read-only, never a trade signal."""
+    """Describe chart structure only for colors with explicit calibrated direction."""
     if lookback < 6:
         raise ValueError("lookback precisa ser pelo menos 6 velas.")
     bars = detect_candle_bars(image) if bars is None else bars
-    candles = _market_candles_from_bars(image, bars)[-lookback:]
+    candles = _market_candles_from_bars(
+        image, bars, color_direction_map=color_direction_map
+    )[-lookback:]
     if len(candles) < 6:
         return MarketContext("waiting", None, f"{len(candles)}/6")
 

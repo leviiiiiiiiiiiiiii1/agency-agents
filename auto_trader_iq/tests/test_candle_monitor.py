@@ -2,7 +2,12 @@ import unittest
 
 from PIL import Image, ImageDraw
 
-from auto_trader_iq.candle_monitor import CandleBar, detect_candle_bars, filter_to_recent_candle
+from auto_trader_iq.candle_monitor import (
+    CandleBar,
+    _market_candles_from_bars,
+    detect_candle_bars,
+    filter_to_recent_candle,
+)
 from auto_trader_iq.signal_detector import SignalCandidate
 
 
@@ -44,6 +49,35 @@ class CandleFilterTests(unittest.TestCase):
         bars = detect_candle_bars(image)
         self.assertEqual(len(bars), 5)
         self.assertEqual([bar.color for bar in bars], ["green", "red", "green", "red", "green"])
+
+    def test_calibrated_mixed_palette_keeps_white_and_green_candles(self):
+        image = Image.new("RGB", (110, 100), "#111111")
+        draw = ImageDraw.Draw(image)
+        for x, color in ((18, "#55c63b"), (58, "#f5f5f5")):
+            draw.line((x + 4, 10, x + 4, 90), fill=color, width=2)
+            draw.rectangle((x, 30, x + 8, 65), fill=color)
+        bars = detect_candle_bars(
+            image, downscale=1, palette_colors={"green", "white"}
+        )
+        self.assertEqual([bar.color for bar in bars], ["green", "white"])
+
+    def test_white_candle_direction_requires_explicit_calibration(self):
+        image = Image.new("RGB", (100, 100), "#111111")
+        draw = ImageDraw.Draw(image)
+        for x, top, bottom in ((20, 20, 40), (60, 50, 70)):
+            draw.line((x, 10, x, 80), fill="white", width=2)
+            draw.rectangle((x - 3, top, x + 3, bottom), fill="white")
+        bars = [CandleBar(20, "white", 10, 80), CandleBar(60, "white", 10, 80)]
+        self.assertEqual(_market_candles_from_bars(image, bars), [])
+        bearish = _market_candles_from_bars(
+            image, bars, color_direction_map={"white": "SELL"}
+        )
+        bullish = _market_candles_from_bars(
+            image, bars, color_direction_map={"white": "BUY"}
+        )
+        self.assertEqual(len(bearish), 2)
+        self.assertGreater(bearish[0].close_y, bearish[0].open_y)
+        self.assertLess(bullish[0].close_y, bullish[0].open_y)
 
 
 if __name__ == "__main__":
