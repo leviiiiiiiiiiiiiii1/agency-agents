@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime, timezone
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -16,8 +17,21 @@ from typing import Any, Mapping
 from uuid import uuid4
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 EVENT_TYPES = {
+    "CAPTURE_SESSION_STARTED",
+    "CAPTURE_SESSION_STOPPED",
+    "CAPTURE_FRAME_ACCEPTED",
+    "CAPTURE_FRAME_REJECTED",
+    "OCR_COMPLETED",
+    "OCR_FAILED",
+    "SIMULATION_ARMED",
+    "SIMULATION_CANCELLED",
+    "SIMULATION_CONFIRMED",
+    "SIMULATION_CANDLE_ROLLOVER",
+    "SIMULATION_EXPIRED",
+    "CLICK_REQUESTED",
+    "EXECUTION_REJECTED",
     "SIGNAL_IDENTIFIED",
     "SIGNAL_REFRESHED",
     "SIGNAL_LIFECYCLE_CHANGED",
@@ -84,8 +98,16 @@ class OpportunityStore:
     def _backup_before_migration(self, connection: sqlite3.Connection) -> Path | None:
         if not self.path.exists() or self.path.stat().st_size == 0:
             return None
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        backup_path = self.path.with_name(f"{self.path.stem}.backup-v{SCHEMA_VERSION}-{stamp}{self.path.suffix}")
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+        backup_path = self.path.with_name(
+            f"{self.path.stem}.backup-v{SCHEMA_VERSION}-{stamp}{self.path.suffix}"
+        )
+        suffix = 1
+        while backup_path.exists():
+            backup_path = self.path.with_name(
+                f"{self.path.stem}.backup-v{SCHEMA_VERSION}-{stamp}-{suffix}{self.path.suffix}"
+            )
+            suffix += 1
         destination = sqlite3.connect(backup_path)
         try:
             connection.backup(destination)
@@ -197,6 +219,56 @@ class OpportunityStore:
                     "ON signal_tracks(profile_id, timeframe, active, last_seen_at_utc)"
                 )
                 connection.execute("PRAGMA user_version = 2")
+                current_version = 2
+
+            if current_version < 3:
+                connection.execute("BEGIN IMMEDIATE")
+                # Keep existing event IDs/order intact while extending the ledger to
+                # non-opportunity capture events and idempotency keys.
+                connection.execute(
+                    """CREATE TABLE opportunity_events_v3 (
+                        event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        opportunity_id TEXT REFERENCES opportunities(opportunity_id),
+                        session_id TEXT,
+                        event_type TEXT NOT NULL,
+                        occurred_at_utc TEXT NOT NULL,
+                        source TEXT NOT NULL,
+                        payload_json TEXT NOT NULL DEFAULT '{}',
+                        idempotency_key TEXT NOT NULL UNIQUE
+                    )"""
+                )
+                connection.execute(
+                    """INSERT INTO opportunity_events_v3 (
+                        event_id, opportunity_id, session_id, event_type,
+                        occurred_at_utc, source, payload_json, idempotency_key
+                    ) SELECT event_id, opportunity_id, NULL, event_type,
+                             occurred_at_utc, source, payload_json,
+                             'legacy-v2:' || event_id
+                      FROM opportunity_events"""
+                )
+                connection.execute("DROP TABLE opportunity_events")
+                connection.execute(
+                    "ALTER TABLE opportunity_events_v3 RENAME TO opportunity_events"
+                )
+                connection.execute(
+                    "CREATE INDEX idx_opportunity_events_opportunity "
+                    "ON opportunity_events(opportunity_id, event_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX idx_opportunity_events_session "
+                    "ON opportunity_events(session_id, event_id)"
+                )
+                connection.execute(
+                    """CREATE TRIGGER opportunity_events_no_update
+                       BEFORE UPDATE ON opportunity_events
+                       BEGIN SELECT RAISE(ABORT, 'opportunity_events is append-only'); END"""
+                )
+                connection.execute(
+                    """CREATE TRIGGER opportunity_events_no_delete
+                       BEFORE DELETE ON opportunity_events
+                       BEGIN SELECT RAISE(ABORT, 'opportunity_events is append-only'); END"""
+                )
+                connection.execute("PRAGMA user_version = 3")
 
     def load_signal_tracks(
         self, *, profile_id: str, timeframe: str, inactive_limit: int = 100
@@ -569,30 +641,181 @@ class OpportunityStore:
                 if exists is None:
                     raise KeyError(f"Oportunidade inexistente: {opportunity_id}")
                 raise ValueError("Não é possível liquidar sem ordem explicitamente confirmada.")
-            self._insert_event(connection, opportunity_id, "TRADE_SETTLED", source, {
-                "outcome": normalized,
-                "pnl": pnl_value,
-                "payout": payout_value,
-                "stake": stake_value,
-                "settled_at_utc": now,
-            })
+            self._insert_event(
+                connection,
+                opportunity_id,
+                "TRADE_SETTLED",
+                source,
+                {
+                    "outcome": normalized,
+                    "pnl": pnl_value,
+                    "payout": payout_value,
+                    "stake": stake_value,
+                },
+                occurred_at_utc=now,
+            )
+
+    @staticmethod
+    def _event_idempotency_key(
+        *,
+        opportunity_id: str | None,
+        session_id: str | None,
+        event_type: str,
+        source: str,
+        payload_json: str,
+    ) -> str:
+        material = _json({
+            "opportunity_id": opportunity_id,
+            "session_id": session_id,
+            "event_type": event_type,
+            "source": source,
+            "payload": json.loads(payload_json),
+        })
+        return "sha256:" + hashlib.sha256(material.encode("utf-8")).hexdigest()
 
     @staticmethod
     def _insert_event(
         connection: sqlite3.Connection,
-        opportunity_id: str,
+        opportunity_id: str | None,
         event_type: str,
         source: str,
         payload: Mapping[str, Any],
-    ) -> None:
+        *,
+        session_id: str | None = None,
+        occurred_at_utc: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> int:
         if event_type not in EVENT_TYPES:
             raise ValueError(f"Tipo de evento inválido: {event_type}")
-        connection.execute(
-            """INSERT INTO opportunity_events
-               (opportunity_id, event_type, occurred_at_utc, source, payload_json)
-               VALUES (?, ?, ?, ?, ?)""",
-            (opportunity_id, event_type, _utc_now(), source, _json(dict(payload))),
+        if not source.strip():
+            raise ValueError("source não pode ficar vazio.")
+        if session_id is not None and not session_id.strip():
+            raise ValueError("session_id não pode ficar vazio.")
+        payload_json = _json(dict(payload))
+        key = idempotency_key or OpportunityStore._event_idempotency_key(
+            opportunity_id=opportunity_id,
+            session_id=session_id,
+            event_type=event_type,
+            source=source,
+            payload_json=payload_json,
         )
+        if not key.strip():
+            raise ValueError("idempotency_key não pode ficar vazio.")
+        connection.execute(
+            """INSERT OR IGNORE INTO opportunity_events
+               (opportunity_id, session_id, event_type, occurred_at_utc,
+                source, payload_json, idempotency_key)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                opportunity_id, session_id, event_type,
+                occurred_at_utc or _utc_now(), source, payload_json, key,
+            ),
+        )
+        row = connection.execute(
+            """SELECT event_id, opportunity_id, session_id, event_type, source, payload_json
+               FROM opportunity_events WHERE idempotency_key = ?""",
+            (key,),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("Evento de journal não foi persistido.")
+        expected = (opportunity_id, session_id, event_type, source, payload_json)
+        actual = (
+            row["opportunity_id"], row["session_id"], row["event_type"],
+            row["source"], row["payload_json"],
+        )
+        if actual != expected:
+            raise ValueError(
+                "idempotency_key já utilizado por evento com payload ou escopo diferente."
+            )
+        return int(row["event_id"])
+
+    def record_journal_event(
+        self,
+        event_type: str,
+        *,
+        source: str,
+        payload: Mapping[str, Any],
+        opportunity_id: str | None = None,
+        session_id: str | None = None,
+        occurred_at_utc: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> int:
+        """Append one idempotent event; a retry returns the original event ID."""
+        with self._session() as connection:
+            return self._insert_event(
+                connection,
+                opportunity_id,
+                event_type,
+                source,
+                payload,
+                session_id=session_id,
+                occurred_at_utc=occurred_at_utc,
+                idempotency_key=idempotency_key,
+            )
+
+    def list_journal_events(
+        self, *, session_id: str | None = None, limit: int = 500
+    ) -> list[dict[str, Any]]:
+        if limit < 1:
+            return []
+        with self._session() as connection:
+            if session_id is None:
+                rows = connection.execute(
+                    "SELECT * FROM opportunity_events ORDER BY event_id DESC LIMIT ?",
+                    (int(limit),),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """SELECT * FROM opportunity_events WHERE session_id = ?
+                       ORDER BY event_id DESC LIMIT ?""",
+                    (session_id, int(limit)),
+                ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_unresolved_executions(self, *, limit: int = 500) -> list[dict[str, Any]]:
+        """Return attempts without a verified terminal order state; never auto-retry."""
+        if limit < 1:
+            return []
+        with self._session() as connection:
+            rows = connection.execute(
+                """SELECT * FROM opportunities
+                   WHERE status IN ('CLICK_SENT', 'EXECUTION_UNCONFIRMED')
+                     AND order_confirmed IS NULL
+                   ORDER BY execution_attempt_at_utc LIMIT ?""",
+                (int(limit),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def integrity_report(self) -> dict[str, Any]:
+        """Read-only SQLite and journal consistency checks for startup/recovery."""
+        with self._session() as connection:
+            integrity_rows = connection.execute("PRAGMA quick_check").fetchall()
+            foreign_key_rows = connection.execute("PRAGMA foreign_key_check").fetchall()
+            version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+            counts = {
+                "opportunities": int(connection.execute("SELECT COUNT(*) FROM opportunities").fetchone()[0]),
+                "events": int(connection.execute("SELECT COUNT(*) FROM opportunity_events").fetchone()[0]),
+                "signal_tracks": int(connection.execute("SELECT COUNT(*) FROM signal_tracks").fetchone()[0]),
+            }
+        return {
+            "schema_version": version,
+            "integrity": [str(row[0]) for row in integrity_rows],
+            "foreign_key_violations": [tuple(row) for row in foreign_key_rows],
+            "counts": counts,
+            "healthy": (
+                version == SCHEMA_VERSION
+                and len(integrity_rows) == 1
+                and str(integrity_rows[0][0]).lower() == "ok"
+                and not foreign_key_rows
+            ),
+        }
+
+    def recovery_snapshot(self) -> dict[str, Any]:
+        """Inspect integrity plus unresolved attempts without replaying any action."""
+        return {
+            "integrity": self.integrity_report(),
+            "unresolved_executions": self.list_unresolved_executions(),
+        }
 
     def get_opportunity(self, opportunity_id: str) -> dict[str, Any] | None:
         with self._session() as connection:

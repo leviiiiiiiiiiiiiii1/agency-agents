@@ -258,6 +258,106 @@ class OpportunityStoreTests(unittest.TestCase):
         self.assertEqual(row["order_confirmed"], 1)
         self.assertIsNone(row["pnl"])
 
+    def test_global_capture_events_are_idempotent_and_queryable_by_session(self):
+        first_id = self.store.record_journal_event(
+            "CAPTURE_FRAME_ACCEPTED",
+            source="CAPTURE_ENGINE",
+            session_id="session-a",
+            idempotency_key="session-a:frame:1",
+            payload={"frame_id": "frame-1", "independent": True},
+        )
+        retry_id = self.store.record_journal_event(
+            "CAPTURE_FRAME_ACCEPTED",
+            source="CAPTURE_ENGINE",
+            session_id="session-a",
+            idempotency_key="session-a:frame:1",
+            payload={"frame_id": "frame-1", "independent": True},
+        )
+        self.assertEqual(first_id, retry_id)
+        self.assertEqual(len(self.store.list_journal_events(session_id="session-a")), 1)
+        with self.assertRaises(ValueError):
+            self.store.record_journal_event(
+                "CAPTURE_FRAME_ACCEPTED",
+                source="CAPTURE_ENGINE",
+                session_id="session-a",
+                idempotency_key="session-a:frame:1",
+                payload={"frame_id": "frame-different", "independent": True},
+            )
+
+    def test_journal_is_append_only_and_integrity_report_is_healthy(self):
+        event_id = self.store.record_journal_event(
+            "CAPTURE_SESSION_STARTED",
+            source="CAPTURE_ENGINE",
+            session_id="session-b",
+            payload={"profile_id": "profile-b"},
+        )
+        connection = self.store._connect()
+        try:
+            with self.assertRaises(Exception):
+                connection.execute(
+                    "UPDATE opportunity_events SET payload_json='{}' WHERE event_id=?",
+                    (event_id,),
+                )
+            connection.rollback()
+            with self.assertRaises(Exception):
+                connection.execute(
+                    "DELETE FROM opportunity_events WHERE event_id=?", (event_id,)
+                )
+            connection.rollback()
+        finally:
+            connection.close()
+        self.assertTrue(self.store.integrity_report()["healthy"])
+
+    def test_retried_settlement_is_idempotent(self):
+        self.store.confirm_order(self.opportunity_id, source="MANUAL", confirmed=True)
+        self.store.settle_trade(
+            self.opportunity_id,
+            outcome="WIN",
+            pnl=1.25,
+            source="MANUAL",
+            payout=0.88,
+            stake=1.0,
+        )
+        before = len(self.store.list_events(self.opportunity_id))
+        self.store.settle_trade(
+            self.opportunity_id,
+            outcome="WIN",
+            pnl=1.25,
+            source="MANUAL",
+            payout=0.88,
+            stake=1.0,
+        )
+        self.assertEqual(len(self.store.list_events(self.opportunity_id)), before)
+
+    def test_unresolved_click_is_reported_without_automatic_retry(self):
+        self.store.record_click_sent(
+            self.opportunity_id,
+            occurred_at_utc="2026-10-30T12:00:01+00:00",
+            delay_ms=125.0,
+        )
+        unresolved = self.store.list_unresolved_executions()
+        self.assertEqual([row["opportunity_id"] for row in unresolved], [self.opportunity_id])
+
+    def test_v2_upgrade_preserves_old_events_and_creates_backup(self):
+        old_event_id = self.store.list_events(self.opportunity_id)[0]["event_id"]
+        connection = self.store._connect()
+        try:
+            connection.execute("DROP TRIGGER IF EXISTS opportunity_events_no_update")
+            connection.execute("DROP TRIGGER IF EXISTS opportunity_events_no_delete")
+            connection.execute("PRAGMA user_version=2")
+            connection.commit()
+        finally:
+            connection.close()
+        migrated = OpportunityStore(self.store.path)
+        report = migrated.integrity_report()
+        self.assertEqual(report["schema_version"], 3)
+        self.assertTrue(report["healthy"])
+        self.assertTrue(list(self.store.path.parent.glob("journal.backup-v3-*.sqlite3")))
+        migrated_events = migrated.list_events(self.opportunity_id)
+        self.assertEqual(migrated_events[0]["event_id"], old_event_id)
+        self.assertEqual(migrated_events[0]["event_type"], "SIGNAL_IDENTIFIED")
+        self.assertEqual(migrated_events[0]["idempotency_key"], f"legacy-v2:{old_event_id}")
+
     def test_tracker_snapshots_and_duplicate_events_are_persisted_transactionally(self):
         track = {
             "tracking_id": "track-1", "fingerprint": "track-1",

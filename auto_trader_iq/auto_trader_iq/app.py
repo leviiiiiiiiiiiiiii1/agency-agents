@@ -14,6 +14,7 @@ import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+from uuid import uuid4
 
 from PIL import Image, ImageDraw, ImageTk
 
@@ -160,6 +161,14 @@ class AutoTraderApp(tk.Tk):
         self.config_path = self.data_dir / "config.json"
         self.simulation_history = SimulationHistoryStore(self.data_dir / "simulation_history.csv")
         self.opportunity_store = OpportunityStore(self.data_dir / "opportunities.sqlite3")
+        try:
+            self.journal_recovery_snapshot = self.opportunity_store.recovery_snapshot()
+            self.journal_integrity_healthy = bool(
+                self.journal_recovery_snapshot["integrity"]["healthy"]
+            )
+        except Exception as exc:
+            self.journal_recovery_snapshot = {"integrity": {"error": str(exc)}, "unresolved_executions": []}
+            self.journal_integrity_healthy = False
         self.monitors: list[dict[str, int]] = []
         self.region: ScreenRegion | None = None
         self.running = False
@@ -215,7 +224,8 @@ class AutoTraderApp(tk.Tk):
         self.active_signal_profile_id: str | None = None
         self.active_screen_layout: list[dict[str, int]] | None = None
         self.last_layout_check_at = 0.0
-        self.signal_tracking_persistence_healthy = True
+        self.signal_tracking_persistence_healthy = self.journal_integrity_healthy
+        self.capture_session_id: str | None = None
         self.simulation_status = tk.StringVar(value="Simulação parada; nenhuma entrada foi registrada.")
         self.operation_mode_var = tk.StringVar(value=OperationMode.OBSERVATION.value)
         self.operation_mode = OperationMode.OBSERVATION
@@ -223,8 +233,17 @@ class AutoTraderApp(tk.Tk):
             value="OBSERVAÇÃO: análise e registro; ordens automáticas bloqueadas."
         )
         self.research_status = tk.StringVar(
-            value=f"Registro estruturado local: {self.data_dir / 'opportunities.sqlite3'}"
+            value=f"Journal local: {self.data_dir / 'opportunities.sqlite3'} · esquema v3"
         )
+        if not self.journal_integrity_healthy:
+            self.research_status.set(
+                "Integridade do journal indisponível; simulação permanece bloqueada."
+            )
+        elif self.journal_recovery_snapshot.get("unresolved_executions"):
+            self.research_status.set(
+                f"Recuperação: {len(self.journal_recovery_snapshot['unresolved_executions'])} "
+                "tentativa(s) sem estado final verificável. Não haverá repetição automática."
+            )
         self.demo_status = tk.StringVar(
             value="Cliques automáticos bloqueados: não há verificação confiável da conta."
         )
@@ -937,6 +956,14 @@ class AutoTraderApp(tk.Tk):
             detector_version="ocr-labels-v1",
         )
         try:
+            recovery = self.opportunity_store.recovery_snapshot()
+            if not recovery["integrity"]["healthy"]:
+                raise RuntimeError("integrity_check ou foreign_key_check do journal falhou")
+            if recovery["unresolved_executions"]:
+                raise RuntimeError(
+                    f"{len(recovery['unresolved_executions'])} tentativa(s) anteriores "
+                    "exigem reconciliação manual; nenhuma será repetida automaticamente"
+                )
             tracker.restore(self.opportunity_store.load_signal_tracks(
                 profile_id=profile_id, timeframe=timeframe
             ))
@@ -1971,6 +1998,25 @@ class AutoTraderApp(tk.Tk):
         self.candidate_related_by_id.clear()
         self.candidate_duplicate_count_by_id.clear()
         self._begin_signal_tracking_session()
+        self.capture_session_id = uuid4().hex
+        try:
+            self.opportunity_store.record_journal_event(
+                "CAPTURE_SESSION_STARTED",
+                source="CAPTURE_ENGINE",
+                session_id=self.capture_session_id,
+                payload={
+                    "profile_id": self.active_signal_profile_id,
+                    "timeframe": self.timeframe_var.get(),
+                    "operation_mode": self.operation_mode.value,
+                    "ocr_enabled": bool(self.ocr_enabled_var.get()),
+                    "region": self.region.as_mss_dict() if self.region is not None else None,
+                },
+            )
+        except Exception as exc:
+            self.signal_tracking_persistence_healthy = False
+            self.research_status.set(
+                f"Journal não iniciou a sessão de captura; simulação bloqueada: {exc}"
+            )
         self.latest_candidates_at = None
         self.last_ocr_at = 0.0
         self.latest_platform_clock = None
@@ -2039,6 +2085,15 @@ class AutoTraderApp(tk.Tk):
         self._stop_capture("Captura pausada para ajustes.")
 
     def _stop_capture(self, reason: str) -> None:
+        if self.capture_session_id is not None:
+            session_id = self.capture_session_id
+            self._record_capture_journal_event(
+                "CAPTURE_SESSION_STOPPED",
+                {"reason": reason},
+                idempotency_key=f"{session_id}:stop",
+                source="CAPTURE_ENGINE",
+            )
+            self.capture_session_id = None
         self._stop_sequence_recording("captura parada")
         self._set_capture_keep_awake(False)
         if self.demo_automation_enabled:
@@ -2049,6 +2104,34 @@ class AutoTraderApp(tk.Tk):
         self.capture_status.set(reason)
         self.heartbeat_status.set("Sem captura")
         self._exit_compact_mode()
+
+    def _record_capture_journal_event(
+        self,
+        event_type: str,
+        payload: dict[str, object],
+        *,
+        idempotency_key: str,
+        occurred_at_utc: str | None = None,
+        source: str = "CAPTURE_ENGINE",
+    ) -> bool:
+        session_id = self.capture_session_id
+        if session_id is None:
+            self.signal_tracking_persistence_healthy = False
+            return False
+        try:
+            self.opportunity_store.record_journal_event(
+                event_type,
+                source=source,
+                session_id=session_id,
+                occurred_at_utc=occurred_at_utc,
+                idempotency_key=idempotency_key,
+                payload=payload,
+            )
+            return True
+        except Exception as exc:
+            self.signal_tracking_persistence_healthy = False
+            self.research_status.set(f"Journal de captura falhou; simulação bloqueada: {exc}")
+            return False
 
     def _capture_tick(self) -> None:
         if not self.running or self.region is None:
@@ -2118,6 +2201,42 @@ class AutoTraderApp(tk.Tk):
                 else f"captura sem mudança relevante há {freshness.unchanged_seconds:.1f} s"
                 if freshness.frozen else ""
             )
+            if freshness.independent:
+                accepted_frame = self.latest_capture_quality_valid
+                self._record_capture_journal_event(
+                    "CAPTURE_FRAME_ACCEPTED" if accepted_frame else "CAPTURE_FRAME_REJECTED",
+                    {
+                        "frame_id": freshness.frame_id,
+                        "change_sequence": freshness.change_sequence,
+                        "changed_fraction": freshness.changed_fraction,
+                        "width": image.width,
+                        "height": image.height,
+                        "usable": self.latest_frame_quality.usable,
+                        "reasons": list(self.latest_frame_quality.reasons),
+                        "capture_profile_id": self.active_signal_profile_id,
+                        "timeframe": self.timeframe_var.get(),
+                    },
+                    idempotency_key=(
+                        f"{self.capture_session_id}:frame:{freshness.frame_id}"
+                    ),
+                    occurred_at_utc=datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+                )
+            elif freshness.frozen:
+                self._record_capture_journal_event(
+                    "CAPTURE_FRAME_REJECTED",
+                    {
+                        "frame_id": freshness.frame_id,
+                        "change_sequence": freshness.change_sequence,
+                        "reason": "FRAME_FROZEN",
+                        "freeze_after_seconds": self.frame_freshness_monitor.freeze_after_seconds,
+                        "capture_profile_id": self.active_signal_profile_id,
+                        "timeframe": self.timeframe_var.get(),
+                    },
+                    idempotency_key=(
+                        f"{self.capture_session_id}:frozen:{freshness.frame_id}"
+                    ),
+                    occurred_at_utc=datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+                )
             if not self.latest_capture_quality_valid:
                 reasons = self.latest_capture_block_reason or "qualidade da captura insuficiente"
                 self.last_candidates = []
@@ -2291,6 +2410,14 @@ class AutoTraderApp(tk.Tk):
             result = future.result()
         except Exception as exc:
             if self.running and generation == self._capture_generation:
+                if frame_id is not None:
+                    self._record_capture_journal_event(
+                        "OCR_FAILED",
+                        {"frame_id": frame_id, "error_type": type(exc).__name__},
+                        idempotency_key=f"{self.capture_session_id}:ocr-failed:{frame_id}",
+                        occurred_at_utc=captured_utc,
+                        source="OCR_ENGINE",
+                    )
                 self._handle_ocr_failure(exc)
             return
         if not self.running or generation != self._capture_generation or captured_at is None:
@@ -2299,6 +2426,18 @@ class AutoTraderApp(tk.Tk):
         now = time.monotonic()
         frame_age = now - captured_at
         if frame_age > TIMER_MAX_AGE_SECONDS or not self._capture_quality_is_fresh():
+            if frame_id is not None:
+                self._record_capture_journal_event(
+                    "OCR_FAILED",
+                    {
+                        "frame_id": frame_id,
+                        "reason": "STALE_OR_CAPTURE_QUALITY_INVALID",
+                        "processing_age_seconds": frame_age,
+                    },
+                    idempotency_key=f"{self.capture_session_id}:ocr-stale:{frame_id}",
+                    occurred_at_utc=captured_utc,
+                    source="OCR_ENGINE",
+                )
             self.last_ocr_change_sequence = None
             self.latest_platform_clock = None
             self.latest_clock_at = None
@@ -2341,6 +2480,13 @@ class AutoTraderApp(tk.Tk):
         # Passa todas as caixas OCR ao reconciliador central; a deduplicação e a
         # contagem de caixas concorrentes são responsabilidade de uma única camada.
         if not captured_utc or not frame_id:
+            self._record_capture_journal_event(
+                "OCR_FAILED",
+                {"reason": "MISSING_FRAME_ID_OR_CAPTURE_TIMESTAMP"},
+                idempotency_key=f"{self.capture_session_id}:ocr-metadata-missing:{captured_at}",
+                occurred_at_utc=captured_utc,
+                source="OCR_ENGINE",
+            )
             self.signal_tracking_persistence_healthy = False
             self.last_candidates = []
             self.candidate_lifecycle_by_id.clear()
@@ -2397,6 +2543,23 @@ class AutoTraderApp(tk.Tk):
             frame_quality=frame_quality,
             processing_age=frame_age,
         )
+        if self.capture_session_id is not None:
+            self._record_capture_journal_event(
+                "OCR_COMPLETED",
+                {
+                    "frame_id": frame_id,
+                    "processing_age_seconds": frame_age,
+                    "raw_candidate_count": raw_candidate_count,
+                    "recent_candidate_count": len(self.last_candidates),
+                    "tracked_candidate_count": len(tracked_candidates),
+                    "color_rejected_count": color_rejected_count,
+                    "clock_readable": self.latest_platform_clock is not None,
+                    "capture_profile_id": self.active_signal_profile_id,
+                },
+                idempotency_key=f"{self.capture_session_id}:ocr-completed:{frame_id}",
+                occurred_at_utc=captured_utc,
+                source="OCR_ENGINE",
+            )
         self._maybe_auto_arm_demo_signal()
         self._update_timer_status(now)
 
@@ -2951,12 +3114,50 @@ class AutoTraderApp(tk.Tk):
             if clock_override is not None
             else ("platform_ocr" if clock is not None else "")
         )
-        # Persistência é best-effort: nunca deve bloquear confirmação assistida.
-        return append_event_best_effort(
+        platform_clock = (
+            f"{clock.hour:02d}:{clock.minute:02d}:{clock.second:02d}" if clock else ""
+        )
+        armed_clock_text = (
+            f"{armed_clock_override.hour:02d}:{armed_clock_override.minute:02d}:"
+            f"{armed_clock_override.second:02d}"
+            if armed_clock_override is not None else ""
+        )
+        event_type = {
+            "sinal_armado": "SIMULATION_ARMED",
+            "simulacao_cancelada": "SIMULATION_CANCELLED",
+            "sinal_expirado": "SIMULATION_EXPIRED",
+            "virada_minuto_observada": "SIMULATION_CANDLE_ROLLOVER",
+            "entrada_simulada": "SIMULATION_CONFIRMED",
+        }.get(event)
+        journal_error: str | None = None
+        if event_type is not None:
+            try:
+                self.opportunity_store.record_journal_event(
+                    event_type,
+                    source="SIMULATION_WORKFLOW",
+                    session_id=self.capture_session_id,
+                    payload={
+                        "event": event,
+                        "timeframe": self.timeframe_var.get(),
+                        "direction": direction,
+                        "observed_text": observed_text,
+                        "ocr_confidence": confidence,
+                        "signal_x": signal_x,
+                        "signal_y": signal_y,
+                        "platform_clock": platform_clock,
+                        "clock_source": clock_source,
+                        "elapsed_seconds_m1": elapsed_seconds_m1,
+                        "armed_clock": armed_clock_text,
+                        "entry_delay_seconds": entry_delay_seconds,
+                        "entry_delay_platform_seconds": entry_delay_platform_seconds,
+                    },
+                )
+            except Exception as exc:
+                self.signal_tracking_persistence_healthy = False
+                journal_error = f"Journal SQLite: {exc}"
+        history_error = append_event_best_effort(
             self.simulation_history,
-            platform_clock=(
-                f"{clock.hour:02d}:{clock.minute:02d}:{clock.second:02d}" if clock else ""
-            ),
+            platform_clock=platform_clock,
             event=event,
             timeframe=self.timeframe_var.get(),
             direction=direction,
@@ -2976,13 +3177,11 @@ class AutoTraderApp(tk.Tk):
             ),
             entry_delay_platform_seconds=entry_delay_platform_seconds,
             clock_source=clock_source,
-            armed_clock=(
-                f"{armed_clock_override.hour:02d}:{armed_clock_override.minute:02d}:"
-                f"{armed_clock_override.second:02d}"
-                if armed_clock_override is not None else ""
-            ),
+            armed_clock=armed_clock_text,
             entry_delay_seconds=entry_delay_seconds,
         )
+        errors = [item for item in (journal_error, history_error) if item]
+        return "; ".join(errors) if errors else None
 
     def _arm_selected_candidate(self) -> None:
         selection = self.candidate_table.selection()
@@ -3661,6 +3860,14 @@ class AutoTraderApp(tk.Tk):
             self.capture_status.set(f"Configuração anterior ignorada ({exc}).")
 
     def _on_close(self) -> None:
+        if self.capture_session_id is not None:
+            session_id = self.capture_session_id
+            self._record_capture_journal_event(
+                "CAPTURE_SESSION_STOPPED",
+                {"reason": "APPLICATION_CLOSED"},
+                idempotency_key=f"{session_id}:stop",
+            )
+            self.capture_session_id = None
         self._stop_sequence_recording("aplicativo fechado")
         self._set_capture_keep_awake(False)
         if self.demo_automation_enabled:

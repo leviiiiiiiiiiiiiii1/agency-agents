@@ -45,6 +45,14 @@ O OCR fica desligado até ser habilitado. Se o Tesseract estiver em outro local,
 
 As áreas ocultadas são mascaradas antes do OCR, da prévia, das capturas salvas e das gravações de sequência. A opção do Windows para manter a tela/computador ativos permanece desligada por padrão.
 
+## Journal transacional e recuperação
+
+O journal SQLite fica em `%LOCALAPPDATA%\AutoTraderIQ\opportunities.sqlite3` no Windows (ou em `~/.auto_trader_iq` nos outros sistemas). O schema 3 preserva os IDs/eventos existentes e registra sessões, quadros independentes aceitos/rejeitados, conclusões/falhas de OCR, estados de sinal, decisões e eventos de simulação. A chave de idempotência evita eventos duplicados em retries; triggers impedem alterar/apagar eventos já gravados. A tabela `opportunities` é uma projeção atualizável; o log append-only é `opportunity_events`.
+
+Antes de migrar um banco existente, o inicializador cria uma cópia consistente pelo mecanismo de backup do SQLite, com nome `opportunities.backup-v3-<UTC>.sqlite3`. Na inicialização, `quick_check`, chaves estrangeiras e execuções sem estado final são inspecionados. Execuções incertas nunca são repetidas automaticamente; precisam de reconciliação explícita. A migração foi verificada em bancos de teste, mas ainda não foi aplicada ao banco do usuário.
+
+O CSV legado em `%LOCALAPPDATA%\AutoTraderIQ\simulation_history.csv` continua preservado e serve à compatibilidade/exportação; ele não é apagado nem substituído pelo journal.
+
 ## Histórico e arquivos locais
 
 O histórico em `%LOCALAPPDATA%\AutoTraderIQ\simulation_history.csv` (Windows) registra metadados de sinais, entradas simuladas e tentativas de clique; não contém imagens e não é transmitido. A interface identifica separadamente entradas **SIMULADAS** e tentativas **AUTOMÁTICAS**. Tentativa de clique não significa ordem aceita nem resultado financeiro. **Salvar todas as entradas…** exporta os registros; **Limpar log…** apaga o CSV após confirmação.
