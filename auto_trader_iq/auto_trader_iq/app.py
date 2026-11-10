@@ -6,6 +6,8 @@ import csv
 import hashlib
 import json
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import asdict
+from datetime import datetime, timezone
 import os
 import sys
 import time
@@ -16,6 +18,10 @@ from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageDraw, ImageTk
 
 from .capture import ScreenCapture, ScreenRegion
+from .capture_quality import FrameFreshness, FrameFreshnessMonitor, FrameQuality, assess_frame
+from .operation_modes import ModeDecision, OperationMode, actual_order_execution_allowed, mode_decision
+from .opportunity_store import OpportunityStore
+from .signal_lifecycle import SignalLifecycle, SignalLifecycleTracker
 from .demo_clock import WindowsUtcMinusThreeClock, demo_entry_second_action
 from .demo_click import (
     ClickTarget,
@@ -27,7 +33,12 @@ from .demo_click import (
     windows_window_at_point,
     windows_window_signature_at_point,
 )
-from .candle_monitor import classify_market_context, detect_candle_bars, filter_to_recent_candle
+from .candle_monitor import (
+    classify_market_context,
+    count_signal_labels_by_candle,
+    detect_candle_bars,
+    filter_to_recent_candle,
+)
 from .candle_timer import (
     PlatformClockReading,
     PlatformMinuteTracker,
@@ -68,31 +79,31 @@ DEMO_MOUSE_KEEPALIVE_CLEARANCE_PX = 100
 DEMO_MOUSE_KEEPALIVE_NUDGE_PX = 4
 
 
-def _analyze_ocr_frame(detector: TesseractSignalDetector | None, image: Image.Image):
-    """Run OCR and visual-context analysis away from Tk's UI thread."""
-    if detector is None:
-        raw_candidates = []
-        clock = None
-        raw_count = color_rejected_count = 0
-        clock_ocr_text = ""
-    else:
-        raw_candidates, clock = detector.detect_frame(image)
-        raw_count = detector.last_candidate_count
-        color_rejected_count = detector.last_color_rejected_count
-        clock_ocr_text = detector.last_clock_ocr_text
+def _analyze_ocr_frame(
+    detector: TesseractSignalDetector,
+    image: Image.Image,
+):
+    """OCR labels and match them against candles detected in this exact frame."""
     bars = detect_candle_bars(image)
+    raw_candidates, clock = detector.detect_frame(image)
     candidates = filter_to_recent_candle(raw_candidates, bars)
-    market_context = classify_market_context(image, bars)
+    label_counts = count_signal_labels_by_candle(raw_candidates, bars, lookback=12)
     return (
         candidates,
         clock,
-        raw_count,
-        color_rejected_count,
+        detector.last_candidate_count,
+        detector.last_color_rejected_count,
         len(bars),
-        clock_ocr_text,
-        market_context,
-        detector is not None,
+        detector.last_clock_ocr_text,
+        label_counts,
+        raw_candidates,
     )
+
+
+def _analyze_market_context_frame(image: Image.Image):
+    """Classify candle context independently so slow OCR cannot delay the panel."""
+    bars = detect_candle_bars(image)
+    return bars, classify_market_context(image, bars)
 
 
 def _enable_windows_dpi_awareness() -> None:
@@ -136,20 +147,36 @@ class AutoTraderApp(tk.Tk):
         self.data_dir = _data_dir()
         self.config_path = self.data_dir / "config.json"
         self.simulation_history = SimulationHistoryStore(self.data_dir / "simulation_history.csv")
+        self.opportunity_store = OpportunityStore(self.data_dir / "opportunities.sqlite3")
         self.monitors: list[dict[str, int]] = []
         self.region: ScreenRegion | None = None
         self.running = False
         self.last_frame_hash: str | None = None
         self.last_change_at = time.monotonic()
+        self.frame_freshness_monitor = FrameFreshnessMonitor()
+        self.latest_frame_freshness: FrameFreshness | None = None
+        self.latest_capture_block_reason = ""
+        self.last_ocr_change_sequence: int | None = None
+        self.last_context_change_sequence: int | None = None
+        self.latest_frame_quality: FrameQuality | None = None
+        self.latest_capture_quality_at: float | None = None
+        self.latest_capture_quality_valid = False
+        self.latest_candidates_at: float | None = None
         self.last_pil_image: Image.Image | None = None
         self.preview_photo: ImageTk.PhotoImage | None = None
         self.compact_preview_photo: ImageTk.PhotoImage | None = None
         self.detector: TesseractSignalDetector | None = None
         self._ocr_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="auto-trader-ocr")
+        self._context_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="auto-trader-context")
         self._ocr_future: Future | None = None
         self._ocr_frame_captured_at: float | None = None
+        self._ocr_frame_captured_utc: str | None = None
+        self._ocr_frame_id: str | None = None
+        self._ocr_frame_quality: dict[str, object] | None = None
         self._ocr_future_generation = 0
-        self._ocr_future_has_ocr = False
+        self._context_future: Future | None = None
+        self._context_frame_captured_at: float | None = None
+        self._context_future_generation = 0
         self._capture_generation = 0
         self._closing = False
         self.last_candidates: list[SignalCandidate] = []
@@ -160,14 +187,35 @@ class AutoTraderApp(tk.Tk):
         self.pending_armed_clock: PlatformClockReading | None = None
         self.pending_rollover_notified = False
         self.latest_bar_count = 0
+        self.latest_candle_bars = []
+        self.last_context_at = 0.0
         self.sequence_recorder = SequenceRecorder(self.data_dir / "sequences")
         self.sequence_status = tk.StringVar(value="Gravação de teste inativa; nenhuma imagem está sendo salva.")
         self.simulation = SimulationWorkflow()
         self.demo_clock = WindowsUtcMinusThreeClock()
         self.demo_signal_guard = DemoSignalRepeatGuard()
         self.candidates_by_id: dict[str, SignalCandidate] = {}
+        self.signal_lifecycle = SignalLifecycleTracker()
+        self.candidate_lifecycle_by_id: dict[str, SignalLifecycle] = {}
+        self.candidate_fingerprint_by_id: dict[str, str] = {}
+        self.candidate_related_by_id: dict[str, str | None] = {}
+        self.candidate_duplicate_count_by_id: dict[str, int] = {}
+        self.active_signal_profile_id: str | None = None
+        self.active_screen_layout: list[dict[str, int]] | None = None
+        self.last_layout_check_at = 0.0
+        self.signal_tracking_persistence_healthy = True
         self.simulation_status = tk.StringVar(value="Simulação parada; nenhuma entrada foi registrada.")
-        self.demo_status = tk.StringVar(value="Cliques automáticos desligados; esta opção nunca é reativada automaticamente.")
+        self.operation_mode_var = tk.StringVar(value=OperationMode.OBSERVATION.value)
+        self.operation_mode = OperationMode.OBSERVATION
+        self.operation_mode_status = tk.StringVar(
+            value="OBSERVAÇÃO: análise e registro; ordens automáticas bloqueadas."
+        )
+        self.research_status = tk.StringVar(
+            value=f"Registro estruturado local: {self.data_dir / 'opportunities.sqlite3'}"
+        )
+        self.demo_status = tk.StringVar(
+            value="Cliques automáticos bloqueados: não há verificação confiável da conta."
+        )
         self.demo_automation_enabled = False
         self.demo_account_confirmed = False
         self.demo_timeout_after_id: str | None = None
@@ -218,6 +266,12 @@ class AutoTraderApp(tk.Tk):
         self.tesseract_path_var = tk.StringVar(value=find_tesseract_executable())
         self.ocr_status = tk.StringVar(value="OCR desligado; nenhuma operação é executada.")
         self.market_context_status = tk.StringVar(value="Contexto visual: aguardando captura.")
+        self.market_context_display_text = "Contexto visual: aguardando captura."
+        self.signal_label_counts = {"BUY": 0, "SELL": 0}
+        self.signal_label_context_at: float | None = None
+        self.market_context_regime = "unknown"
+        self.market_context_direction: str | None = None
+        self.market_context_at: float | None = None
         self.region_vars = {key: tk.StringVar() for key in ("left", "top", "width", "height")}
         self.capture_status = tk.StringVar(value="Captura parada")
         self.heartbeat_status = tk.StringVar(value="Sem captura")
@@ -228,6 +282,7 @@ class AutoTraderApp(tk.Tk):
         self._load_persisted_simulation_history()
         self._load_monitors()
         self._load_config()
+        self._update_demo_toggle_text()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _build_ui(self) -> None:
@@ -451,6 +506,24 @@ class AutoTraderApp(tk.Tk):
             padding=6,
         )
         simulation_box.pack(fill="x", pady=(8, 0))
+        mode_row = ttk.Frame(simulation_box)
+        mode_row.pack(fill="x", pady=(0, 5))
+        ttk.Label(mode_row, text="Modo:").pack(side="left", padx=(0, 5))
+        self.operation_mode_combo = ttk.Combobox(
+            mode_row,
+            textvariable=self.operation_mode_var,
+            values=tuple(mode.value for mode in OperationMode),
+            state="readonly",
+            width=18,
+        )
+        self.operation_mode_combo.pack(side="left")
+        self.operation_mode_combo.bind("<<ComboboxSelected>>", self._on_operation_mode_change)
+        ttk.Label(simulation_box, textvariable=self.operation_mode_status, wraplength=650).pack(
+            anchor="w", pady=(0, 3)
+        )
+        ttk.Label(simulation_box, textvariable=self.research_status, wraplength=650).pack(
+            anchor="w", pady=(0, 5)
+        )
         self.candidate_table = ttk.Treeview(
             simulation_box, columns=("label", "confidence", "position"), show="headings", height=3,
             selectmode="browse",
@@ -458,7 +531,7 @@ class AutoTraderApp(tk.Tk):
         self.candidate_table.heading("label", text="Etiqueta OCR")
         self.candidate_table.heading("confidence", text="Confiança")
         self.candidate_table.heading("position", text="Posição na captura")
-        self.candidate_table.column("label", width=120, stretch=True)
+        self.candidate_table.column("label", width=340, stretch=True)
         self.candidate_table.column("confidence", width=100, anchor="center")
         self.candidate_table.column("position", width=150, anchor="center")
         self.candidate_table.pack(fill="x")
@@ -501,7 +574,10 @@ class AutoTraderApp(tk.Tk):
         )
         self.cancel_sim_button.pack(side="left", padx=6)
         self.demo_toggle_button = ttk.Button(
-            sim_buttons, text="Ativar cliques automáticos…", command=self._toggle_demo_automation
+            sim_buttons,
+            text="Cliques bloqueados · sem verificação de conta",
+            command=self._toggle_demo_automation,
+            state="disabled",
         )
         self.demo_toggle_button.pack(side="right", padx=6)
         demo_target_row = ttk.Frame(simulation_box)
@@ -641,6 +717,9 @@ class AutoTraderApp(tk.Tk):
             text="Deixe o painel fora da região monitorada. A prévia mostra a captura já mascarada.",
             wraplength=640,
         ).pack(anchor="w", pady=(2, 4))
+        ttk.Label(self.compact_frame, textvariable=self.operation_mode_status, wraplength=640).pack(
+            anchor="w", pady=(0, 2)
+        )
         ttk.Label(self.compact_frame, textvariable=self.ocr_status, wraplength=640).pack(
             anchor="w", pady=(0, 2)
         )
@@ -673,7 +752,7 @@ class AutoTraderApp(tk.Tk):
         self.compact_candidate_table.heading("label", text="Sinal reconhecido")
         self.compact_candidate_table.heading("confidence", text="Confiança OCR")
         self.compact_candidate_table.heading("position", text="Posição")
-        self.compact_candidate_table.column("label", width=190, stretch=True)
+        self.compact_candidate_table.column("label", width=300, stretch=True)
         self.compact_candidate_table.column("confidence", width=110, anchor="center")
         self.compact_candidate_table.column("position", width=130, anchor="center")
         self.compact_candidate_table.pack(fill="x", expand=False)
@@ -715,7 +794,10 @@ class AutoTraderApp(tk.Tk):
         compact_controls = ttk.Frame(self.compact_frame)
         compact_controls.pack(fill="x", pady=(2, 2))
         self.compact_demo_toggle_button = ttk.Button(
-            compact_controls, text="Ativar cliques automáticos…", command=self._toggle_demo_automation
+            compact_controls,
+            text="Cliques bloqueados · sem verificação de conta",
+            command=self._toggle_demo_automation,
+            state="disabled",
         )
         self.compact_demo_toggle_button.pack(side="left", padx=(0, 6))
         self.compact_sequence_button = ttk.Button(
@@ -793,11 +875,48 @@ class AutoTraderApp(tk.Tk):
         overlay.bind("<Destroy>", lambda event: cancelled() if event.widget is overlay else None, add="+")
 
     def _set_region(self, region: ScreenRegion) -> None:
+        if self.running and self.region != region:
+            self._stop_capture("Captura parada: a região mudou e exige nova linha de base visual.")
         self.region = region
         for key, value in (("left", region.left), ("top", region.top),
                            ("width", region.width), ("height", region.height)):
             self.region_vars[key].set(str(value))
         self.capture_status.set(f"Região definida: {region.width}×{region.height} px")
+
+    def _capture_profile_id(self) -> str:
+        region = self.region
+        if region is None:
+            raise RuntimeError("Defina a região antes de identificar o perfil de captura.")
+        payload = {
+            "region": asdict(region),
+            "screen_layout": self._screen_layout_signature(),
+            "detector_version": "ocr-labels-v1",
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _begin_signal_tracking_session(self) -> None:
+        profile_id = self._capture_profile_id()
+        timeframe = self.timeframe_var.get()
+        tracker = SignalLifecycleTracker(
+            identity_namespace=f"{profile_id}:{timeframe}",
+            detector_version="ocr-labels-v1",
+        )
+        try:
+            tracker.restore(self.opportunity_store.load_signal_tracks(
+                profile_id=profile_id, timeframe=timeframe
+            ))
+            self.signal_tracking_persistence_healthy = True
+        except Exception as exc:
+            # A tracker without its persistent baseline must fail closed for arming.
+            self.signal_tracking_persistence_healthy = False
+            self.research_status.set(
+                f"Rastreamento persistente indisponível; simulação bloqueada: {exc}"
+            )
+        self.signal_lifecycle = tracker
+        self.active_signal_profile_id = profile_id
+        self.active_screen_layout = self._screen_layout_signature()
+        self.last_layout_check_at = 0.0
 
     @staticmethod
     def _regions_intersect(first: ScreenRegion, second: ScreenRegion) -> bool:
@@ -1224,175 +1343,148 @@ class AutoTraderApp(tk.Tk):
         self._schedule_demo_mouse_keepalive()
 
     def _update_demo_toggle_text(self) -> None:
-        text = "Parar cliques automáticos" if self.demo_automation_enabled else "Ativar cliques automáticos…"
-        config_state = "disabled" if self.demo_automation_enabled else "normal"
+        text = "Cliques bloqueados · sem verificação de conta"
         for name in ("demo_toggle_button", "compact_demo_toggle_button"):
             button = getattr(self, name, None)
             if button is not None:
-                button.configure(text=text)
+                button.configure(text=text, state="disabled")
         for name in ("demo_timeout_spinbox", "demo_entry_second_spinbox"):
             spinbox = getattr(self, name, None)
             if spinbox is not None:
-                spinbox.configure(state=config_state)
+                spinbox.configure(state="disabled")
+
+    def _on_operation_mode_change(self, _event: tk.Event | None = None) -> None:
+        try:
+            requested = OperationMode(self.operation_mode_var.get())
+        except ValueError:
+            requested = OperationMode.OBSERVATION
+        decision = mode_decision(requested)
+        if decision not in {ModeDecision.OBSERVE_ONLY, ModeDecision.SIMULATION_ONLY}:
+            self.operation_mode = OperationMode.OBSERVATION
+            self.operation_mode_var.set(self.operation_mode.value)
+            self.operation_mode_status.set(
+                "DEMO/REAL bloqueados: sem integração confiável para verificar conta, ordem ou saldo."
+            )
+            messagebox.showwarning(
+                APP_NAME,
+                "Este build permite OBSERVAÇÃO e SIMULAÇÃO. DEMO exige confirmação verificável de conta; "
+                "REAL permanece bloqueado. Nenhum clique será enviado.",
+                parent=self,
+            )
+            return
+        self.operation_mode = requested
+        if requested is OperationMode.OBSERVATION:
+            if self.simulation.pending is not None:
+                self._cancel_pending_simulation()
+            self.operation_mode_status.set(
+                "OBSERVAÇÃO: captura e registro; não arma entradas nem envia cliques."
+            )
+        else:
+            self.operation_mode_status.set(
+                "SIMULAÇÃO: entradas são hipotéticas; resultados financeiros não são inferidos."
+            )
+        self._persist_config()
 
     def _toggle_demo_automation(self) -> None:
         if self.demo_automation_enabled:
             self._deactivate_demo_automation()
             if self.simulation.pending is not None:
                 self._cancel_pending_simulation()
-            self.demo_status.set("Cliques automáticos desligados pelo usuário; nenhum sinal pendente será executado.")
+            self.demo_status.set("Cliques automáticos desligados; nenhum sinal pendente será executado.")
             return
-        if sys.platform != "win32":
-            messagebox.showerror(APP_NAME, "A automação do mouse só funciona no Windows.", parent=self)
-            return
-        if not self.running or self.detector is None:
-            messagebox.showinfo(APP_NAME, "Inicie a captura com OCR ativo antes de habilitar cliques automáticos.", parent=self)
-            return
-        if self.timeframe_var.get() != "M1":
-            messagebox.showinfo(APP_NAME, "A automação contínua de cliques está limitada ao período M1.", parent=self)
-            return
-        try:
-            activation_timeout = int(self.demo_activation_timeout_var.get())
-        except (TypeError, ValueError):
-            messagebox.showerror(APP_NAME, "Informe o limite da automação em segundos.", parent=self)
-            return
-        if not MIN_DEMO_ACTIVATION_TIMEOUT_SECONDS <= activation_timeout <= MAX_DEMO_ACTIVATION_TIMEOUT_SECONDS:
-            messagebox.showerror(
-                APP_NAME,
-                f"O limite precisa estar entre {MIN_DEMO_ACTIVATION_TIMEOUT_SECONDS} e "
-                f"{MAX_DEMO_ACTIVATION_TIMEOUT_SECONDS} segundos.",
-                parent=self,
-            )
-            return
-        try:
-            entry_second = int(self.demo_entry_second_var.get())
-        except (TypeError, ValueError):
-            messagebox.showerror(APP_NAME, "Informe o segundo fixo do clique automático entre :00 e :30.", parent=self)
-            return
-        if not MIN_DEMO_ENTRY_SECOND <= entry_second <= MAX_DEMO_ENTRY_SECOND:
-            messagebox.showerror(
-                APP_NAME,
-                f"O segundo fixo precisa estar entre :{MIN_DEMO_ENTRY_SECOND:02d} e :{MAX_DEMO_ENTRY_SECOND:02d}.",
-                parent=self,
-            )
-            return
-        if self.simulation.pending is not None:
-            messagebox.showinfo(APP_NAME, "Cancele o sinal pendente antes de habilitar cliques automáticos.", parent=self)
-            return
-        buy_target = self.demo_click_targets["BUY"]
-        sell_target = self.demo_click_targets["SELL"]
-        if (
-            buy_target is None
-            or sell_target is None
-            or not self._valid_window_signature(self.demo_click_target_signatures["BUY"])
-            or not self._valid_window_signature(self.demo_click_target_signatures["SELL"])
-        ):
-            messagebox.showinfo(
-                APP_NAME,
-                "Calibre COMPRAR e VENDER uma vez; as posições serão guardadas para próximas sessões.",
-                parent=self,
-            )
-            return
-        if not self._bind_persisted_demo_windows():
-            messagebox.showerror(
-                APP_NAME,
-                "As posições salvas não correspondem à mesma janela/plataforma e geometria. "
-                "Traga a plataforma original para frente e recalibre COMPRAR/VENDER.",
-                parent=self,
-            )
-            return
-        if (
-            self.region is None
-            or not self._target_is_excluded_or_outside_capture(buy_target)
-            or not self._target_is_excluded_or_outside_capture(sell_target)
-        ):
-            messagebox.showerror(
-                APP_NAME,
-                "Cada botão calibrado precisa ficar fora da captura ou dentro de uma área que será ocultada "
-                "antes do OCR e da gravação. Marque a área dos botões e confira que HORA ATUAL permanece visível.",
-                parent=self,
-            )
-            return
-        mouse_keepalive_note = ""
-        if self.demo_mouse_keepalive_var.get():
-            interval = self._demo_mouse_keepalive_interval()
-            target = self.demo_mouse_keepalive_target
-            alternate = self.demo_mouse_keepalive_alternate
-            safe_window = self.demo_mouse_keepalive_window
-            if interval is None:
-                messagebox.showerror(
-                    APP_NAME,
-                    f"O intervalo do movimento deve ficar entre {MIN_DEMO_MOUSE_KEEPALIVE_SECONDS} e "
-                    f"{MAX_DEMO_MOUSE_KEEPALIVE_SECONDS} segundos.",
-                    parent=self,
-                )
-                return
-            if (
-                target is None
-                or alternate is None
-                or safe_window is None
-                or not self._demo_mouse_keepalive_geometry_is_safe(
-                    target, alternate, safe_window, check_frontmost=False
-                )
-            ):
-                messagebox.showerror(
-                    APP_NAME,
-                    "O movimento sem clique exige um ponto neutro calibrado na mesma janela dos botões, "
-                    "longe dos alvos e fora da região capturada ou dentro de uma área mascarada.",
-                    parent=self,
-                )
-                return
-            mouse_keepalive_note = (
-                f" Se não houver atividade do usuário por {interval} s, o cursor alternará entre "
-                "dois pontos neutros calibrados, sem clicar; a posição mudará."
-            )
-        consent = messagebox.askyesno(
-            APP_NAME,
-            "ATENÇÃO — cliques automáticos na plataforma.\n\n"
-            "Confira a conta selecionada, o ativo, o valor, a expiração e os demais parâmetros diretamente na plataforma. "
-            "O app não consegue verificar o tipo de conta nem os valores.\n\n"
-            "A ativação contínua pode enviar no máximo uma entrada por vela M1, somente até :30 do relógio "
-            "do Windows convertido para UTC−3. Esse é um relógio local, não uma leitura da corretora; "
-            "a sincronização do Windows pode divergir em segundos. "
-            f"As entradas visam sempre :{entry_second:02d}: sinais reconhecidos antes aguardam até esse segundo; "
-            "sinais reconhecidos depois são descartados nesta vela. "
-            "Não espera N+1. "
-            f"Ficará ativa por {activation_timeout} s ou até você pará-la; sinais repetidos na mesma vela são bloqueados. "
-            "A identidade da vela e a aceitação da ordem não são verificadas visualmente.\n\n"
-            f"{mouse_keepalive_note}\n\n"
-            "O app não consegue verificar esses dados nem confirmar se a plataforma aceitou a ordem. Um clique pode enviar uma ordem real. Ativar agora?",
-            parent=self,
-        )
-        if not consent:
-            return
-        self.demo_clock.reset()
-        self.demo_automation_enabled = True
-        self.demo_account_confirmed = True
-        self.demo_activation_timeout_active = activation_timeout
-        self.demo_entry_second_active = entry_second
-        self.demo_entries_this_activation = 0
-        self.demo_timeout_after_id = self.after(
-            activation_timeout * 1000, self._expire_demo_activation
-        )
-        if self.demo_mouse_keepalive_var.get():
-            self.demo_mouse_keepalive_last_move_at = time.monotonic()
-            self.demo_mouse_keepalive_use_alternate = False
-            self._schedule_demo_mouse_keepalive()
-            self.demo_mouse_keepalive_status.set(
-                "Movimento sem clique ativo; aguardando intervalo de inatividade."
-            )
-        self._persist_config()
-        self._update_demo_toggle_text()
         self.demo_status.set(
-            f"CLIQUES AUTOMÁTICOS ATIVOS por {activation_timeout} s: sinais legíveis são armados "
-            f"assim que reconhecidos; entrada programada para :{self.demo_entry_second_active:02d}. "
-            "Sinais reconhecidos depois desse segundo são descartados; uma tentativa por minuto "
-            "do relógio Windows UTC−3. Os segundos podem divergir da corretora."
+            "Cliques automáticos bloqueados: não há adaptador confiável para verificar conta DEMO, "
+            "saldo, ordem executada ou resultado."
+        )
+        self.operation_mode_status.set(
+            "DEMO/REAL indisponíveis; permaneça em OBSERVAÇÃO ou SIMULAÇÃO. Nenhum clique foi enviado."
+        )
+
+    def _capture_quality_is_fresh(self) -> bool:
+        if not self.latest_capture_quality_valid or self.latest_capture_quality_at is None:
+            return False
+        age = time.monotonic() - self.latest_capture_quality_at
+        return 0 <= age <= TIMER_MAX_AGE_SECONDS
+
+    def _fresh_visual_flow_direction(self) -> str | None:
+        if not self._capture_quality_is_fresh():
+            return None
+        if self.market_context_regime != "flow" or self.market_context_at is None:
+            return None
+        age = time.monotonic() - self.market_context_at
+        return self.market_context_direction if 0 <= age <= TIMER_MAX_AGE_SECONDS else None
+
+    def _fresh_label_flow_direction(self) -> str | None:
+        if not self._capture_quality_is_fresh() or self.signal_label_context_at is None:
+            return None
+        age = time.monotonic() - self.signal_label_context_at
+        if not 0 <= age <= TIMER_MAX_AGE_SECONDS:
+            return None
+        buy_count = self.signal_label_counts["BUY"]
+        sell_count = self.signal_label_counts["SELL"]
+        if buy_count >= 2 and sell_count < 2:
+            return "BUY"
+        if sell_count >= 2 and buy_count < 2:
+            return "SELL"
+        return None
+
+    def _market_context_allows_direction(self, direction: str) -> bool:
+        if (
+            self.signal_label_context_at is not None
+            and 0 <= time.monotonic() - self.signal_label_context_at <= TIMER_MAX_AGE_SECONDS
+            and self.signal_label_counts["BUY"] >= 2
+            and self.signal_label_counts["SELL"] >= 2
+        ):
+            return False
+        visual_direction = self._fresh_visual_flow_direction()
+        label_direction = self._fresh_label_flow_direction()
+        if (
+            visual_direction is not None
+            and label_direction is not None
+            and visual_direction != label_direction
+        ):
+            return False
+        return direction in {visual_direction, label_direction}
+
+    def _refresh_market_context_status(self) -> None:
+        base = self.market_context_display_text
+        buy_count = self.signal_label_counts["BUY"]
+        sell_count = self.signal_label_counts["SELL"]
+        label_direction = self._fresh_label_flow_direction()
+        visual_direction = self._fresh_visual_flow_direction()
+        if buy_count >= 2 and sell_count >= 2:
+            text = f"Fluxo incerto: {buy_count} velas COMPRA e {sell_count} velas VENDER; cliques bloqueados."
+        elif label_direction is not None and visual_direction not in {None, label_direction}:
+            label = "COMPRADOR" if label_direction == "BUY" else "VENDEDOR"
+            visual = "comprador" if visual_direction == "BUY" else "vendedor"
+            text = f"CONFLITO: {label} por etiquetas, mas fluxo visual {visual}; cliques bloqueados."
+        elif label_direction is not None:
+            label = "COMPRA" if label_direction == "BUY" else "VENDER"
+            count = self.signal_label_counts[label_direction]
+            text = f"FLUXO {('COMPRADOR' if label_direction == 'BUY' else 'VENDEDOR')} · {count} velas com etiqueta {label}. {base}"
+        else:
+            text = base
+        self.market_context_status.set(text)
+
+    def _cancel_auto_pending_for_context(self) -> None:
+        pending = self.simulation.pending
+        if (
+            not self.demo_automation_enabled
+            or pending is None
+            or self._market_context_allows_direction(pending.direction)
+        ):
+            return
+        self.demo_signal_guard.mark_consumed(pending.direction, pending.x, pending.y)
+        self._cancel_pending_simulation()
+        label = "COMPRA" if pending.direction == "BUY" else "VENDER"
+        self.demo_status.set(
+            f"Sinal {label} cancelado: a automação só opera em fluxo compatível e recente."
         )
 
     def _maybe_auto_arm_demo_signal(self) -> None:
         if (
             not self.demo_automation_enabled
+            or not self.signal_tracking_persistence_healthy
             or not self.running
             or self.detector is None
             or self.timeframe_var.get() != "M1"
@@ -1406,6 +1498,11 @@ class AutoTraderApp(tk.Tk):
         if current_candle_id is None:
             return
         self.demo_signal_guard.advance_candle(current_candle_id)
+        if (
+            self.latest_candidates_at is None
+            or not 0 <= time.monotonic() - self.latest_candidates_at <= TIMER_MAX_AGE_SECONDS
+        ):
+            return
         candidates = list(self.candidates_by_id.values())
         if len(candidates) != 1:
             if len(candidates) > 1:
@@ -1417,6 +1514,20 @@ class AutoTraderApp(tk.Tk):
                 )
             return
         candidate = candidates[0]
+        if self.candidate_lifecycle_by_id.get(self._candidate_row_id(candidate)) is not SignalLifecycle.CONFIRMED_NEW:
+            self.demo_status.set(
+                "Automação aguardando etiqueta nova confirmada em leituras consecutivas; "
+                "rótulos já visíveis ao iniciar não são elegíveis."
+            )
+            return
+        if not self._market_context_allows_direction(candidate.direction):
+            label = "COMPRA" if candidate.direction == "BUY" else "VENDER"
+            required_flow = "comprador" if candidate.direction == "BUY" else "vendedor"
+            self.demo_status.set(
+                f"Automação ativa: clique {label} bloqueado até haver fluxo "
+                f"{required_flow} visual, válido e recente."
+            )
+            return
         if self.last_demo_entry_candle_id == current_candle_id:
             self.demo_signal_guard.mark_consumed(
                 candidate.direction, candidate.left, candidate.top
@@ -1481,12 +1592,19 @@ class AutoTraderApp(tk.Tk):
         )
 
     def _pending_demo_candidate_is_current(self, pending: PendingSignal) -> bool:
+        if (
+            self.latest_candidates_at is None
+            or not 0 <= time.monotonic() - self.latest_candidates_at <= TIMER_MAX_AGE_SECONDS
+        ):
+            return False
         candidates = list(self.candidates_by_id.values())
         if len(candidates) != 1:
             return False
         candidate = candidates[0]
         return (
-            candidate.direction == pending.direction
+            self.candidate_lifecycle_by_id.get(self._candidate_row_id(candidate))
+            is SignalLifecycle.CONFIRMED_NEW
+            and candidate.direction == pending.direction
             and abs(candidate.left - pending.x) <= self.demo_signal_guard.tolerance_x
             and abs(candidate.top - pending.y) <= self.demo_signal_guard.tolerance_y
         )
@@ -1503,6 +1621,20 @@ class AutoTraderApp(tk.Tk):
         self.demo_entry_after_id = None
         pending = self.simulation.pending
         if not self.demo_automation_enabled or pending is None:
+            return
+        if not actual_order_execution_allowed(self.operation_mode):
+            self._deactivate_demo_automation()
+            self.demo_signal_guard.mark_consumed(pending.direction, pending.x, pending.y)
+            self._cancel_pending_simulation()
+            self.demo_status.set("Clique bloqueado pelo modo de segurança; nenhuma ordem foi enviada.")
+            return
+        if not self._market_context_allows_direction(pending.direction):
+            self.demo_signal_guard.mark_consumed(pending.direction, pending.x, pending.y)
+            self._cancel_pending_simulation()
+            label = "COMPRA" if pending.direction == "BUY" else "VENDER"
+            self.demo_status.set(
+                f"Clique {label} cancelado: o fluxo compatível deixou de estar válido ou recente."
+            )
             return
         clock = self.demo_clock.reading()
         current_candle_id = self.demo_minute_tracker.update(clock)
@@ -1751,12 +1883,35 @@ class AutoTraderApp(tk.Tk):
         else:
             self.ocr_status.set("OCR desligado; nenhuma operação é executada.")
         self.last_candidates = []
+        self.candidate_lifecycle_by_id.clear()
+        self.candidate_fingerprint_by_id.clear()
+        self.candidate_related_by_id.clear()
+        self.candidate_duplicate_count_by_id.clear()
+        self._begin_signal_tracking_session()
+        self.latest_candidates_at = None
         self.last_ocr_at = 0.0
         self.latest_platform_clock = None
         self.latest_clock_at = None
         self.latest_clock_ocr_text = ""
         self.latest_bar_count = 0
-        self.market_context_status.set("Contexto visual: analisando as velas recentes…")
+        self.latest_candle_bars = []
+        self.frame_freshness_monitor.reset()
+        self.latest_frame_freshness = None
+        self.latest_capture_block_reason = ""
+        self.last_ocr_change_sequence = None
+        self.last_context_change_sequence = None
+        self.latest_frame_quality = None
+        self.latest_capture_quality_at = None
+        self.latest_capture_quality_valid = False
+        self.latest_candidates_at = None
+        self.last_context_at = 0.0
+        self.signal_label_counts = {"BUY": 0, "SELL": 0}
+        self.signal_label_context_at = None
+        self.market_context_regime = "unknown"
+        self.market_context_direction = None
+        self.market_context_at = None
+        self.market_context_display_text = "Contexto visual: analisando as velas recentes…"
+        self._refresh_market_context_status()
         self._update_timer_status()
         self.running = True
         if self.keep_awake_var.get():
@@ -1815,28 +1970,106 @@ class AutoTraderApp(tk.Tk):
     def _capture_tick(self) -> None:
         if not self.running or self.region is None:
             return
+        now = time.monotonic()
+        if now - self.last_layout_check_at >= 2.0:
+            try:
+                current_monitors = ScreenCapture.list_monitors()
+                normalized_layout = sorted(
+                    ({key: int(monitor[key]) for key in ("left", "top", "width", "height")}
+                     for monitor in current_monitors),
+                    key=lambda item: (item["left"], item["top"], item["width"], item["height"]),
+                )
+                if normalized_layout != self.active_screen_layout:
+                    self.monitors = current_monitors
+                    self._stop_capture(
+                        "Captura parada: resolução ou disposição de monitores mudou; "
+                        "selecione a região e estabeleça nova linha de base."
+                    )
+                    return
+                self.last_layout_check_at = now
+            except Exception as exc:
+                self._stop_capture(f"Captura parada: não foi possível validar o layout de monitores: {exc}")
+                return
         try:
             image = ScreenCapture.capture(self.region)
+            if image.size != (self.region.width, self.region.height):
+                self._stop_capture(
+                    "Captura parada: dimensões reais do quadro diferem da região calibrada."
+                )
+                return
             self._mask_excluded_regions(image)
             captured_at = time.monotonic()
             self.last_pil_image = image
-            digest = hashlib.blake2b(image.tobytes(), digest_size=8).hexdigest()
+            self.latest_frame_quality = assess_frame(image)
+            self.latest_capture_quality_at = captured_at
+            self.latest_frame_freshness = self.frame_freshness_monitor.observe(
+                image, observed_at=captured_at
+            )
+            freshness = self.latest_frame_freshness
+            digest = freshness.frame_id
             now = time.monotonic()
-            if digest != self.last_frame_hash:
+            if freshness.independent:
                 self.last_frame_hash = digest
                 self.last_change_at = now
-                self.heartbeat_status.set("Imagem atualizando")
-            else:
-                unchanged = int(now - self.last_change_at)
+                self.heartbeat_status.set("Mudança visual relevante; quadro novo disponível para análise")
+            elif digest != self.last_frame_hash:
+                self.last_frame_hash = digest
                 self.heartbeat_status.set(
-                    f"Sem mudança visual há {unchanged}s (heurística; não confirma congelamento)"
-                    if unchanged >= 5 else "Captura ativa; quadro sem mudança momentânea"
+                    "Variação visual abaixo do limite; não conta como nova leitura OCR"
                 )
-            analysis_interval = (
-                OCR_INTERVAL_SECONDS if self.detector is not None else CONTEXT_INTERVAL_SECONDS
+            else:
+                unchanged = int(freshness.unchanged_seconds)
+                self.heartbeat_status.set(
+                    f"Quadro repetido: sem mudança visual há {unchanged}s; novos sinais bloqueados"
+                    if freshness.frozen else "Quadro repetido; não conta como nova leitura OCR"
+                )
+            self.latest_capture_quality_valid = (
+                self.latest_frame_quality.usable and not freshness.frozen
             )
-            if self._ocr_future is None and now - self.last_ocr_at >= analysis_interval:
-                self._submit_ocr_frame(image, captured_at)
+            self.latest_capture_block_reason = (
+                "; ".join(self.latest_frame_quality.reasons)
+                if not self.latest_frame_quality.usable
+                else f"captura sem mudança relevante há {freshness.unchanged_seconds:.1f} s"
+                if freshness.frozen else ""
+            )
+            if not self.latest_capture_quality_valid:
+                reasons = self.latest_capture_block_reason or "qualidade da captura insuficiente"
+                self.last_candidates = []
+                self.candidate_lifecycle_by_id.clear()
+                self.candidate_fingerprint_by_id.clear()
+                self.candidate_related_by_id.clear()
+                self.candidate_duplicate_count_by_id.clear()
+                self.latest_candidates_at = None
+                self.signal_label_counts = {"BUY": 0, "SELL": 0}
+                self.signal_label_context_at = None
+                self.market_context_regime = "unknown"
+                self.market_context_direction = None
+                self.market_context_at = None
+                self.latest_candle_bars = []
+                self._update_candidate_table([])
+                self._cancel_auto_pending_for_context()
+                self.market_context_display_text = f"Captura não analisada: {reasons}"
+                self._refresh_market_context_status()
+                self.ocr_status.set(f"OCR bloqueado por qualidade da captura: {reasons}")
+            else:
+                freshness = self.latest_frame_freshness
+                if (
+                    freshness is not None
+                    and freshness.independent
+                    and freshness.change_sequence != self.last_context_change_sequence
+                    and self._context_future is None
+                    and now - self.last_context_at >= CONTEXT_INTERVAL_SECONDS
+                ):
+                    self._submit_context_frame(image, captured_at)
+                if (
+                    self.detector is not None
+                    and freshness is not None
+                    and not freshness.frozen
+                    and freshness.change_sequence != self.last_ocr_change_sequence
+                    and self._ocr_future is None
+                    and now - self.last_ocr_at >= OCR_INTERVAL_SECONDS
+                ):
+                    self._submit_ocr_frame(image, captured_at)
             self._update_timer_status(now)
             self._update_sequence_recording(image, now)
             self._show_preview(image)
@@ -1851,16 +2084,93 @@ class AutoTraderApp(tk.Tk):
 
     def _submit_ocr_frame(self, image: Image.Image, captured_at: float) -> None:
         detector = self.detector
-        if self._ocr_future is not None:
+        if detector is None or self._ocr_future is not None:
             return
         self.last_ocr_at = captured_at
         self._ocr_frame_captured_at = captured_at
+        self._ocr_frame_captured_utc = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+        self._ocr_frame_id = (
+            self.latest_frame_freshness.frame_id
+            if self.latest_frame_freshness is not None else None
+        )
+        self._ocr_frame_quality = (
+            asdict(self.latest_frame_quality) if self.latest_frame_quality is not None else None
+        )
+        if self.latest_frame_freshness is not None:
+            if self._ocr_frame_quality is None:
+                self._ocr_frame_quality = {}
+            self._ocr_frame_quality["freshness"] = asdict(self.latest_frame_freshness)
+            self.last_ocr_change_sequence = self.latest_frame_freshness.change_sequence
         self._ocr_future_generation = self._capture_generation
-        self._ocr_future_has_ocr = detector is not None
         self._ocr_future = self._ocr_executor.submit(
             _analyze_ocr_frame, detector, image.copy()
         )
         self.after(50, self._poll_ocr_result)
+
+    def _submit_context_frame(self, image: Image.Image, captured_at: float) -> None:
+        if self._context_future is not None:
+            return
+        self.last_context_at = captured_at
+        self._context_frame_captured_at = captured_at
+        if self.latest_frame_freshness is not None:
+            self.last_context_change_sequence = self.latest_frame_freshness.change_sequence
+        self._context_future_generation = self._capture_generation
+        self._context_future = self._context_executor.submit(
+            _analyze_market_context_frame, image.copy()
+        )
+        self.after(50, self._poll_context_result)
+
+    def _poll_context_result(self) -> None:
+        if self._closing:
+            return
+        future = self._context_future
+        if future is None:
+            return
+        if not future.done():
+            self.after(50, self._poll_context_result)
+            return
+
+        captured_at = self._context_frame_captured_at
+        generation = self._context_future_generation
+        self._context_future = None
+        self._context_frame_captured_at = None
+        if future.cancelled():
+            return
+        if not self.running or generation != self._capture_generation or captured_at is None:
+            return
+        frame_age = time.monotonic() - captured_at
+        if frame_age > TIMER_MAX_AGE_SECONDS or not self._capture_quality_is_fresh():
+            self.last_context_change_sequence = None
+            self.latest_candle_bars = []
+            self.market_context_regime = "unknown"
+            self.market_context_direction = None
+            self.market_context_at = None
+            self._cancel_auto_pending_for_context()
+            self.market_context_display_text = (
+                f"Contexto visual: análise atrasada ({frame_age:.1f} s); aguardando quadro recente."
+            )
+            self._refresh_market_context_status()
+            return
+        try:
+            bars, market_context = future.result()
+        except Exception as exc:
+            self.latest_candle_bars = []
+            self.market_context_regime = "unknown"
+            self.market_context_direction = None
+            self.market_context_at = None
+            self._cancel_auto_pending_for_context()
+            self.market_context_display_text = f"Contexto visual indisponível: {exc}"
+            self._refresh_market_context_status()
+            return
+
+        self.latest_candle_bars = bars
+        self.latest_bar_count = len(bars)
+        self.market_context_regime = market_context.regime
+        self.market_context_direction = market_context.direction
+        self.market_context_at = captured_at
+        self.market_context_display_text = market_context.display_text
+        self._refresh_market_context_status()
+        self._cancel_auto_pending_for_context()
 
     def _poll_ocr_result(self) -> None:
         if self._closing:
@@ -1873,41 +2183,54 @@ class AutoTraderApp(tk.Tk):
             return
 
         captured_at = self._ocr_frame_captured_at
+        captured_utc = self._ocr_frame_captured_utc
+        frame_id = self._ocr_frame_id
+        frame_quality = self._ocr_frame_quality
         generation = self._ocr_future_generation
-        requested_ocr = self._ocr_future_has_ocr
         self._ocr_future = None
         self._ocr_frame_captured_at = None
+        self._ocr_frame_captured_utc = None
+        self._ocr_frame_id = None
+        self._ocr_frame_quality = None
         if future.cancelled():
             return
         try:
             result = future.result()
         except Exception as exc:
             if self.running and generation == self._capture_generation:
-                if requested_ocr:
-                    self._handle_ocr_failure(exc)
-                else:
-                    self.market_context_status.set(f"Contexto visual indisponível: {exc}")
+                self._handle_ocr_failure(exc)
             return
         if not self.running or generation != self._capture_generation or captured_at is None:
             return
 
         now = time.monotonic()
         frame_age = now - captured_at
-        if frame_age > TIMER_MAX_AGE_SECONDS:
+        if frame_age > TIMER_MAX_AGE_SECONDS or not self._capture_quality_is_fresh():
+            self.last_ocr_change_sequence = None
             self.latest_platform_clock = None
             self.latest_clock_at = None
-            self.latest_clock_ocr_text = result[5]
             self.last_candidates = []
-            self.latest_bar_count = result[4]
+            self.candidate_lifecycle_by_id.clear()
+            self.candidate_fingerprint_by_id.clear()
+            self.candidate_related_by_id.clear()
+            self.candidate_duplicate_count_by_id.clear()
+            self.latest_candidates_at = None
+            self.signal_label_counts = {"BUY": 0, "SELL": 0}
+            self.signal_label_context_at = None
+            self._refresh_market_context_status()
             self.demo_signal_guard.observe([])
             self._update_candidate_table([])
-            self.market_context_status.set(
-                f"Contexto visual: análise atrasada ({frame_age:.1f} s); aguardando quadro recente."
-            )
-            if requested_ocr:
-                self.ocr_status.set(
-                    f"OCR atrasado ({frame_age:.1f} s); quadro descartado para evitar sinais defasados."
+            pending = self.simulation.pending
+            if self.demo_automation_enabled and pending is not None:
+                self.demo_signal_guard.mark_consumed(pending.direction, pending.x, pending.y)
+                self._cancel_pending_simulation()
+                self.demo_status.set(
+                    "Sinal automático cancelado: a leitura OCR ficou desatualizada; nenhum clique foi enviado."
                 )
+            self.ocr_status.set(
+                f"OCR atrasado ({frame_age:.1f} s); quadro descartado para evitar sinais defasados."
+            )
+            self._cancel_auto_pending_for_context()
             self._update_timer_status(now)
             return
 
@@ -1918,19 +2241,53 @@ class AutoTraderApp(tk.Tk):
             color_rejected_count,
             self.latest_bar_count,
             self.latest_clock_ocr_text,
-            market_context,
-            has_ocr,
+            self.signal_label_counts,
+            raw_candidates,
         ) = result
-        self.market_context_status.set(market_context)
-        if not has_ocr:
+        self.latest_candidates_at = captured_at
+        # Passa todas as caixas OCR ao reconciliador central; a deduplicação e a
+        # contagem de caixas concorrentes são responsabilidade de uma única camada.
+        if not captured_utc or not frame_id:
+            self.signal_tracking_persistence_healthy = False
             self.last_candidates = []
-            self.latest_platform_clock = None
-            self.latest_clock_at = None
-            self.demo_signal_guard.observe([])
+            self.candidate_lifecycle_by_id.clear()
+            self.candidate_fingerprint_by_id.clear()
+            self.candidate_related_by_id.clear()
+            self.candidate_duplicate_count_by_id.clear()
+            self.latest_candidates_at = None
             self._update_candidate_table([])
-            self._update_timer_status(now)
+            self.research_status.set(
+                "Leitura descartada: timestamp UTC ou identidade do quadro ausente; simulação bloqueada."
+            )
             return
+        observed_at_utc = captured_utc
+        tracked_signals = self.signal_lifecycle.observe(
+            list(raw_candidates),
+            observed_at=captured_at,
+            frame_id=frame_id,
+            observed_at_utc=observed_at_utc,
+        )
+        self.candidate_lifecycle_by_id = {
+            self._candidate_row_id(item.candidate): item.lifecycle
+            for item in tracked_signals
+        }
+        self.candidate_fingerprint_by_id = {
+            self._candidate_row_id(item.candidate): item.tracking_id
+            for item in tracked_signals
+        }
+        self.candidate_related_by_id = {
+            self._candidate_row_id(item.candidate): item.related_tracking_id
+            for item in tracked_signals
+        }
+        self.candidate_duplicate_count_by_id = {
+            self._candidate_row_id(item.candidate): item.duplicate_count
+            for item in tracked_signals
+        }
+        tracked_candidates = [item.candidate for item in tracked_signals]
+        self.signal_label_context_at = captured_at
         self.latest_clock_at = captured_at if self.latest_platform_clock is not None else None
+        self._refresh_market_context_status()
+        self._cancel_auto_pending_for_context()
         self._observe_pending_platform_minute()
         self.demo_signal_guard.observe(self.last_candidates)
         self._update_ocr_status(
@@ -1939,8 +2296,237 @@ class AutoTraderApp(tk.Tk):
             self.latest_bar_count,
             color_rejected_count,
         )
+        self._record_ocr_opportunities(
+            tracked_candidates,
+            self.last_candidates,
+            captured_at=captured_at,
+            captured_utc=captured_utc,
+            frame_quality=frame_quality,
+            processing_age=frame_age,
+        )
         self._maybe_auto_arm_demo_signal()
         self._update_timer_status(now)
+
+    def _record_ocr_opportunities(
+        self,
+        raw_candidates: list[SignalCandidate],
+        recent_candidates: list[SignalCandidate],
+        *,
+        captured_at: float,
+        captured_utc: str | None,
+        frame_quality: dict[str, object] | None,
+        processing_age: float,
+    ) -> None:
+        accepted = {
+            (item.direction, item.left, item.top, item.observed_text)
+            for item in recent_candidates
+        }
+        context_age = (
+            captured_at - self.market_context_at
+            if self.market_context_at is not None else None
+        )
+        synchronized_context = (
+            context_age is not None and 0 <= context_age <= TIMER_MAX_AGE_SECONDS
+        )
+        freshness = frame_quality.get("freshness") if isinstance(frame_quality, dict) else None
+        frame_id = freshness.get("frame_id") if isinstance(freshness, dict) else None
+        market_features: dict[str, object] = {
+            "visual_regime": self.market_context_regime if synchronized_context else None,
+            "visual_direction": self.market_context_direction if synchronized_context else None,
+            "visual_context_age_seconds": context_age,
+            "signal_label_counts": dict(self.signal_label_counts),
+            "detected_candles": self.latest_bar_count,
+            "ocr_processing_age_seconds": processing_age,
+            "platform_clock_text": self.latest_platform_clock.text if self.latest_platform_clock else None,
+            "platform_clock_confidence": self.latest_platform_clock.confidence if self.latest_platform_clock else None,
+            "platform_clock_source": "OCR_SCREEN_LABEL" if self.latest_platform_clock else None,
+            "platform_clock_capture_at_utc": (
+                captured_utc if self.latest_platform_clock is not None else None
+            ),
+            "capture_profile_id": self.active_signal_profile_id,
+            "frame_id": frame_id,
+            "detector_version": "ocr-labels-v1",
+        }
+        observed_at = captured_utc or datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+        tracks_by_id = {
+            str(track["tracking_id"]): track
+            for track in self.signal_lifecycle.export_state()
+        }
+        for candidate in raw_candidates:
+            is_recent = (
+                candidate.direction,
+                candidate.left,
+                candidate.top,
+                candidate.observed_text,
+            ) in accepted
+            candidate_id = self._candidate_row_id(candidate)
+            tracking_id = self.candidate_fingerprint_by_id.get(candidate_id)
+            lifecycle = self.candidate_lifecycle_by_id.get(candidate_id)
+            track = tracks_by_id.get(tracking_id or "")
+            fingerprint = tracking_id or hashlib.sha256(
+                f"indeterminate:{self.active_signal_profile_id}:{self.timeframe_var.get()}:"
+                f"{observed_at}:{candidate.direction}:{candidate.left}:{candidate.top}:"
+                f"{candidate.observed_text}".encode("utf-8")
+            ).hexdigest()
+            features = dict(market_features)
+            features.update({
+                "recent_candle_association": is_recent,
+                "signal_lifecycle": lifecycle.value if lifecycle is not None else "INDETERMINATE",
+                "tracking_id": tracking_id,
+                "related_tracking_id": self.candidate_related_by_id.get(candidate_id),
+                "first_seen_at_utc": track.get("first_seen_at_utc") if track else observed_at,
+                "consecutive_observations": track.get("consecutive_observations") if track else 0,
+                "missing_observations": track.get("missing_observations") if track else 0,
+                "duplicate_count": self.candidate_duplicate_count_by_id.get(candidate_id, 0),
+                "candidate_box": {
+                    "left": candidate.left, "top": candidate.top,
+                    "width": candidate.width, "height": candidate.height,
+                },
+                "asset": None,
+            })
+            try:
+                opportunity_id, is_new = self.opportunity_store.record_signal(
+                    fingerprint=fingerprint,
+                    opportunity_id=tracking_id,
+                    mode=self.operation_mode.value,
+                    direction=candidate.direction,
+                    ocr_text=candidate.observed_text,
+                    ocr_confidence=candidate.confidence,
+                    signal_at_utc=observed_at,
+                    timeframe=self.timeframe_var.get(),
+                    frame_quality=frame_quality,
+                    market_features=features,
+                )
+                if is_new:
+                    rejection_reasons: list[str] = []
+                    if not is_recent:
+                        rejection_reasons.append("SINAL_NAO_ASSOCIADO_A_UMA_DAS_DUAS_VELAS_RECENTES")
+                    if lifecycle is SignalLifecycle.PREEXISTING:
+                        rejection_reasons.append("ROTULO_JA_PRESENTE_NA_LINHA_DE_BASE")
+                    elif lifecycle in {
+                        SignalLifecycle.INDETERMINATE,
+                        SignalLifecycle.REPINTED,
+                        SignalLifecycle.ALTERED,
+                        SignalLifecycle.DIRECTION_CHANGED,
+                        SignalLifecycle.EXPIRED,
+                        SignalLifecycle.DUPLICATE,
+                    } or lifecycle is None:
+                        rejection_reasons.append("IDENTIDADE_OU_ESTADO_DO_SINAL_INDETERMINADO")
+                    if self.candidate_duplicate_count_by_id.get(candidate_id, 0):
+                        rejection_reasons.append("MULTIPLAS_CAIXAS_OCR_COMPATIVEIS_NO_MESMO_QUADRO")
+                    if rejection_reasons:
+                        self.opportunity_store.record_decision(
+                            opportunity_id,
+                            approved=False,
+                            source="PERCEPTION_GATES",
+                            reasons=rejection_reasons,
+                            filters={
+                                "recent_candle_association": is_recent,
+                                "signal_lifecycle": lifecycle.value if lifecycle is not None else "INDETERMINATE",
+                                "frame_id": frame_id,
+                            },
+                            market_features=features,
+                        )
+            except Exception as exc:
+                self.signal_tracking_persistence_healthy = False
+                self.research_status.set(
+                    f"Falha no journal de oportunidades; simulação bloqueada: {exc}"
+                )
+                return
+
+        if self.active_signal_profile_id is None:
+            self.signal_tracking_persistence_healthy = False
+            self.research_status.set(
+                "Perfil de captura ausente; identidade persistente e simulação bloqueadas."
+            )
+            return
+        try:
+            self.opportunity_store.save_signal_tracks(
+                profile_id=self.active_signal_profile_id,
+                timeframe=self.timeframe_var.get(),
+                tracks=self.signal_lifecycle.export_state(),
+            )
+        except Exception as exc:
+            self.signal_tracking_persistence_healthy = False
+            self.research_status.set(
+                f"Falha ao persistir o ciclo de vida; simulação bloqueada: {exc}"
+            )
+            return
+
+        # A confirmação OCR por si só não é elegibilidade. A promoção abaixo é
+        # apenas para hipótese manual de SIMULAÇÃO e exige associação geométrica
+        # recente, quadro fresco e ausência de duplicatas no mesmo frame.
+        promoted = False
+        for candidate in recent_candidates:
+            candidate_id = self._candidate_row_id(candidate)
+            tracking_id = self.candidate_fingerprint_by_id.get(candidate_id)
+            if (
+                self.operation_mode is OperationMode.SIMULATION
+                and tracking_id is not None
+                and self.candidate_lifecycle_by_id.get(candidate_id) is SignalLifecycle.CONFIRMED
+                and self.candidate_duplicate_count_by_id.get(candidate_id, 0) == 0
+                and self._capture_quality_is_fresh()
+                and self.signal_lifecycle.mark_eligible(tracking_id)
+            ):
+                promoted = True
+                self.candidate_lifecycle_by_id[candidate_id] = SignalLifecycle.ELIGIBLE
+                if self.operation_mode is OperationMode.SIMULATION:
+                    try:
+                        opportunity_id, _ = self.opportunity_store.record_signal(
+                            fingerprint=tracking_id,
+                            opportunity_id=tracking_id,
+                            mode=self.operation_mode.value,
+                            direction=candidate.direction,
+                            ocr_text=candidate.observed_text,
+                            ocr_confidence=candidate.confidence,
+                            signal_at_utc=observed_at,
+                            timeframe=self.timeframe_var.get(),
+                            frame_quality=frame_quality,
+                            market_features={
+                                "tracking_id": tracking_id,
+                                "signal_lifecycle": SignalLifecycle.ELIGIBLE.value,
+                                "recent_candle_association": True,
+                                "frame_id": frame_id,
+                                "asset": None,
+                            },
+                        )
+                        self.opportunity_store.record_decision(
+                            opportunity_id,
+                            approved=False,
+                            source="SIMULATION_SAFETY_GATE",
+                            reasons=["SETUP_ESTRATEGICO_E_DADOS_DE_RISCO_NAO_IMPLEMENTADOS"],
+                            filters={
+                                "signal_lifecycle": SignalLifecycle.ELIGIBLE.value,
+                                "recent_candle_association": True,
+                                "frame_id": frame_id,
+                            },
+                        )
+                    except Exception as exc:
+                        self.signal_tracking_persistence_healthy = False
+                        self.research_status.set(
+                            f"Falha ao registrar gate de simulação; armamento bloqueado: {exc}"
+                        )
+                        return
+        if promoted:
+            try:
+                self.opportunity_store.save_signal_tracks(
+                    profile_id=self.active_signal_profile_id,
+                    timeframe=self.timeframe_var.get(),
+                    tracks=self.signal_lifecycle.export_state(),
+                )
+            except Exception as exc:
+                self.signal_tracking_persistence_healthy = False
+                self.research_status.set(
+                    f"Falha ao persistir elegibilidade; simulação bloqueada: {exc}"
+                )
+                return
+            self._update_candidate_table(self.last_candidates)
+        if raw_candidates:
+            self.research_status.set(
+                f"Journal: {len(raw_candidates)} rótulo(s) reconciliado(s); "
+                f"{len(recent_candidates)} associado(s) às velas mais recentes. "
+                "Ativo e dados financeiros não disponíveis; elegibilidade estratégica não implementada."
+            )
 
     def _handle_ocr_failure(self, exc: Exception) -> None:
         if self.demo_automation_enabled:
@@ -1950,6 +2536,14 @@ class AutoTraderApp(tk.Tk):
         self.latest_clock_at = None
         self.latest_clock_ocr_text = ""
         self.last_candidates = []
+        self.candidate_lifecycle_by_id.clear()
+        self.candidate_fingerprint_by_id.clear()
+        self.candidate_related_by_id.clear()
+        self.candidate_duplicate_count_by_id.clear()
+        self.latest_candidates_at = None
+        self.signal_label_counts = {"BUY": 0, "SELL": 0}
+        self.signal_label_context_at = None
+        self._refresh_market_context_status()
         self.demo_signal_guard.observe([])
         self._update_candidate_table([])
         self.ocr_status.set(f"OCR interrompido por erro: {exc}")
@@ -2097,7 +2691,13 @@ class AutoTraderApp(tk.Tk):
     def _candidate_row_id(candidate: SignalCandidate) -> str:
         center_x = candidate.left + candidate.width // 2
         center_y = candidate.top + candidate.height // 2
-        return f"{candidate.direction}-{center_x // 12}-{center_y // 12}"
+        text_key = hashlib.sha256(
+            "".join(char for char in candidate.observed_text.upper() if char.isalnum())
+            .encode("utf-8")
+        ).hexdigest()[:10]
+        # Fine-grained bins avoid merging distinct same-direction labels; the
+        # lifecycle reconciler separately tolerates coordinate jitter.
+        return f"{candidate.direction}-{text_key}-{center_x // 6}-{center_y // 6}"
 
     def _update_candidate_table(self, candidates: list[SignalCandidate]) -> None:
         main_selection = self.candidate_table.selection()
@@ -2116,7 +2716,25 @@ class AutoTraderApp(tk.Tk):
                 self.candidates_by_id[item_id] = candidate
         for item_id, candidate in self.candidates_by_id.items():
             label = "COMPRA" if candidate.direction == "BUY" else "VENDER"
-            values = (f"{label} ({candidate.observed_text})", f"{candidate.confidence:.0f}%",
+            lifecycle = self.candidate_lifecycle_by_id.get(item_id)
+            lifecycle_label = {
+                SignalLifecycle.PREEXISTING: "PREEXISTENTE · visível na linha de base",
+                SignalLifecycle.NEWLY_DETECTED: "NOVO NA SESSÃO · 1/3 quadros distintos",
+                SignalLifecycle.PENDING_CONFIRMATION: "EM CONFIRMAÇÃO · 2/3 quadros distintos",
+                SignalLifecycle.CONFIRMED: "CONFIRMADO VISUALMENTE · vela não comprovada",
+                SignalLifecycle.ELIGIBLE: "ELEGÍVEL PARA ANÁLISE · não é autorização de ordem",
+                SignalLifecycle.EXPIRED: "EXPIRADO",
+                SignalLifecycle.CANCELLED: "CANCELADO",
+                SignalLifecycle.DUPLICATE: "DUPLICADO",
+                SignalLifecycle.ALTERED: "ALTERADO · identidade incerta",
+                SignalLifecycle.REPINTED: "REPINTADO · bloqueado",
+                SignalLifecycle.DIRECTION_CHANGED: "DIREÇÃO ALTERADA · bloqueado",
+                SignalLifecycle.INDETERMINATE: "INDETERMINADO · bloqueado",
+            }.get(lifecycle, "IDADE INCERTA")
+            duplicate_count = self.candidate_duplicate_count_by_id.get(item_id, 0)
+            if duplicate_count:
+                lifecycle_label += f" · {duplicate_count} duplicata(s) OCR neste quadro"
+            values = (f"{label} ({candidate.observed_text}) · {lifecycle_label}", f"{candidate.confidence:.0f}%",
                       f"{candidate.left}, {candidate.top}")
             self.candidate_table.insert("", "end", iid=item_id, values=values)
             self.compact_candidate_table.insert("", "end", iid=item_id, values=values)
@@ -2288,12 +2906,43 @@ class AutoTraderApp(tk.Tk):
         self._arm_candidate_id(selection[0])
 
     def _arm_candidate_id(self, item_id: str) -> None:
+        if self.operation_mode is not OperationMode.SIMULATION:
+            self.simulation_status.set(
+                "Modo OBSERVAÇÃO: nenhum sinal será armado. Selecione SIMULATION para armar uma hipótese manual."
+            )
+            return
+        if not self.signal_tracking_persistence_healthy:
+            self.simulation_status.set(
+                "Simulação bloqueada: identidade persistente do sinal/journal indisponível."
+            )
+            return
         if self.demo_automation_enabled:
             self.simulation_status.set("Com cliques automáticos ativos, os candidatos são armados automaticamente; use Cancelar para abortar.")
             return
         candidate = self.candidates_by_id.get(item_id)
-        if candidate is None:
-            self.simulation_status.set("O candidato não está mais no quadro atual; aguarde a próxima leitura.")
+        if (
+            candidate is None
+            or self.latest_candidates_at is None
+            or time.monotonic() - self.latest_candidates_at > TIMER_MAX_AGE_SECONDS
+            or not self._capture_quality_is_fresh()
+            or self.latest_frame_freshness is None
+            or self.latest_frame_freshness.frozen
+        ):
+            self.simulation_status.set(
+                "Candidato bloqueado: leitura ausente, desatualizada ou quadro congelado."
+            )
+            return
+        lifecycle = self.candidate_lifecycle_by_id.get(item_id)
+        if lifecycle is not SignalLifecycle.ELIGIBLE:
+            self.simulation_status.set(
+                "Simulação bloqueada: exige confirmação em três quadros independentes, "
+                "associação às velas recentes, qualidade válida e persistência do rastro."
+            )
+            return
+        if self.candidate_duplicate_count_by_id.get(item_id, 0):
+            self.simulation_status.set(
+                "Simulação bloqueada: múltiplas caixas OCR compatíveis no mesmo quadro."
+            )
             return
         if self.timeframe_var.get() == "M1" and (
             self.latest_platform_clock is None
@@ -2359,6 +3008,9 @@ class AutoTraderApp(tk.Tk):
         self.pending_demo_candle_id = None
 
     def _confirm_next_candle(self) -> None:
+        if self.operation_mode is not OperationMode.SIMULATION:
+            self.simulation_status.set("Confirmação bloqueada fora do modo SIMULATION.")
+            return
         elapsed_seconds = None
         if self.timeframe_var.get() == "M1":
             if not self._m1_window_valid():
@@ -2562,6 +3214,21 @@ class AutoTraderApp(tk.Tk):
     def _on_timeframe_change(self, _event: tk.Event | None = None) -> None:
         if self.demo_automation_enabled and self.timeframe_var.get() != "M1":
             self._toggle_demo_automation()
+        if self.running and self.region is not None:
+            if self.simulation.pending is not None:
+                self._cancel_pending_simulation()
+            self.last_candidates = []
+            self.candidate_lifecycle_by_id.clear()
+            self.candidate_fingerprint_by_id.clear()
+            self.candidate_related_by_id.clear()
+            self.candidate_duplicate_count_by_id.clear()
+            self.latest_candidates_at = None
+            self._update_candidate_table([])
+            try:
+                self._begin_signal_tracking_session()
+            except Exception as exc:
+                self.signal_tracking_persistence_healthy = False
+                self.research_status.set(f"Perfil temporal não reconciliado; simulação bloqueada: {exc}")
         self._persist_config()
         self._update_timer_status()
 
@@ -2755,6 +3422,7 @@ class AutoTraderApp(tk.Tk):
 
     def _persist_config(self) -> None:
         payload: dict[str, object] = {
+            "operation_mode": self.operation_mode.value,
             "timeframe": self.timeframe_var.get(),
             "confidence": self.confidence_var.get(),
             "ocr_enabled": self.ocr_enabled_var.get(),
@@ -2812,6 +3480,22 @@ class AutoTraderApp(tk.Tk):
             config = load_settings(self.config_path)
             if "region" in config:
                 self._set_region(ScreenRegion.from_dict(config["region"]))
+            saved_mode = config.get("operation_mode")
+            try:
+                requested_mode = OperationMode(saved_mode)
+            except (TypeError, ValueError):
+                requested_mode = OperationMode.OBSERVATION
+            self.operation_mode = (
+                requested_mode
+                if mode_decision(requested_mode)
+                in {ModeDecision.OBSERVE_ONLY, ModeDecision.SIMULATION_ONLY}
+                else OperationMode.OBSERVATION
+            )
+            self.operation_mode_var.set(self.operation_mode.value)
+            if self.operation_mode is OperationMode.SIMULATION:
+                self.operation_mode_status.set(
+                    "SIMULAÇÃO: entradas são hipotéticas; resultados financeiros não são inferidos."
+                )
             index = config.get("monitor_index")
             if isinstance(index, int) and 0 <= index < len(self.monitors):
                 self.monitor_combo.current(index)
@@ -2874,6 +3558,7 @@ class AutoTraderApp(tk.Tk):
         self._closing = True
         self._capture_generation += 1
         self._ocr_executor.shutdown(wait=False, cancel_futures=True)
+        self._context_executor.shutdown(wait=False, cancel_futures=True)
         self.destroy()
 
 

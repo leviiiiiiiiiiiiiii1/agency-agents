@@ -21,10 +21,42 @@ class SignalCandidate:
     width: int
     height: int
     observed_text: str
+    color_required: bool = False
 
 
-def parse_ocr_rows(data: dict[str, Any], min_confidence: float = 70.0) -> list[SignalCandidate]:
-    """Filtra BUY/SELL exatos, conservando caixas e a confiança dada pelo Tesseract."""
+def _one_edit_apart(first: str, second: str) -> bool:
+    """True for exactly one insertion, deletion, or substitution."""
+    if first == second:
+        return False
+    if abs(len(first) - len(second)) > 1:
+        return False
+    left = right = differences = 0
+    while left < len(first) and right < len(second):
+        if first[left] == second[right]:
+            left += 1
+            right += 1
+            continue
+        differences += 1
+        if differences > 1:
+            return False
+        if len(first) > len(second):
+            left += 1
+        elif len(second) > len(first):
+            right += 1
+        else:
+            left += 1
+            right += 1
+    differences += (len(first) - left) + (len(second) - right)
+    return differences == 1
+
+
+def parse_ocr_rows(
+    data: dict[str, Any],
+    min_confidence: float = 70.0,
+    *,
+    require_color_below: float | None = None,
+) -> list[SignalCandidate]:
+    """Recognize exact labels and one-character OCR variants for color confirmation."""
     if not 0 <= min_confidence <= 100:
         raise ValueError("A confiança mínima deve estar entre 0 e 100.")
 
@@ -42,8 +74,17 @@ def parse_ocr_rows(data: dict[str, Any], min_confidence: float = 70.0) -> list[S
         observed = str(data["text"][index]).strip()
         normalized = re.sub(r"[^A-Z]", "", observed.upper())
         direction = aliases.get(normalized)
+        fuzzy = False
         if direction is None:
-            continue
+            possible_directions = {
+                label_direction
+                for label, label_direction in aliases.items()
+                if _one_edit_apart(normalized, label)
+            }
+            if len(possible_directions) != 1:
+                continue
+            direction = next(iter(possible_directions))
+            fuzzy = True
         try:
             confidence = float(data["conf"][index])
             left = int(data["left"][index])
@@ -54,7 +95,12 @@ def parse_ocr_rows(data: dict[str, Any], min_confidence: float = 70.0) -> list[S
             continue
         if confidence < min_confidence or width <= 0 or height <= 0:
             continue
-        candidates.append(SignalCandidate(direction, confidence, left, top, width, height, observed))
+        color_required = fuzzy or (
+            require_color_below is not None and confidence < require_color_below
+        )
+        candidates.append(
+            SignalCandidate(direction, confidence, left, top, width, height, observed, color_required)
+        )
     return candidates
 
 
@@ -158,23 +204,39 @@ class TesseractSignalDetector:
         if self.executable:
             pytesseract.pytesseract.tesseract_cmd = self.executable
         self.last_clock_ocr_text = ""
-        scale = 2
+        pixel_count = image.width * image.height
+        # Enlarging large captures quadruples Tesseract's input work without helping
+        # labels that are already legible at native resolution. Small crops retain 2×.
+        scale = 1 if pixel_count >= 1_000_000 else 2
         prepared = ImageOps.autocontrast(image.convert("L"))
         prepared = prepared.resize((image.width * scale, image.height * scale), Image.Resampling.LANCZOS)
         whitelist = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789:"
         config = f"--oem 3 --psm 11 -c tessedit_char_whitelist={whitelist}"
         data = pytesseract.image_to_data(prepared, config=config, output_type=pytesseract.Output.DICT)
-        candidates = parse_ocr_rows(data, self.min_confidence)
+        color_backed_minimum = max(40.0, self.min_confidence - 20.0)
+        candidates = parse_ocr_rows(
+            data,
+            color_backed_minimum,
+            require_color_below=self.min_confidence,
+        )
         candidates = [
-            SignalCandidate(c.direction, c.confidence, c.left // scale, c.top // scale,
-                            max(1, c.width // scale), max(1, c.height // scale), c.observed_text)
+            SignalCandidate(
+                c.direction,
+                c.confidence,
+                c.left // scale,
+                c.top // scale,
+                max(1, c.width // scale),
+                max(1, c.height // scale),
+                c.observed_text,
+                c.color_required,
+            )
             for c in candidates
         ]
         used_color_fallback = False
         if not candidates:
             color_mask = _colored_signal_mask(image)
             if color_mask.getbbox() is not None:
-                color_scale = 4
+                color_scale = 2 if pixel_count >= 500_000 else 4
                 enlarged_mask = color_mask.resize(
                     (image.width * color_scale, image.height * color_scale),
                     Image.Resampling.NEAREST,
@@ -189,7 +251,11 @@ class TesseractSignalDetector:
                         config=color_config,
                         output_type=pytesseract.Output.DICT,
                     )
-                    color_candidates = parse_ocr_rows(color_data, self.min_confidence)
+                    color_candidates = parse_ocr_rows(
+                        color_data,
+                        color_backed_minimum,
+                        require_color_below=self.min_confidence,
+                    )
                     if color_candidates:
                         candidates = [
                             SignalCandidate(
@@ -200,6 +266,7 @@ class TesseractSignalDetector:
                                 max(1, c.width // color_scale),
                                 max(1, c.height // color_scale),
                                 c.observed_text,
+                                c.color_required,
                             )
                             for c in color_candidates
                         ]
@@ -212,7 +279,7 @@ class TesseractSignalDetector:
             color_direction = _signal_color_direction(image, candidate)
             if (
                 (color_direction is not None and color_direction != candidate.direction)
-                or (used_color_fallback and color_direction is None)
+                or ((used_color_fallback or candidate.color_required) and color_direction is None)
             ):
                 self.last_color_rejected_count += 1
             else:

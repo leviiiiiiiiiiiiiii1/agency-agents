@@ -91,7 +91,8 @@ def detect_candle_bars(image, downscale: int = 2) -> list[CandleBar]:
     bars: list[CandleBar] = []
     for left, right, color in runs:
         run_width = right - left + 1
-        if run_width < 3:
+        # Keep narrower candle bodies, especially the forming bar at the right edge.
+        if run_width < 2:
             continue
         run_stats = [
             column_stats[x]
@@ -130,6 +131,26 @@ class MarketCandle:
     close_y: int
     upper_wick: int
     lower_wick: int
+
+
+@dataclass(frozen=True, slots=True)
+class MarketContext:
+    regime: str
+    direction: str | None
+    evidence: str
+
+    @property
+    def display_text(self) -> str:
+        if self.regime == "waiting":
+            return f"Contexto visual: aguardando velas suficientes ({self.evidence})."
+        if self.regime == "flow":
+            label = "FLUXO COMPRADOR" if self.direction == "BUY" else "FLUXO VENDEDOR"
+            return f"{label} · {self.evidence}"
+        if self.regime == "wicks":
+            return f"PAVIOS/RETRAÇÕES FREQUENTES · {self.evidence}"
+        if self.regime == "lateral":
+            return f"LATERALIZADO · {self.evidence}"
+        return f"MISTO/INDEFINIDO · {self.evidence}"
 
 
 def _market_candles_from_bars(image, bars: list[CandleBar]) -> list[MarketCandle]:
@@ -207,14 +228,16 @@ def _market_candles_from_bars(image, bars: list[CandleBar]) -> list[MarketCandle
     return observations
 
 
-def classify_market_context(image, bars: list[CandleBar] | None = None, lookback: int = 12) -> str:
+def classify_market_context(
+    image, bars: list[CandleBar] | None = None, lookback: int = 12
+) -> MarketContext:
     """Describe recent chart structure; heuristic/read-only, never a trade signal."""
     if lookback < 6:
         raise ValueError("lookback precisa ser pelo menos 6 velas.")
     bars = detect_candle_bars(image) if bars is None else bars
     candles = _market_candles_from_bars(image, bars)[-lookback:]
     if len(candles) < 6:
-        return f"Contexto visual: aguardando velas suficientes ({len(candles)}/6)."
+        return MarketContext("waiting", None, f"{len(candles)}/6")
 
     ranges = [max(1, candle.low - candle.high) for candle in candles]
     typical_range = max(1.0, median(ranges))
@@ -227,10 +250,36 @@ def classify_market_context(image, bars: list[CandleBar] | None = None, lookback
         elif move < -flat_tolerance:
             downward_steps += 1
     steps = max(1, len(candles) - 1)
+    close_moves = [previous.close_y - current.close_y for previous, current in zip(candles, candles[1:])]
     net_move = candles[0].close_y - candles[-1].close_y
     net_strength = abs(net_move) / typical_range
     direction_count = upward_steps if net_move > 0 else downward_steps
     direction_ratio = direction_count / steps
+    total_path = sum(abs(move) for move in close_moves)
+    directional_efficiency = abs(net_move) / max(1.0, total_path)
+
+    # Confirm trend with the candle ranges too, not just a run of inferred closes.
+    # Compare smoothed first/last thirds to discount individual spikes and pullbacks.
+    group_size = max(2, len(candles) // 3)
+    first_group = candles[:group_size]
+    last_group = candles[-group_size:]
+    first_high = median(candle.high for candle in first_group)
+    last_high = median(candle.high for candle in last_group)
+    first_low = median(candle.low for candle in first_group)
+    last_low = median(candle.low for candle in last_group)
+    structure_tolerance = max(2.0, typical_range * 0.12)
+    if net_move > 0:
+        structure_aligned = (
+            last_high < first_high - structure_tolerance
+            and last_low < first_low - structure_tolerance
+        )
+    elif net_move < 0:
+        structure_aligned = (
+            last_high > first_high + structure_tolerance
+            and last_low > first_low + structure_tolerance
+        )
+    else:
+        structure_aligned = False
 
     long_wicks = 0
     for candle in candles:
@@ -251,21 +300,65 @@ def classify_market_context(image, bars: list[CandleBar] | None = None, lookback
     overlap_ratio = sum(overlaps) / max(1, len(overlaps))
 
     evidence = f"pavios longos em {long_wicks}/{len(candles)} velas"
+    if (
+        structure_aligned
+        and direction_ratio >= 0.55
+        and net_strength >= 0.9
+        and directional_efficiency >= 0.45
+    ):
+        direction = "BUY" if net_move > 0 else "SELL"
+        structure_label = "máximas/mínimas ascendentes" if direction == "BUY" else "máximas/mínimas descendentes"
+        direction_evidence = (
+            f"{direction_count}/{steps} fechamentos alinhados; "
+            f"deslocamento {net_strength:.1f}× a faixa típica; "
+            f"eficiência {directional_efficiency:.0%}; {structure_label}"
+        )
+        return MarketContext("flow", direction, direction_evidence)
     if wick_ratio >= 0.45:
-        return f"PAVIOS/RETRAÇÕES FREQUENTES · {evidence}"
-    if direction_ratio >= 0.65 and net_strength >= 1.15:
-        direction = "COMPRADOR" if net_move > 0 else "VENDEDOR"
-        note = f" · {evidence}" if long_wicks else ""
-        return (
-            f"FLUXO {direction} · {direction_count}/{steps} fechamentos alinhados; "
-            f"deslocamento {net_strength:.1f}× a faixa típica{note}"
-        )
+        return MarketContext("wicks", None, evidence)
     if overlap_ratio >= 0.4 or (net_strength < 1.0 and overlapping_pairs >= steps // 2):
-        return (
-            f"LATERALIZADO · faixas sobrepostas em {overlapping_pairs}/{steps} pares; "
-            f"{evidence}"
+        lateral_evidence = (
+            f"faixas sobrepostas em {overlapping_pairs}/{steps} pares; {evidence}"
         )
-    return f"MISTO/INDEFINIDO · sem direção consistente; {evidence}"
+        return MarketContext("lateral", None, lateral_evidence)
+    return MarketContext("mixed", None, f"sem direção consistente; {evidence}")
+
+
+def count_signal_labels_by_candle(
+    candidates: list[SignalCandidate],
+    bars: list[CandleBar],
+    lookback: int = 12,
+) -> dict[str, int]:
+    """Count distinct recent candles carrying BUY/SELL OCR labels.
+
+    Multiple OCR boxes on one candle count once. This is a separate context signal;
+    the trading candidate filter below still selects only the newest eligible label.
+    """
+    if lookback < 1:
+        raise ValueError("lookback precisa ser pelo menos 1 vela.")
+    counts = {"BUY": 0, "SELL": 0}
+    if len(bars) < 1 or not candidates:
+        return counts
+
+    gaps = [bars[i + 1].center_x - bars[i].center_x for i in range(len(bars) - 1)]
+    normal_gaps = [gap for gap in gaps if gap >= 8]
+    tolerance = max(18.0, (median(normal_gaps) if normal_gaps else 24.0) * 0.65)
+    first_index = max(0, len(bars) - lookback)
+    labeled_bars: dict[str, set[int]] = {"BUY": set(), "SELL": set()}
+
+    for candidate in candidates:
+        text_center = candidate.left + candidate.width / 2
+        candle_index, candle = min(
+            enumerate(bars), key=lambda pair: abs(pair[1].center_x - text_center)
+        )
+        if (
+            candle_index >= first_index
+            and abs(candle.center_x - text_center) <= tolerance
+            and candidate.direction in labeled_bars
+        ):
+            labeled_bars[candidate.direction].add(candle_index)
+
+    return {direction: len(indices) for direction, indices in labeled_bars.items()}
 
 
 def filter_to_recent_candle(
