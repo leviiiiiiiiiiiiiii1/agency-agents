@@ -17,12 +17,14 @@ import json
 import os
 import sqlite3
 import sys
+from statistics import median
 from dataclasses import fields
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from .opportunity_grade import (
     DEFAULT_CRITERIA,
+    GRADE_METHOD,
     GradeCriteria,
     SignalFeatures,
     grade_opportunity,
@@ -90,12 +92,14 @@ def load_frames(db_path: str | Path) -> list[dict[str, Any]]:
                 "schema_version": version,
                 "code": grade.get("code"),
                 "criteria_hash": grade.get("criteria_hash"),
+                "method": grade.get("method"),
                 "features": features if isinstance(features, dict) else None,
                 "reasons": [str(item) for item in (grade.get("reasons") or [])],
                 "context_regime": grade.get("context_regime"),
                 "context_direction": grade.get("context_direction"),
                 "raw_candidate_count": payload.get("raw_candidate_count"),
                 "recent_candidate_count": payload.get("recent_candidate_count"),
+                "label_geometry": (payload.get("association") or {}).get("label_geometry"),
                 "palette_calibrated": bool(
                     (payload.get("association") or {}).get("palette_calibrated")
                 ),
@@ -240,8 +244,42 @@ def summarize(
         code = str(frame.get("code") or "DESCONHECIDO")
         bucket["counts"][code] = bucket["counts"].get(code, 0) + 1
 
+    methods: dict[str, int] = {}
+    current_measured = 0
+    for frame in frames:
+        key = str(frame.get("method") or "sem-metodo")
+        methods[key] = methods.get(key, 0) + 1
+        if key == GRADE_METHOD and frame.get("features"):
+            current_measured += 1
+
+    gaps = [
+        float(frame["label_geometry"]["median_gap_px"])
+        for frame in frames
+        if isinstance(frame.get("label_geometry"), dict)
+        and isinstance(frame["label_geometry"].get("median_gap_px"), (int, float))
+    ]
+    right_counts = [
+        int(frame["label_geometry"]["bars_to_the_right"])
+        for frame in frames
+        if isinstance(frame.get("label_geometry"), dict)
+        and isinstance(frame["label_geometry"].get("bars_to_the_right"), int)
+    ]
+
     return {
         "frames": len(frames),
+        "methods": methods,
+        "current_method_measured": current_measured,
+        "label_median_gap_px": round(median(gaps), 1) if gaps else None,
+        "label_bars_to_the_right": (
+            {
+                "min": min(right_counts),
+                "p50": _percentile([float(value) for value in right_counts], 0.5),
+                "max": max(right_counts),
+                "n": len(right_counts),
+            }
+            if right_counts
+            else None
+        ),
         "by_criteria_hash": sorted(by_hash.values(), key=lambda item: item["hash"]),
         "tracked_positions": tracked,
         "frames_per_track": round(raw_label_frames / tracked, 1) if tracked else None,
@@ -402,6 +440,28 @@ def format_report(summary: Mapping[str, Any], sweeps: Sequence[tuple[str, Sequen
                 f"    {name:<22} n={stats['n']:<5} p10={stats['p10']:<7} "
                 f"p50={stats['p50']:<7} p90={stats['p90']}"
             )
+
+    if summary.get("methods"):
+        lines += ["", "Método de medição (como a geometria foi lida):"]
+        for name, count in sorted(summary["methods"].items(), key=lambda item: (-item[1], item[0])):
+            state = "atual" if name == GRADE_METHOD else "anterior — não comparável"
+            lines.append(f"    {name:<18} {count:>6}  ({state})")
+        if not summary.get("current_method_measured"):
+            lines.append(
+                "    Nenhum quadro medido com o método atual: esta amostra ainda não "
+                "testou a correção do setup."
+            )
+
+    if summary.get("label_median_gap_px"):
+        lines.append(
+            f"    espaçamento mediano entre velas: {summary['label_median_gap_px']} px"
+        )
+    geometry = summary.get("label_bars_to_the_right")
+    if geometry:
+        lines.append(
+            f"    velas à direita do rótulo: min={geometry['min']} "
+            f"p50={geometry['p50']:.0f} máx={geometry['max']} (n={geometry['n']})"
+        )
 
     if summary.get("by_criteria_hash"):
         lines += ["", "Por versão de limiares (a mais recente aparece por último):"]

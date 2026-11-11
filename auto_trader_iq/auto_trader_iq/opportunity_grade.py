@@ -25,6 +25,11 @@ UNMEASURED = ("rsi20", "macd_histograma", "distancia_ema20")
 # formação fica sempre à direita da seta). Versão 2 corrige para 1.
 GRADE_CRITERIA_VERSION = 2
 
+# Marca como a geometria foi medida. ``setup_candle_v1`` mede a vela anterior à
+# seta; registros sem esta marca usaram a própria vela da seta e não são
+# comparáveis com os novos.
+GRADE_METHOD = "setup_candle_v1"
+
 
 @dataclass(frozen=True, slots=True)
 class GradeCriteria:

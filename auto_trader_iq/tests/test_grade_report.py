@@ -20,10 +20,11 @@ from auto_trader_iq.opportunity_grade import DEFAULT_CRITERIA
 
 def frame(code="A", features=True, palette=True, age=0, body=1.0, distance=0.5,
           close=0.6, regime="flow", context="BUY", direction="BUY",
-          reasons=(), raw=1, recent=1):
+          reasons=(), raw=1, recent=1, method="setup_candle_v1", geometry=None):
     payload = {
         "grade": {
             "code": code,
+            "method": method,
             "criteria_hash": "abc",
             "reasons": list(reasons),
             "context_regime": regime,
@@ -44,7 +45,7 @@ def frame(code="A", features=True, palette=True, age=0, body=1.0, distance=0.5,
                 "context_direction": context,
             },
         },
-        "association": {"palette_calibrated": palette},
+        "association": {"palette_calibrated": palette, "label_geometry": geometry},
         "raw_candidate_count": raw,
         "recent_candidate_count": recent,
     }
@@ -55,6 +56,8 @@ def frame(code="A", features=True, palette=True, age=0, body=1.0, distance=0.5,
         "code": code,
         "criteria_hash": "abc",
         "features": payload["grade"]["features"],
+        "method": method,
+        "label_geometry": geometry,
         "reasons": payload["grade"]["reasons"],
         "context_regime": regime,
         "context_direction": context,
@@ -176,6 +179,27 @@ class TrackTests(unittest.TestCase):
         result = summarize([frame()])
         self.assertIsNone(result["frames_per_track"])
         self.assertNotIn("Rastro não é sinal", format_report(result))
+
+
+class MethodAndGeometryTests(unittest.TestCase):
+    def test_legacy_frames_are_marked_not_comparable(self):
+        result = summarize([frame(method=None), frame()])
+        self.assertEqual(result["methods"]["sem-metodo"], 1)
+        self.assertEqual(result["methods"]["setup_candle_v1"], 1)
+        self.assertEqual(result["current_method_measured"], 1)
+        self.assertIn("não comparável", format_report(result))
+
+    def test_absence_of_current_method_frames_is_called_out(self):
+        result = summarize([frame(method=None)])
+        text = format_report(result)
+        self.assertIn("não testou a correção do setup", text)
+
+    def test_label_geometry_is_summarized(self):
+        geometry = {"median_gap_px": 32.0, "bars_to_the_right": 1}
+        result = summarize([frame(geometry=geometry)] * 3)
+        self.assertEqual(result["label_median_gap_px"], 32.0)
+        self.assertEqual(result["label_bars_to_the_right"]["min"], 1)
+        self.assertIn("velas à direita do rótulo", format_report(result))
 
 
 class FreshRunTests(unittest.TestCase):

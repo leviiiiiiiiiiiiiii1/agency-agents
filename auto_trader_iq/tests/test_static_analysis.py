@@ -52,6 +52,11 @@ class GradingWiringTests(unittest.TestCase):
         ):
             self.assertIn(needle, self.source)
 
+    def test_label_geometry_is_journaled(self):
+        self.assertIn('"label_geometry": label_geometry', self.source)
+        self.assertIn("def _label_geometry(", self.source)
+        self.assertIn('"method": GRADE_METHOD', self.source)
+
     def test_label_outside_window_is_distinguished_from_absent_label(self):
         self.assertIn('"LABEL_OUTSIDE_WINDOW"', self.source)
         self.assertIn('"NO_LABEL"', self.source)

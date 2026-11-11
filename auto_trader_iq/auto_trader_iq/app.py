@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 import os
 import sys
 import time
+from statistics import median
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -73,6 +74,7 @@ from .ocr_diagnostics import classify_association_outcome, summarize_ocr_yield
 from .opportunity_grade import (
     DEFAULT_CRITERIA as DEFAULT_GRADE_CRITERIA,
     GRADE_CRITERIA_VERSION,
+    GRADE_METHOD,
     GradeCriteria,
     migrate_criteria,
     build_features,
@@ -115,6 +117,29 @@ CANDLE_PALETTE_MAPS: dict[str, dict[str, str]] = {
 }
 
 
+def _label_geometry(raw_candidates, bars) -> dict[str, object] | None:
+    """Onde o rótulo mais à direita caiu em relação às velas detectadas.
+
+    Idade 1 em 20 de 20 quadros só se explica com esta geometria: sem ela, não há
+    como saber se o rótulo nasce velho, se as velas detectadas incluem barras
+    extras, ou se o espaçamento entre velas está sendo subestimado.
+    """
+    if not raw_candidates or not bars:
+        return None
+    newest = max(raw_candidates, key=lambda item: item.left + item.width / 2)
+    text_center = newest.left + newest.width / 2
+    index = min(range(len(bars)), key=lambda i: abs(bars[i].center_x - text_center))
+    gaps = [bars[i + 1].center_x - bars[i].center_x for i in range(len(bars) - 1)]
+    normal_gaps = [gap for gap in gaps if gap >= 8]
+    return {
+        "bar_count": len(bars),
+        "label_bar_index": index,
+        "bars_to_the_right": len(bars) - 1 - index,
+        "offset_px": round(abs(bars[index].center_x - text_center), 1),
+        "median_gap_px": round(median(normal_gaps), 1) if normal_gaps else None,
+    }
+
+
 def _analyze_ocr_frame(
     detector: TesseractSignalDetector,
     image: Image.Image,
@@ -131,6 +156,7 @@ def _analyze_ocr_frame(
     candle_seconds = round(time.monotonic() - candle_started_at, 3)
     raw_candidates, clock = detector.detect_frame(image, read_clock=read_clock)
     candidates = filter_to_recent_candle(raw_candidates, bars)
+    label_geometry = _label_geometry(raw_candidates, bars)
     label_ages = [label_age_bars(candidate, bars) for candidate in candidates]
     # Geometria de corpo/pavio só é extraída quando existe candidato e a paleta está
     # calibrada: sem semântica de cor não há direção, e a extração custa caro.
@@ -157,6 +183,7 @@ def _analyze_ocr_frame(
         timings,
         label_ages,
         market_candles,
+        label_geometry,
     )
 
 
@@ -2682,6 +2709,7 @@ class AutoTraderApp(tk.Tk):
             ocr_timings,
             candidate_label_ages,
             candidate_market_candles,
+            label_geometry,
         ) = result
         self.latest_candidates_at = captured_at
         # Passa todas as caixas OCR ao reconciliador central; a deduplicação e a
@@ -2774,6 +2802,7 @@ class AutoTraderApp(tk.Tk):
                     "capture_profile_id": self.active_signal_profile_id,
                     "grade": {
                         "code": self.grade_code,
+                        "method": GRADE_METHOD,
                         "criteria_hash": self.grade_criteria_hash(),
                         "reasons": list(self.grade_reasons),
                         "features": self.grade_features,
@@ -2795,6 +2824,7 @@ class AutoTraderApp(tk.Tk):
                             candidate_label_ages[-1]
                             if candidate_label_ages else None
                         ),
+                        "label_geometry": label_geometry,
                     },
                     "ocr_timings": ocr_timings,
                     "clock_ocr_text": self.latest_clock_ocr_text[:200],
