@@ -167,7 +167,11 @@ class AutoTraderApp(tk.Tk):
                 self.journal_recovery_snapshot["integrity"]["healthy"]
             )
         except Exception as exc:
-            self.journal_recovery_snapshot = {"integrity": {"error": str(exc)}, "unresolved_executions": []}
+            self.journal_recovery_snapshot = {
+                "integrity": {"error": str(exc)},
+                "unresolved_executions": [],
+                "open_capture_sessions": [],
+            }
             self.journal_integrity_healthy = False
         self.monitors: list[dict[str, int]] = []
         self.region: ScreenRegion | None = None
@@ -243,6 +247,11 @@ class AutoTraderApp(tk.Tk):
             self.research_status.set(
                 f"Recuperação: {len(self.journal_recovery_snapshot['unresolved_executions'])} "
                 "tentativa(s) sem estado final verificável. Não haverá repetição automática."
+            )
+        elif self.journal_recovery_snapshot.get("open_capture_sessions"):
+            self.research_status.set(
+                f"Recuperação: {len(self.journal_recovery_snapshot['open_capture_sessions'])} "
+                "sessão(ões) de captura sem encerramento explícito. Não foram fechadas automaticamente."
             )
         self.demo_status = tk.StringVar(
             value="Cliques automáticos bloqueados: não há verificação confiável da conta."

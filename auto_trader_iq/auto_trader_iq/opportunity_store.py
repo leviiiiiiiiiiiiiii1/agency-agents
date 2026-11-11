@@ -21,6 +21,7 @@ SCHEMA_VERSION = 3
 EVENT_TYPES = {
     "CAPTURE_SESSION_STARTED",
     "CAPTURE_SESSION_STOPPED",
+    "CAPTURE_SESSION_INTERRUPTED",
     "CAPTURE_FRAME_ACCEPTED",
     "CAPTURE_FRAME_REJECTED",
     "OCR_COMPLETED",
@@ -772,6 +773,101 @@ class OpportunityStore:
                 ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_open_capture_sessions(self) -> list[dict[str, Any]]:
+        """Find capture sessions lacking an explicit stop/interruption event."""
+        with self._session() as connection:
+            rows = connection.execute(
+                """SELECT started.session_id,
+                          MIN(started.occurred_at_utc) AS started_at_utc,
+                          MAX(all_events.occurred_at_utc) AS last_event_at_utc,
+                          COUNT(*) AS event_count
+                   FROM opportunity_events AS started
+                   JOIN opportunity_events AS all_events
+                     ON all_events.session_id = started.session_id
+                   WHERE started.event_type = 'CAPTURE_SESSION_STARTED'
+                     AND started.session_id IS NOT NULL
+                   GROUP BY started.session_id
+                   HAVING SUM(CASE WHEN all_events.event_type IN
+                       ('CAPTURE_SESSION_STOPPED', 'CAPTURE_SESSION_INTERRUPTED')
+                       THEN 1 ELSE 0 END) = 0
+                   ORDER BY started_at_utc"""
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def reconcile_capture_session(
+        self,
+        session_id: str,
+        *,
+        confirmed_inactive: bool,
+        reason: str = "PROCESS_ENDED_WITHOUT_STOP_EVENT",
+    ) -> int:
+        """Append an interruption marker only after an operator confirms inactivity."""
+        if not confirmed_inactive:
+            raise ValueError(
+                "Confirme que a captura desta sessão não está ativa antes de reconciliar."
+            )
+        if not session_id.strip():
+            raise ValueError("session_id não pode ficar vazio.")
+        key = f"{session_id}:capture-session-interrupted"
+        payload = {"reason": reason, "operator_confirmed_inactive": True}
+        with self._session() as connection:
+            existing_reconciliation = connection.execute(
+                """SELECT event_id, event_type, source, session_id, payload_json
+                   FROM opportunity_events WHERE idempotency_key = ?""",
+                (key,),
+            ).fetchone()
+            if existing_reconciliation is not None:
+                if (
+                    existing_reconciliation["event_type"] != "CAPTURE_SESSION_INTERRUPTED"
+                    or existing_reconciliation["source"] != "MANUAL_RECOVERY"
+                    or existing_reconciliation["session_id"] != session_id
+                    or existing_reconciliation["payload_json"] != _json(payload)
+                ):
+                    raise ValueError(
+                        "A chave de reconciliação já foi usada com outro conteúdo."
+                    )
+                return int(existing_reconciliation["event_id"])
+            session = connection.execute(
+                """SELECT
+                       SUM(CASE WHEN event_type = 'CAPTURE_SESSION_STARTED' THEN 1 ELSE 0 END) AS starts,
+                       SUM(CASE WHEN event_type IN
+                           ('CAPTURE_SESSION_STOPPED','CAPTURE_SESSION_INTERRUPTED')
+                           THEN 1 ELSE 0 END) AS terminals
+                   FROM opportunity_events WHERE session_id = ?""",
+                (session_id,),
+            ).fetchone()
+            if session is None or not session["starts"]:
+                raise KeyError(f"Sessão de captura não encontrada: {session_id}")
+            if session["terminals"]:
+                raise ValueError("A sessão já possui evento terminal; nenhuma alteração foi feita.")
+            return self._insert_event(
+                connection,
+                None,
+                "CAPTURE_SESSION_INTERRUPTED",
+                "MANUAL_RECOVERY",
+                payload,
+                session_id=session_id,
+                idempotency_key=key,
+            )
+
+    def reconcile_open_capture_sessions(
+        self,
+        *,
+        confirmed_inactive: bool,
+        reason: str = "PROCESS_ENDED_WITHOUT_STOP_EVENT",
+    ) -> list[str]:
+        """Explicitly mark orphan sessions interrupted; never called automatically."""
+        if not confirmed_inactive:
+            raise ValueError("A reconciliação exige confirmação explícita de captura inativa.")
+        session_ids = [row["session_id"] for row in self.list_open_capture_sessions()]
+        for session_id in session_ids:
+            self.reconcile_capture_session(
+                str(session_id),
+                confirmed_inactive=True,
+                reason=reason,
+            )
+        return [str(session_id) for session_id in session_ids]
+
     def list_unresolved_executions(self, *, limit: int = 500) -> list[dict[str, Any]]:
         """Return attempts without a verified terminal order state; never auto-retry."""
         if limit < 1:
@@ -811,10 +907,11 @@ class OpportunityStore:
         }
 
     def recovery_snapshot(self) -> dict[str, Any]:
-        """Inspect integrity plus unresolved attempts without replaying any action."""
+        """Inspect integrity and unclosed sessions without replaying any action."""
         return {
             "integrity": self.integrity_report(),
             "unresolved_executions": self.list_unresolved_executions(),
+            "open_capture_sessions": self.list_open_capture_sessions(),
         }
 
     def get_opportunity(self, opportunity_id: str) -> dict[str, Any] | None:

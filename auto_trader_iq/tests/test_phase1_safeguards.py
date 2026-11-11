@@ -329,6 +329,34 @@ class OpportunityStoreTests(unittest.TestCase):
         )
         self.assertEqual(len(self.store.list_events(self.opportunity_id)), before)
 
+    def test_open_capture_session_requires_explicit_inactive_reconciliation(self):
+        self.store.record_journal_event(
+            "CAPTURE_SESSION_STARTED",
+            source="CAPTURE_ENGINE",
+            session_id="orphan-session",
+            payload={"profile_id": "profile-a"},
+        )
+        self.assertEqual(
+            [row["session_id"] for row in self.store.list_open_capture_sessions()],
+            ["orphan-session"],
+        )
+        with self.assertRaises(ValueError):
+            self.store.reconcile_open_capture_sessions(confirmed_inactive=False)
+        resolved = self.store.reconcile_open_capture_sessions(confirmed_inactive=True)
+        self.assertEqual(resolved, ["orphan-session"])
+        self.assertEqual(self.store.list_open_capture_sessions(), [])
+        events = self.store.list_journal_events(session_id="orphan-session")
+        self.assertIn(
+            "CAPTURE_SESSION_INTERRUPTED", [event["event_type"] for event in events]
+        )
+        replay = self.store.reconcile_capture_session(
+            "orphan-session", confirmed_inactive=True
+        )
+        interrupted = next(
+            event for event in events if event["event_type"] == "CAPTURE_SESSION_INTERRUPTED"
+        )
+        self.assertEqual(replay, interrupted["event_id"])
+
     def test_unresolved_click_is_reported_without_automatic_retry(self):
         self.store.record_click_sent(
             self.opportunity_id,
