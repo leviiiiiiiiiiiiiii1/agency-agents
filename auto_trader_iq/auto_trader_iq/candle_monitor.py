@@ -14,6 +14,20 @@ from statistics import median
 from .geometry_diagnostics import grid_end_index
 from .signal_detector import SignalCandidate
 
+AGE_REFERENCE_DETECTED = "detected"
+AGE_REFERENCE_GRID = "grid"
+AGE_REFERENCE_DEFAULT = AGE_REFERENCE_GRID
+AGE_REFERENCE_VERSION = 2
+
+_AGE_REFERENCE_NOTES = {
+    "grid": (
+        "Idade do rótulo passou a contar só velas da grade: detecções fora dela "
+        "(eixo, linha, outro painel) não envelhecem mais o sinal."
+    ),
+    "detected": "Referência de idade inválida na configuração; usando detecção bruta.",
+}
+
+
 
 @dataclass(frozen=True, slots=True)
 class CandleBar:
@@ -437,7 +451,7 @@ def filter_to_recent_candle(
     candidates: list[SignalCandidate],
     bars: list[CandleBar],
     recent_bars: int = 2,
-    reference: str = "detected",
+    reference: str = AGE_REFERENCE_DEFAULT,
 ) -> list[SignalCandidate]:
     """Retorna candidatos alinhados às últimas N barras e à mais recente delas.
 
@@ -465,7 +479,7 @@ def filter_to_recent_candle(
         distance = abs(candle.center_x - text_center)
         if distance > tolerance:
             continue
-        if reference == "grid":
+        if reference == AGE_REFERENCE_GRID:
             # A idade pela grade pode ser menor que a contagem bruta: detecções fora
             # da grade não são velas e não devem envelhecer o rótulo.
             age = label_age_bars(candidate, bars, reference="grid")
@@ -484,7 +498,27 @@ def filter_to_recent_candle(
     return [candidate for position, _distance, candidate in matched if position == newest]
 
 
-def label_age_bars(candidate, bars, reference: str = "detected") -> int | None:
+def resolve_age_reference(
+    value: object, version: object
+) -> tuple[str, bool, str | None]:
+    """Decide a referência de idade. Devolve ``(referência, migrou, aviso)``.
+
+    ``detected`` foi o padrão da primeira versão e empurrava rótulos frescos para
+    fora da janela. A migração só troca esse valor de padrão; ``grid`` explícito é
+    preservado.
+    """
+    if value is None:
+        return AGE_REFERENCE_DEFAULT, False, None
+    if value not in (AGE_REFERENCE_DETECTED, AGE_REFERENCE_GRID):
+        return AGE_REFERENCE_DEFAULT, False, _AGE_REFERENCE_NOTES["detected"]
+    if value == AGE_REFERENCE_DETECTED and not (
+        isinstance(version, int) and version >= AGE_REFERENCE_VERSION
+    ):
+        return AGE_REFERENCE_GRID, True, _AGE_REFERENCE_NOTES["grid"]
+    return str(value), False, None
+
+
+def label_age_bars(candidate, bars, reference: str = AGE_REFERENCE_DEFAULT) -> int | None:
     """Distância em velas entre o rótulo e a vela mais recente.
 
     Zero significa "está na última vela". Retorna ``None`` quando não há velas ou o
@@ -496,7 +530,10 @@ def label_age_bars(candidate, bars, reference: str = "detected") -> int | None:
     da faixa regular que contém o rótulo, e devolve ``None`` quando a grade não pode
     ser determinada — falha fechada, sem inventar idade.
     """
-    if not bars or candidate is None or reference not in ("detected", "grid"):
+    if not bars or candidate is None or reference not in (
+        AGE_REFERENCE_DETECTED,
+        AGE_REFERENCE_GRID,
+    ):
         return None
     gaps = [bars[i + 1].center_x - bars[i].center_x for i in range(len(bars) - 1)]
     normal_gaps = [gap for gap in gaps if gap >= 8]
@@ -507,7 +544,7 @@ def label_age_bars(candidate, bars, reference: str = "detected") -> int | None:
     )
     if abs(bar.center_x - text_center) > tolerance:
         return None
-    if reference == "grid":
+    if reference == AGE_REFERENCE_GRID:
         end = grid_end_index(bars, index)
         if end is None:
             return None

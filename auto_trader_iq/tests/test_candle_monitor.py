@@ -9,6 +9,7 @@ from auto_trader_iq.candle_monitor import (
     detect_candle_bars_detailed,
     filter_to_recent_candle,
     label_age_bars,
+    resolve_age_reference,
 )
 from auto_trader_iq.signal_detector import SignalCandidate
 
@@ -140,7 +141,9 @@ class GridReferenceAgeTests(unittest.TestCase):
 
     def test_detected_reference_counts_phantom_bars(self):
         noisy = self.bars([0, 40, 80, 120, 300, 420])
-        self.assertEqual(label_age_bars(self.candidate(80), noisy), 3)
+        self.assertEqual(
+            label_age_bars(self.candidate(80), noisy, reference="detected"), 3
+        )
 
     def test_grid_reference_ignores_them(self):
         noisy = self.bars([0, 40, 80, 120, 300, 420])
@@ -154,10 +157,48 @@ class GridReferenceAgeTests(unittest.TestCase):
     def test_filter_accepts_a_label_that_phantoms_pushed_out(self):
         noisy = self.bars([0, 40, 80, 120, 300, 420])
         candidate = self.candidate(120)
-        self.assertEqual(filter_to_recent_candle([candidate], noisy), [])
+        self.assertEqual(
+            filter_to_recent_candle([candidate], noisy, reference="detected"), []
+        )
         self.assertEqual(
             filter_to_recent_candle([candidate], noisy, reference="grid"), [candidate]
         )
+
+
+class AgeReferenceDefaultTests(unittest.TestCase):
+    def test_default_reference_is_the_grid(self):
+        from auto_trader_iq.candle_monitor import AGE_REFERENCE_DEFAULT
+
+        self.assertEqual(AGE_REFERENCE_DEFAULT, "grid")
+
+    def test_missing_value_uses_the_default(self):
+        reference, migrated, note = resolve_age_reference(None, None)
+        self.assertEqual(reference, "grid")
+        self.assertFalse(migrated)
+        self.assertIsNone(note)
+
+    def test_legacy_detected_is_migrated(self):
+        reference, migrated, note = resolve_age_reference("detected", None)
+        self.assertEqual(reference, "grid")
+        self.assertTrue(migrated)
+        self.assertIn("grade", note)
+
+    def test_explicit_grid_is_preserved(self):
+        reference, migrated, note = resolve_age_reference("grid", 1)
+        self.assertEqual(reference, "grid")
+        self.assertFalse(migrated)
+        self.assertIsNone(note)
+
+    def test_current_version_detected_is_respected(self):
+        reference, migrated, _note = resolve_age_reference("detected", 2)
+        self.assertEqual(reference, "detected")
+        self.assertFalse(migrated)
+
+    def test_invalid_value_falls_back_with_notice(self):
+        reference, migrated, note = resolve_age_reference("outra", 2)
+        self.assertEqual(reference, "grid")
+        self.assertFalse(migrated)
+        self.assertIn("inválida", note)
 
 
 class LabelAgeTests(unittest.TestCase):

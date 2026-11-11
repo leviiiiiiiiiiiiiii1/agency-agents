@@ -87,8 +87,10 @@ Regras padrão: contexto lateral ou rótulo acima de 2 velas → `NO_TRADE`; cor
 
 `label_age_reference` em `config.json` decide contra o que a idade do rótulo é contada:
 
-- `detected` (padrão) — contra a última vela **detectada**, inclusive uma detecção fora da grade (eixo, linha, outro painel). É conservador, mas uma detecção fantasma empurra o rótulo para fora da janela de 2 velas.
-- `grid` — contra a última vela da **faixa regular** que contém o rótulo. Se a grade não puder ser determinada, a idade volta `None` e o candidato é descartado (falha fechada).
+- `grid` (padrão) — contra a última vela da **faixa regular** que contém o rótulo. Se a grade não puder ser determinada, a idade volta `None` e o candidato é descartado (falha fechada).
+- `detected` — contra a última vela **detectada**, inclusive uma detecção fora da grade (eixo, linha, outro painel). Uma detecção fantasma empurra o rótulo para fora da janela de 2 velas; fica disponível para auditoria.
+
+`label_age_reference_version` sobe para 2 e migra automaticamente um `detected` herdado do padrão antigo, com aviso no painel; um `detected` gravado nessa versão é respeitado.
 
 Medido no journal do usuário: com `detected`, a idade mediana é 4 velas; com `grid`, é 1. A janela continua sendo de 2 velas — muda só o que conta como vela.
 

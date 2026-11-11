@@ -50,6 +50,9 @@ from .candle_monitor import (
     detect_candle_bars_detailed,
     filter_to_recent_candle,
     label_age_bars,
+    resolve_age_reference,
+    AGE_REFERENCE_DEFAULT,
+    AGE_REFERENCE_VERSION,
 )
 from .candle_timer import (
     PlatformClockReading,
@@ -134,7 +137,7 @@ def _analyze_ocr_frame(
     color_direction_map: dict[str, str] | None = None,
     read_clock: bool = True,
     snapshot_dir: Path | None = None,
-    age_reference: str = "detected",
+    age_reference: str = AGE_REFERENCE_DEFAULT,
 ):
     """OCR labels and match them against candles detected in this exact frame."""
     color_map = dict(color_direction_map or {})
@@ -299,7 +302,7 @@ class AutoTraderApp(tk.Tk):
         self.eligibility_text = ""
         self.eligibility_hash: str | None = None
         self.grade_criteria = DEFAULT_GRADE_CRITERIA
-        self.label_age_reference = "detected"
+        self.label_age_reference = AGE_REFERENCE_DEFAULT
         self.grade_code = "CRITERIA_UNDEFINED"
         self.grade_text = ""
         self.grade_reasons: tuple[str, ...] = ()
@@ -4161,18 +4164,13 @@ class AutoTraderApp(tk.Tk):
                 "formação fica à direita da seta, então idade 0 nunca ocorre."
             )
 
-    def _load_label_age_reference(self, payload: object) -> None:
+    def _load_label_age_reference(self, payload: object, version: object = None) -> None:
         """Como a idade do rótulo é contada: contra toda detecção ou só a grade."""
-        if payload is None:
-            self.label_age_reference = "detected"
-            return
-        if payload not in ("detected", "grid"):
-            self.label_age_reference = "detected"
-            self.capture_status.set(
-                f"Referência de idade desconhecida ({payload!r}); usando detecção bruta."
-            )
-            return
-        self.label_age_reference = str(payload)
+        reference, migrated, note = resolve_age_reference(payload, version)
+        self.label_age_reference = reference
+        if note:
+            prefix = "Referência de idade migrada" if migrated else "Aviso"
+            self.capture_status.set(f"{prefix}: {note}")
 
     def _persist_config(self) -> None:
         payload: dict[str, object] = {
@@ -4189,6 +4187,7 @@ class AutoTraderApp(tk.Tk):
             "demo_mouse_keepalive_interval_seconds": self.demo_mouse_keepalive_interval_var.get(),
             "eligibility": self.eligibility_criteria.as_dict(),
             "label_age_reference": self.label_age_reference,
+            "label_age_reference_version": AGE_REFERENCE_VERSION,
             "grading": self.grade_criteria.as_dict(),
             "grading_version": GRADE_CRITERIA_VERSION,
         }
@@ -4297,7 +4296,10 @@ class AutoTraderApp(tk.Tk):
             self._load_grade_criteria(
                 config.get("grading"), config.get("grading_version")
             )
-            self._load_label_age_reference(config.get("label_age_reference"))
+            self._load_label_age_reference(
+                config.get("label_age_reference"),
+                config.get("label_age_reference_version"),
+            )
             if isinstance(config.get("ocr_enabled"), bool):
                 self.ocr_enabled_var.set(config["ocr_enabled"])
             if isinstance(config.get("compact_during_capture"), bool):
