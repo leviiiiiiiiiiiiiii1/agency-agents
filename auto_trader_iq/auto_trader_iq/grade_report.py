@@ -193,17 +193,19 @@ def compute_outcomes(
     """
     if horizon_bars < 1:
         raise ValueError("horizon_bars precisa ser pelo menos 1.")
-    ordered = sorted(
-        (
-            frame
-            for frame in frames
-            if frame.get("price_ladder") and frame.get("code") in ("A", "B", "C")
-        ),
+    timeline = sorted(
+        (frame for frame in frames if frame.get("price_ladder")),
         key=lambda item: str(item.get("occurred_at_utc")),
     )
+    signals = [
+        frame
+        for frame in timeline
+        if frame.get("code") in ("A", "B", "C") and (frame.get("features") or {}).get("age_bars") is not None
+    ]
+    graded_total = sum(1 for frame in frames if frame.get("code") in ("A", "B", "C"))
     results: list[dict[str, Any]] = []
     skipped = 0
-    for position, frame in enumerate(ordered):
+    for frame in signals:
         features = frame.get("features") or {}
         direction = features.get("direction")
         age = features.get("age_bars")
@@ -212,8 +214,12 @@ def compute_outcomes(
             skipped += 1
             continue
         target = None
-        for later in ordered[position + 1:]:
+        # O quadro de referência pode ser qualquer um com escada: exigir que ele
+        # também esteja classificado descartava quase todos os sinais.
+        for later in timeline:
             if later.get("session_id") != frame.get("session_id"):
+                continue
+            if str(later.get("occurred_at_utc")) <= str(frame.get("occurred_at_utc")):
                 continue
             when = _parse_time(later.get("occurred_at_utc"))
             if when is None:
@@ -284,6 +290,9 @@ def compute_outcomes(
     return {
         "evaluated": len(results),
         "skipped": skipped,
+        "signals_with_ladder": len(signals),
+        "signals_graded": graded_total,
+        "frames_with_ladder": len(timeline),
         "horizon_bars": horizon_bars,
         "bar_seconds": bar_seconds,
         "min_move_units": min_move_units,
@@ -545,11 +554,21 @@ def format_outcomes(outcomes: Mapping[str, Any]) -> str:
         f"vela de {outcomes['bar_seconds']:.0f} s · "
         f"movimento mínimo: {outcomes['min_move_units']} faixa(s)"
     )
+    lines.append(
+        f"    sinais classificados: {outcomes.get('signals_graded', 0)} · "
+        f"com escada de preço: {outcomes.get('signals_with_ladder', 0)} · "
+        f"quadros com escada: {outcomes.get('frames_with_ladder', 0)}"
+    )
     if not outcomes["evaluated"]:
         lines.append("    Nenhum sinal pôde ser acompanhado até o horizonte.")
         lines.append(
             f"    ({outcomes['skipped']} sinal(is) sem quadro posterior suficiente.)"
         )
+        if outcomes.get("frames_with_ladder", 0) == 0:
+            lines.append(
+                "    A escada de preço só passou a ser gravada depois desta versão: "
+                "sessões antigas não podem ser avaliadas."
+            )
     else:
         lines.append(
             f"    sinais acompanhados: {outcomes['evaluated']} · "

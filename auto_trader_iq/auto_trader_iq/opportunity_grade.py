@@ -283,7 +283,10 @@ def grade_opportunity(
     if missing:
         return Grade("CRITERIA_UNDEFINED", (f"limiares não definidos: {', '.join(missing)}",))
     if features is None:
-        return Grade(GRADE_NO_TRADE, ("vela do rótulo não identificada",))
+        return Grade(
+            GRADE_NO_TRADE,
+            ("vela de setup sem geometria calibrada (cor não mapeada ou corpo não isolado)",),
+        )
 
     if criteria.block_lateral_regime and features.context_regime == "lateral":
         return Grade(GRADE_NO_TRADE, ("mercado lateralizado",))

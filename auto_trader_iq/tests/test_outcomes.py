@@ -95,6 +95,26 @@ class ComputeOutcomeTests(unittest.TestCase):
         ]
         self.assertEqual(compute_outcomes(frames)["evaluated"], 0)
 
+    def test_reference_frame_does_not_need_to_be_graded(self):
+        later = frame("2026-11-11T18:03:00+00:00", "NO_TRADE", "BUY", 0, [140.0] * 5)
+        frames = [
+            frame("2026-11-11T18:00:00+00:00", "A", "BUY", 0, [100.0] * 5),
+            later,
+        ]
+        result = compute_outcomes(frames, bar_seconds=60, horizon_bars=3)
+        self.assertEqual(result["evaluated"], 1)
+        self.assertEqual(result["signals_with_ladder"], 1)
+        self.assertEqual(result["frames_with_ladder"], 2)
+
+    def test_counters_expose_missing_ladders(self):
+        frames = [frame("2026-11-11T18:00:00+00:00", "A", "BUY", 0, [100.0] * 5)]
+        frames[0]["price_ladder"] = None
+        result = compute_outcomes(frames)
+        self.assertEqual(result["evaluated"], 0)
+        self.assertEqual(result["signals_graded"], 1)
+        self.assertEqual(result["frames_with_ladder"], 0)
+        self.assertIn("sessões antigas", format_outcomes(result))
+
     def test_sessions_are_not_mixed(self):
         frames = [
             frame("2026-11-11T18:00:00+00:00", "A", "BUY", 0, [100.0] * 5),
