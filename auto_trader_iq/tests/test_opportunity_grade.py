@@ -185,6 +185,70 @@ class BuildFeaturesTests(unittest.TestCase):
     def candidate(self, center):
         return SimpleNamespace(left=center - 20, width=40)
 
+    def test_setup_candle_is_the_one_before_the_label(self):
+        # setup estreito em 100, vela da seta gigante em 200: medir a seta
+        # descreveria o que já aconteceu depois do sinal.
+        candles = [
+            self.candle(0),
+            self.candle(100, body=(120, 125)),
+            self.candle(200, body=(100, 140)),
+        ]
+        built = build_features(
+            self.candidate(200),
+            self.bars([0, 100, 200]),
+            candles,
+            direction="BUY",
+            age_bars=1,
+            context_regime="flow",
+            context_direction="BUY",
+        )
+        self.assertIsNotNone(built)
+        self.assertEqual(built.body, 5.0)
+
+    def test_label_on_the_first_bar_has_no_setup(self):
+        built = build_features(
+            self.candidate(0),
+            self.bars([0, 100]),
+            [self.candle(0), self.candle(100)],
+            direction="BUY",
+            age_bars=0,
+            context_regime="flow",
+            context_direction="BUY",
+        )
+        self.assertIsNone(built)
+
+    def test_entry_price_comes_from_the_label_candle(self):
+        # setup fechado no fundo (close 140), entrada em 120 a meio caminho do topo.
+        def explicit(center, body_top, body_bottom, high, low, close_y):
+            return SimpleNamespace(
+                center_x=center,
+                high=high,
+                low=low,
+                body_top=body_top,
+                body_bottom=body_bottom,
+                open_y=low,
+                close_y=close_y,
+                upper_wick=body_top - high,
+                lower_wick=low - body_bottom,
+            )
+
+        candles = [
+            explicit(100, 120, 125, 120, 140, 140),
+            explicit(200, 110, 130, 100, 140, 120),
+        ]
+        built = build_features(
+            self.candidate(200),
+            self.bars([100, 200]),
+            candles,
+            direction="BUY",
+            age_bars=1,
+            context_regime="flow",
+            context_direction="BUY",
+        )
+        self.assertIsNotNone(built)
+        self.assertAlmostEqual(built.close_from_extreme, 1.0)
+        self.assertAlmostEqual(built.distance_to_level, 0.5)
+
     def test_features_use_the_nearest_candle(self):
         candles = [self.candle(0), self.candle(100), self.candle(200)]
         built = build_features(
@@ -192,7 +256,7 @@ class BuildFeaturesTests(unittest.TestCase):
             self.bars([0, 100, 200]),
             candles,
             direction="BUY",
-            age_bars=0,
+            age_bars=1,
             context_regime="flow",
             context_direction="BUY",
         )
@@ -200,7 +264,6 @@ class BuildFeaturesTests(unittest.TestCase):
         self.assertEqual(built.body, 20.0)
         self.assertEqual(built.candle_range, 40.0)
         self.assertAlmostEqual(built.close_from_extreme, 0.0)
-        self.assertAlmostEqual(built.distance_to_level, 0.0)
 
     def test_candle_matched_with_small_offset(self):
         candles = [self.candle(0), self.candle(104), self.candle(200)]
@@ -209,7 +272,7 @@ class BuildFeaturesTests(unittest.TestCase):
             self.bars([0, 100, 200]),
             candles,
             direction="BUY",
-            age_bars=0,
+            age_bars=1,
             context_regime="flow",
             context_direction="BUY",
         )
@@ -226,7 +289,7 @@ class BuildFeaturesTests(unittest.TestCase):
             self.bars([0, 100, 200]),
             candles,
             direction="BUY",
-            age_bars=0,
+            age_bars=1,
             context_regime="flow",
             context_direction="BUY",
         )
@@ -246,14 +309,17 @@ class BuildFeaturesTests(unittest.TestCase):
         self.assertIsNone(built)
 
     def test_body_relative_to_recent_median(self):
-        candles = [self.candle(0, body=(100, 110)) for _ in range(9)]
-        candles.append(self.candle(100, body=(100, 150)))
+        # nove velas pequenas e uma grande na posição de setup, com a seta depois.
+        centers = [index * 100 for index in range(9)]
+        candles = [self.candle(center, body=(100, 110)) for center in centers]
+        candles.append(self.candle(900, body=(100, 150)))
+        candles.append(self.candle(1000, body=(100, 110)))
         built = build_features(
-            self.candidate(100),
-            self.bars(list(range(0, 1000, 100))),
+            self.candidate(1000),
+            self.bars(centers + [900, 1000]),
             candles,
             direction="BUY",
-            age_bars=0,
+            age_bars=1,
             context_regime="flow",
             context_direction="BUY",
         )

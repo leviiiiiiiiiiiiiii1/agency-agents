@@ -107,6 +107,16 @@ class DiagnosisTests(unittest.TestCase):
         self.assertEqual(result["top_reasons"][0]["reason"], "mercado lateralizado")
         self.assertEqual(result["top_reasons"][0]["count"], 2)
 
+    def test_reasons_of_good_grades_are_not_counted_as_blocks(self):
+        result = summarize(
+            [
+                frame("A", reasons=("corpo 1.07× a mediana",)),
+                frame("C", reasons=("preço a 3% da faixa até o nível contrário",)),
+            ]
+        )
+        counted = [item["reason"] for item in result["top_reasons"]]
+        self.assertEqual(counted, ["preço a 3% da faixa até o nível contrário"])
+
     def test_label_visibility_is_separated(self):
         result = summarize(
             [
@@ -141,13 +151,14 @@ class DiagnosisTests(unittest.TestCase):
 
 
 class TrackTests(unittest.TestCase):
-    def test_repeat_ratio_is_reported(self):
+    def test_tracks_are_not_presented_as_signals(self):
         tracks = [{"tracking_id": "t1"}, {"tracking_id": "t2"}]
         result = summarize([frame(raw=5)] * 40, tracks)
-        self.assertEqual(result["distinct_signals"], 2)
-        self.assertEqual(result["frames_per_distinct_signal"], 20.0)
+        self.assertEqual(result["tracked_positions"], 2)
+        self.assertEqual(result["frames_per_track"], 20.0)
         text = format_report(result)
-        self.assertIn("repetição, não sinal perdido", text)
+        self.assertIn("Rastro não é sinal", text)
+        self.assertNotIn("sinais distintos", text)
 
     def test_missing_track_table_is_not_an_error(self):
         db = Path(tempfile.mkdtemp()) / "v1.db"
@@ -163,8 +174,34 @@ class TrackTests(unittest.TestCase):
 
     def test_ratio_absent_without_tracks(self):
         result = summarize([frame()])
-        self.assertIsNone(result["frames_per_distinct_signal"])
-        self.assertNotIn("repetição, não sinal perdido", format_report(result))
+        self.assertIsNone(result["frames_per_track"])
+        self.assertNotIn("Rastro não é sinal", format_report(result))
+
+
+class FreshRunTests(unittest.TestCase):
+    def test_consecutive_fresh_frames_count_as_one_signal(self):
+        frames = [
+            frame(raw=1, recent=1),
+            frame(raw=1, recent=1),
+            frame(raw=1, recent=0),
+            frame(raw=1, recent=1),
+        ]
+        self.assertEqual(summarize(frames)["fresh_signal_runs"], 2)
+
+    def test_runs_do_not_span_sessions(self):
+        first = frame(raw=1, recent=1)
+        second = frame(raw=1, recent=1)
+        second["session_id"] = "s2"
+        self.assertEqual(summarize([first, second])["fresh_signal_runs"], 2)
+
+    def test_hash_breakdown_separates_legacy_frames(self):
+        old = frame("NO_CANDIDATE", features=False)
+        old["criteria_hash"] = "8d50"
+        new = frame("A")
+        result = summarize([old, new])
+        self.assertEqual(result["by_criteria_hash"][0]["hash"], "8d50")
+        self.assertEqual(result["by_criteria_hash"][0]["frames"], 1)
+        self.assertIn("Por versão de limiares", format_report(result))
 
 
 class SweepTests(unittest.TestCase):

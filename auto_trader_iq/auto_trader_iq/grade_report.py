@@ -129,6 +129,31 @@ def _read_tracks(connection: sqlite3.Connection) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def _fresh_signal_runs(frames: Sequence[Mapping[str, Any]]) -> int:
+    """Séries de quadros consecutivos com rótulo recente, por sessão.
+
+    A identidade de rastreio do app combina posição em pixels com o instante da
+    primeira visão, então a rolagem do gráfico fragmenta o mesmo rótulo em vários
+    rastros. Contar quadros recentes consecutivos é uma estimativa honesta de
+    quantos sinais novos apareceram de fato.
+    """
+    runs = 0
+    previous_fresh = False
+    previous_session = object()
+    for frame in sorted(
+        frames, key=lambda item: (str(item.get("session_id")), str(item.get("occurred_at_utc")))
+    ):
+        session = frame.get("session_id")
+        if session != previous_session:
+            previous_fresh = False
+            previous_session = session
+        fresh = (frame.get("recent_candidate_count") or 0) > 0
+        if fresh and not previous_fresh:
+            runs += 1
+        previous_fresh = fresh
+    return runs
+
+
 def _percentile(values: Sequence[float], fraction: float) -> float:
     ordered = sorted(values)
     if not ordered:
@@ -184,6 +209,10 @@ def summarize(
 
     reason_counts: dict[str, int] = {}
     for frame in frames:
+        # Motivos de A/B descrevem o que está bom; somá-los aqui os faria parecer
+        # bloqueio.
+        if str(frame.get("code")) in ("A", "B"):
+            continue
         seen = set()
         for reason in frame.get("reasons") or []:
             if reason in seen:
@@ -198,13 +227,25 @@ def summarize(
     )
 
     raw_label_frames = raw_labels
-    distinct = len(tracks)
+    tracked = len(tracks)
+    by_hash: dict[str, dict[str, Any]] = {}
+    for frame in frames:
+        key = str(frame.get("criteria_hash") or "sem-hash")
+        bucket = by_hash.setdefault(
+            key, {"hash": key, "frames": 0, "frames_with_features": 0, "counts": {}}
+        )
+        bucket["frames"] += 1
+        if frame.get("features"):
+            bucket["frames_with_features"] += 1
+        code = str(frame.get("code") or "DESCONHECIDO")
+        bucket["counts"][code] = bucket["counts"].get(code, 0) + 1
+
     return {
         "frames": len(frames),
-        "distinct_signals": distinct,
-        "frames_per_distinct_signal": (
-            round(raw_label_frames / distinct, 1) if distinct else None
-        ),
+        "by_criteria_hash": sorted(by_hash.values(), key=lambda item: item["hash"]),
+        "tracked_positions": tracked,
+        "frames_per_track": round(raw_label_frames / tracked, 1) if tracked else None,
+        "fresh_signal_runs": _fresh_signal_runs(frames),
         "frames_with_raw_label": raw_labels,
         "frames_with_recent_label": recent_labels,
         "context_regimes": regimes,
@@ -304,16 +345,19 @@ def format_report(summary: Mapping[str, Any], sweeps: Sequence[tuple[str, Sequen
     lines.append(f"    com algum rótulo no quadro   {summary['frames_with_raw_label']}")
     lines.append(f"    com rótulo nas 2 últimas     {summary['frames_with_recent_label']}")
 
-    if summary.get("distinct_signals"):
-        lines.append(f"    sinais distintos rastreados  {summary['distinct_signals']}")
+    if summary.get("fresh_signal_runs") is not None:
+        lines.append(f"    séries de rótulo recente     {summary['fresh_signal_runs']}")
+    if summary.get("tracked_positions"):
+        lines.append(f"    rastros de posição           {summary['tracked_positions']}")
         lines.append(
-            f"    quadros por sinal distinto   {summary['frames_per_distinct_signal']}"
+            f"    quadros por rastro           {summary['frames_per_track']}"
         )
-        if summary["frames_per_distinct_signal"] and summary["frames_per_distinct_signal"] >= 10:
-            lines.append(
-                "    Um mesmo rótulo fica na tela por muitos quadros: "
-                "LABEL_OUTSIDE_WINDOW é majoritariamente repetição, não sinal perdido."
-            )
+        lines.append(
+            "    Rastro não é sinal: a identidade usa posição em pixels e o instante da"
+        )
+        lines.append(
+            "    primeira visão, então a rolagem do gráfico fragmenta o mesmo rótulo."
+        )
 
     if summary["context_regimes"]:
         ordered = sorted(
@@ -358,6 +402,15 @@ def format_report(summary: Mapping[str, Any], sweeps: Sequence[tuple[str, Sequen
                 f"    {name:<22} n={stats['n']:<5} p10={stats['p10']:<7} "
                 f"p50={stats['p50']:<7} p90={stats['p90']}"
             )
+
+    if summary.get("by_criteria_hash"):
+        lines += ["", "Por versão de limiares (a mais recente aparece por último):"]
+        for item in summary["by_criteria_hash"]:
+            lines.append(
+                f"    {item['hash']}  quadros={item['frames']}  "
+                f"com medida={item['frames_with_features']}"
+            )
+            lines.append("      " + _format_counts(item["counts"], item["frames"]).strip())
 
     for parameter, results in sweeps:
         lines += ["", f"Sensibilidade de {parameter}:"]

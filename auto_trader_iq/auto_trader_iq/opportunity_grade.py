@@ -194,6 +194,7 @@ def build_features(
     context_direction: str | None,
     reference_window: int = 20,
     body_window: int = 10,
+    setup_offset: int = 1,
 ) -> SignalFeatures | None:
     """Reúne as medidas de um candidato; ``None`` se a vela não for identificável.
 
@@ -209,9 +210,19 @@ def build_features(
     gaps = [bars[i + 1].center_x - bars[i].center_x for i in range(len(bars) - 1)]
     normal_gaps = [gap for gap in gaps if gap >= 8]
     tolerance = max(18.0, (median(normal_gaps) if normal_gaps else 24.0) * 0.65)
-    candle = min(candles, key=lambda item: abs(item.center_x - bars[index].center_x))
-    if abs(candle.center_x - bars[index].center_x) > tolerance:
+    # O indicador avalia a vela fechada e desenha a seta na vela seguinte, que é a
+    # vela de entrada. Medir o corpo/fechamento da própria seta descreveria o que já
+    # aconteceu depois do sinal. O setup é a vela anterior à seta.
+    setup_index = index - setup_offset
+    if setup_index < 0:
         return None
+    setup_bar_x = float(bars[setup_index].center_x)
+    candle = min(candles, key=lambda item: abs(item.center_x - setup_bar_x))
+    if abs(candle.center_x - setup_bar_x) > tolerance:
+        return None
+    entry_candle = min(candles, key=lambda item: abs(item.center_x - bars[index].center_x))
+    if abs(entry_candle.center_x - bars[index].center_x) > tolerance:
+        entry_candle = candle
 
     body = max(0.0, float(candle.body_bottom - candle.body_top))
     candle_range = max(1.0, float(candle.low - candle.high))
@@ -235,7 +246,9 @@ def build_features(
     zone_top = min(float(item.high) for item in window)
     zone_bottom = max(float(item.low) for item in window)
     zone_range = max(1.0, zone_bottom - zone_top)
-    close_y = float(candle.close_y)
+    # A distância ao nível contrário usa o preço de entrada (fechamento da vela da
+    # seta), não o fechamento do setup: é onde o preço está quando se decide entrar.
+    close_y = float(entry_candle.close_y)
     if direction == "BUY":
         distance_to_level = (close_y - zone_top) / zone_range
     else:
