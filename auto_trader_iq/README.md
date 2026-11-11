@@ -59,6 +59,8 @@ Cada evento de OCR também traz quanto o quadro **entregou**, não só quanto cu
 
 A faixa do relógio no rodapé é a etapa mais cara do OCR e roda em executor próprio, em paralelo à leitura de rótulos e encadeada sem intervalo (assim que uma leitura termina, a próxima começa). Ela deixa de somar segundos ao caminho crítico dos sinais. O limite de 1,5 s e o bloqueio por relógio velho permanecem iguais: a leitura muda de lugar, não de critério, e um quadro de rótulos descartado não apaga a última leitura válida do relógio.
 
+Se o recorte do rodapé voltar vazio repetidamente, o app registra um evento `CLOCK_PROBE` a cada 20 tentativas sem leitura: ele procura horários no quadro inteiro e grava apenas os horários encontrados, as palavras de relógio e as posições relativas. Nomes de ativo, preços e demais textos do gráfico não são registrados — só contados. Isso localiza o relógio quando o layout muda, sem capturar dados financeiros.
+
 O CSV legado em `%LOCALAPPDATA%\AutoTraderIQ\simulation_history.csv` continua preservado e serve à compatibilidade/exportação; ele não é apagado nem substituído pelo journal.
 
 ## Histórico e arquivos locais

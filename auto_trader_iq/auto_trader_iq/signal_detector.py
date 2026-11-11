@@ -12,6 +12,10 @@ from typing import Any
 
 from .candle_timer import PlatformClockReading, parse_platform_clock, parse_platform_clock_line
 
+# O recorte do relógio pode falhar para sempre se o layout mudar. A cada N falhas,
+# o app procura horários no quadro inteiro para localizar o relógio de novo.
+CLOCK_PROBE_EVERY_MISSES = 20
+
 
 @dataclass(frozen=True, slots=True)
 class SignalCandidate:
@@ -162,6 +166,54 @@ def _summarize_clock_ocr(data: dict[str, Any], limit: int = 180) -> str:
     return " ".join(snippets)[:limit]
 
 
+_TIME_TOKEN = re.compile(r"^\d{1,2}:\d{2}(:\d{2})?$")
+_CLOCK_WORDS = {"HORA", "ATUAL", "HORARIO", "HORÁRIO", "CLOCK", "TIME"}
+
+
+def extract_clock_tokens(
+    data: dict[str, Any], width: int, height: int, *, max_tokens: int = 12
+) -> dict[str, Any]:
+    """Localiza horários no texto OCR do quadro inteiro, sem guardar o resto.
+
+    Serve para descobrir *onde* o relógio da plataforma está quando o recorte do
+    rodapé volta vazio. Por privacidade, só horários e palavras de relógio são
+    preservados; os demais tokens viram apenas uma contagem.
+    """
+    texts = data.get("text") or []
+    confidences = data.get("conf") or []
+    lefts = data.get("left") or []
+    tops = data.get("top") or []
+    others = 0
+    times: list[dict[str, Any]] = []
+    words: list[dict[str, Any]] = []
+    for index, raw in enumerate(texts):
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        try:
+            confidence = float(confidences[index])
+        except (IndexError, TypeError, ValueError):
+            confidence = -1.0
+        position = {
+            "text": text,
+            "confidence": round(confidence, 1),
+            "x_percent": round(100 * float(lefts[index]) / width, 1) if index < len(lefts) and width else None,
+            "y_percent": round(100 * float(tops[index]) / height, 1) if index < len(tops) and height else None,
+        }
+        if _TIME_TOKEN.match(text):
+            times.append(position)
+        elif text.upper().strip(".:-|") in _CLOCK_WORDS:
+            words.append(position)
+        else:
+            others += 1
+    return {
+        "time_tokens": times[:max_tokens],
+        "clock_words": words[:max_tokens],
+        "other_token_count": others,
+        "frame_width": int(width),
+        "frame_height": int(height),
+    }
+
 def _read_clock_from_bottom_right(image, pytesseract) -> tuple[PlatformClockReading | None, str, int]:
     """Lê HORA ATUAL apenas na faixa inferior direita, que costuma ser fonte pequena.
 
@@ -216,6 +268,9 @@ class TesseractSignalDetector:
         # guessed. Values describe work already performed; they never affect detection.
         self.last_ocr_timings: dict[str, Any] = {}
         self.last_clock_timings: dict[str, Any] = {}
+        self.last_clock_probe: dict[str, Any] | None = None
+        self.clock_probe_serial = 0
+        self._clock_miss_count = 0
 
     def check_ready(self) -> None:
         try:
@@ -397,7 +452,29 @@ class TesseractSignalDetector:
             "clock_crop_passes": passes,
             "total_seconds": round(time.monotonic() - started_at, 3),
         }
+        if clock is None:
+            self._clock_miss_count += 1
+            if self._clock_miss_count % CLOCK_PROBE_EVERY_MISSES == 0:
+                self.clock_probe_serial += 1
+                self.last_clock_probe = self._probe_clock_tokens(image, pytesseract)
         return clock
+
+    def _probe_clock_tokens(self, image, pytesseract) -> dict[str, Any]:
+        """Procura horários no quadro inteiro quando o recorte do rodapé está vazio.
+
+        Roda sem whitelist e sem a lista de caracteres do rodapé, porque o objetivo é
+        justamente descobrir se o texto do relógio está em outra região. É diagnóstico
+        de baixa frequência: nada aqui altera o relógio aceito pelo aplicativo.
+        """
+        from PIL import ImageOps
+
+        prepared = ImageOps.autocontrast(image.convert("L"))
+        data = pytesseract.image_to_data(
+            prepared, config="--oem 3 --psm 11", output_type=pytesseract.Output.DICT
+        )
+        probe = extract_clock_tokens(data, image.width, image.height)
+        probe["full_pass_text"] = (self.last_clock_ocr_text or "")[:120]
+        return probe
 
     def detect(self, image) -> list[SignalCandidate]:
         """Compatibilidade: retorna apenas os candidatos de sinal."""

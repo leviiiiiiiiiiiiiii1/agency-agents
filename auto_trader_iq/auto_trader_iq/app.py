@@ -2401,7 +2401,23 @@ class AutoTraderApp(tk.Tk):
         if clock is None:
             # Sem leitura válida, o relógio existente envelhece naturalmente e o
             # portão de 1,5 s passa a bloquear sinais. Nada é inventado aqui.
-            self.latest_clock_ocr_text = self.detector.last_clock_ocr_text if self.detector else ""
+            detector = self.detector
+            self.latest_clock_ocr_text = detector.last_clock_ocr_text if detector else ""
+            probe = getattr(detector, "last_clock_probe", None)
+            if probe:
+                detector.last_clock_probe = None
+                self._record_capture_journal_event(
+                    "CLOCK_PROBE",
+                    probe,
+                    idempotency_key=(
+                        f"{self.capture_session_id}:clock-probe:"
+                        f"{detector.clock_probe_serial}"
+                    ),
+                    occurred_at_utc=datetime.now(timezone.utc).isoformat(
+                        timespec="milliseconds"
+                    ),
+                    source="CLOCK_PROBE",
+                )
             self._update_timer_status(now)
             return
         if reading_age > TIMER_MAX_AGE_SECONDS:
