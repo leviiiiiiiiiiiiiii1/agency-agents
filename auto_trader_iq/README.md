@@ -85,7 +85,7 @@ Regras padrão: contexto lateral ou rótulo acima de 2 velas → `NO_TRADE`; cor
 
 ### Diagnóstico visual de geometria
 
-Quando o rótulo mais à direita fica 3 ou mais velas à esquerda da última vela detectada, o app grava, no máximo uma vez por minuto, uma imagem anotada em `%LOCALAPPDATA%\AutoTraderIQ\screenshots\geometry_*.png` (centros de vela em azul, última vela em magenta, rótulos em laranja, o mais à direita em vermelho) junto de um `.json` com as medidas. Serve para separar velas fantasmas, rótulo desenhado longe do candle e sinal realmente antigo — coisas que nenhum número sozinho distingue.
+Quando o rótulo mais à direita fica 3 ou mais velas à esquerda da última vela detectada, o app grava, no máximo uma vez por minuto, uma imagem anotada em `%LOCALAPPDATA%\AutoTraderIQ\screenshots\geometry_*.png` (centros de vela em azul, última vela em magenta, rótulos em laranja, o mais à direita em vermelho) junto de um `.json` com as medidas, os intervalos entre velas (`gaps_px`), os centros detectados (`bar_centers_x`) e o tamanho da imagem — detalhe suficiente para diagnosticar sem a imagem. Serve para separar velas fantasmas, rótulo desenhado longe do candle e sinal realmente antigo — coisas que nenhum número sozinho distingue.
 
 ### Relatório de calibração
 

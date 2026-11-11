@@ -194,6 +194,21 @@ class MethodAndGeometryTests(unittest.TestCase):
         text = format_report(result)
         self.assertIn("não testou a correção do setup", text)
 
+    def test_on_grid_geometry_is_summarized(self):
+        geometry = {"median_gap_px": 35.0, "bars_to_the_right": 4,
+                    "bars_to_the_right_ongrid": 0, "regular_gap_share": 0.86}
+        result = summarize([frame(geometry=geometry)] * 4)
+        self.assertEqual(result["label_bars_to_the_right_ongrid"]["max"], 0)
+        self.assertAlmostEqual(result["regular_gap_share_p50"], 0.86)
+        text = format_report(result)
+        self.assertIn("só na grade regular", text)
+
+    def test_irregular_grid_is_flagged(self):
+        geometry = {"median_gap_px": 35.0, "bars_to_the_right": 4,
+                    "bars_to_the_right_ongrid": 1, "regular_gap_share": 0.4}
+        result = summarize([frame(geometry=geometry)] * 3)
+        self.assertIn("Grade irregular", format_report(result))
+
     def test_label_geometry_is_summarized(self):
         geometry = {"median_gap_px": 32.0, "bars_to_the_right": 1}
         result = summarize([frame(geometry=geometry)] * 3)

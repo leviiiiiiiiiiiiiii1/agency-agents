@@ -264,12 +264,37 @@ def summarize(
         if isinstance(frame.get("label_geometry"), dict)
         and isinstance(frame["label_geometry"].get("bars_to_the_right"), int)
     ]
+    ongrid_counts = [
+        int(frame["label_geometry"]["bars_to_the_right_ongrid"])
+        for frame in frames
+        if isinstance(frame.get("label_geometry"), dict)
+        and isinstance(frame["label_geometry"].get("bars_to_the_right_ongrid"), int)
+    ]
+    regular_shares = [
+        float(frame["label_geometry"]["regular_gap_share"])
+        for frame in frames
+        if isinstance(frame.get("label_geometry"), dict)
+        and isinstance(frame["label_geometry"].get("regular_gap_share"), (int, float))
+    ]
 
     return {
         "frames": len(frames),
         "methods": methods,
         "current_method_measured": current_measured,
         "label_median_gap_px": round(median(gaps), 1) if gaps else None,
+        "label_bars_to_the_right_ongrid": (
+            {
+                "min": min(ongrid_counts),
+                "p50": _percentile([float(value) for value in ongrid_counts], 0.5),
+                "max": max(ongrid_counts),
+                "n": len(ongrid_counts),
+            }
+            if ongrid_counts
+            else None
+        ),
+        "regular_gap_share_p50": (
+            _percentile(regular_shares, 0.5) if regular_shares else None
+        ),
         "label_bars_to_the_right": (
             {
                 "min": min(right_counts),
@@ -462,6 +487,20 @@ def format_report(summary: Mapping[str, Any], sweeps: Sequence[tuple[str, Sequen
             f"    velas à direita do rótulo: min={geometry['min']} "
             f"p50={geometry['p50']:.0f} máx={geometry['max']} (n={geometry['n']})"
         )
+    ongrid = summary.get("label_bars_to_the_right_ongrid")
+    if ongrid:
+        lines.append(
+            f"    à direita, só na grade regular: min={ongrid['min']} "
+            f"p50={ongrid['p50']:.0f} máx={ongrid['max']} (n={ongrid['n']})"
+        )
+    if summary.get("regular_gap_share_p50") is not None:
+        share = summary["regular_gap_share_p50"]
+        lines.append(f"    espaçamentos regulares: {share:.0%} dos intervalos")
+        if share < 0.8:
+            lines.append(
+                "    Grade irregular: parte das velas detectadas pode ser detecção "
+                "fora da grade (eixo, linha, outro painel)."
+            )
 
     if summary.get("by_criteria_hash"):
         lines += ["", "Por versão de limiares (a mais recente aparece por último):"]

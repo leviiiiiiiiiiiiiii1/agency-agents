@@ -21,20 +21,47 @@ SNAPSHOT_INTERVAL_SECONDS = 60.0
 _last_snapshot_at: float | None = None
 
 
+def _grid_runs(bars: Sequence[Any], gap_px: float, slack: float = 0.25):
+    """Faixas de velas com espaçamento regular, da esquerda para a direita.
+
+    Uma detecção fora da grade (eixo, linha, elemento de outro painel) quebra a
+    faixa; é assim que uma barra fantasma deixa de envelhecer o rótulo.
+    """
+    runs: list[tuple[int, int]] = []
+    start = 0
+    for position in range(len(bars) - 1):
+        gap = float(bars[position + 1].center_x) - float(bars[position].center_x)
+        if abs(gap - gap_px) > max(4.0, gap_px * slack):
+            runs.append((start, position))
+            start = position + 1
+    runs.append((start, len(bars) - 1))
+    return runs
+
+
 def summarize(bars: Sequence[Any], candidates: Sequence[Any]) -> dict[str, Any] | None:
     """Geometria do rótulo mais à direita em relação às velas detectadas."""
     if not bars:
         return None
     gaps = [bars[i + 1].center_x - bars[i].center_x for i in range(len(bars) - 1)]
     normal_gaps = [gap for gap in gaps if gap >= 8]
+    gap_px = round(median(normal_gaps), 1) if normal_gaps else None
+    regular = (
+        sum(1 for gap in normal_gaps if abs(gap - gap_px) <= max(4.0, gap_px * 0.25))
+        if gap_px
+        else 0
+    )
     summary: dict[str, Any] = {
         "bar_count": len(bars),
-        "median_gap_px": round(median(normal_gaps), 1) if normal_gaps else None,
+        "median_gap_px": gap_px,
+        "regular_gap_share": (
+            round(regular / len(normal_gaps), 2) if normal_gaps else None
+        ),
         "first_bar_x": round(float(bars[0].center_x), 1),
         "last_bar_x": round(float(bars[-1].center_x), 1),
         "rightmost_label_x": None,
         "rightmost_label_index": None,
         "bars_to_the_right": None,
+        "bars_to_the_right_ongrid": None,
         "offset_px": None,
     }
     if not candidates:
@@ -42,11 +69,16 @@ def summarize(bars: Sequence[Any], candidates: Sequence[Any]) -> dict[str, Any] 
     newest = max(candidates, key=lambda item: item.left + item.width / 2)
     text_center = newest.left + newest.width / 2
     index = min(range(len(bars)), key=lambda i: abs(bars[i].center_x - text_center))
+    runs = _grid_runs(bars, gap_px) if gap_px else []
+    on_grid_run = next((run for run in runs if run[0] <= index <= run[1]), None)
     summary.update(
         {
             "rightmost_label_x": round(float(text_center), 1),
             "rightmost_label_index": index,
             "bars_to_the_right": len(bars) - 1 - index,
+            "bars_to_the_right_ongrid": (
+                on_grid_run[1] - index if on_grid_run else None
+            ),
             "offset_px": round(abs(float(bars[index].center_x) - text_center), 1),
         }
     )
@@ -110,9 +142,20 @@ def save_snapshot(
         target.mkdir(parents=True, exist_ok=True)
         stamp = time.strftime("%Y%m%d-%H%M%S")
         image_path = target / f"geometry_{stamp}.png"
-        annotate(image, bars, candidates).save(image_path)
+        annotated = annotate(image, bars, candidates)
+        annotated.save(image_path)
+        canvas_width, canvas_height = annotated.size
+        # O arquivo do snapshot é o único lugar com detalhe por vela: é o que
+        # permite diagnosticar sem a imagem, que nem sempre é enviada.
+        detailed = dict(summary)
+        detailed["gaps_px"] = [
+            round(float(bars[i + 1].center_x) - float(bars[i].center_x), 1)
+            for i in range(len(bars) - 1)
+        ]
+        detailed["bar_centers_x"] = [round(float(bar.center_x), 1) for bar in bars]
+        detailed["image_size"] = [int(canvas_width), int(canvas_height)]
         image_path.with_suffix(".json").write_text(
-            json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
+            json.dumps(detailed, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         _last_snapshot_at = now
         return image_path

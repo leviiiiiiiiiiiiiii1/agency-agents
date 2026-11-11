@@ -42,6 +42,31 @@ class SummarizeTests(unittest.TestCase):
         self.assertEqual(summary["median_gap_px"], 40.0)
 
 
+class GridTests(unittest.TestCase):
+    def test_off_grid_bars_do_not_age_the_label(self):
+        # grade regular de 40 px até 160, depois duas detecções fora da grade.
+        on_grid = bars([0, 40, 80, 120, 160])
+        noisy = bars([0, 40, 80, 120, 160, 300, 420])
+        plain = diagnostics.summarize(on_grid, [label(150)])
+        noisy_summary = diagnostics.summarize(noisy, [label(150)])
+        self.assertEqual(plain["bars_to_the_right_ongrid"], 0)
+        self.assertEqual(noisy_summary["bars_to_the_right"], 2)
+        self.assertEqual(noisy_summary["bars_to_the_right_ongrid"], 0)
+
+    def test_regular_gap_share_detects_irregular_grid(self):
+        self.assertEqual(
+            diagnostics.summarize(bars([0, 40, 80, 120]), [label(30)])["regular_gap_share"],
+            1.0,
+        )
+        irregular = diagnostics.summarize(bars([0, 40, 41, 200]), [label(30)])
+        self.assertLess(irregular["regular_gap_share"], 0.6)
+
+    def test_missing_ongrid_measure_is_none_without_gap(self):
+        summary = diagnostics.summarize(bars([0, 1, 2]), [label(0)])
+        self.assertIsNone(summary["median_gap_px"])
+        self.assertIsNone(summary["bars_to_the_right_ongrid"])
+
+
 class SnapshotTests(unittest.TestCase):
     def setUp(self):
         diagnostics.reset_rate_limit()
@@ -59,6 +84,15 @@ class SnapshotTests(unittest.TestCase):
         payload = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
         self.assertEqual(payload["bars_to_the_right"], 3)
         self.assertEqual(Image.open(path).size, (200, 120))
+
+    def test_snapshot_json_carries_per_bar_detail(self):
+        path = diagnostics.save_snapshot(
+            self.image, bars([0, 40, 80, 120, 160.0]), [label(30)], self.dir
+        )
+        payload = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+        self.assertEqual(payload["gaps_px"], [40.0, 40.0, 40.0, 40.0])
+        self.assertEqual(payload["bar_centers_x"], [0.0, 40.0, 80.0, 120.0, 160.0])
+        self.assertEqual(payload["image_size"], [200, 120])
 
     def test_no_snapshot_when_label_is_recent(self):
         path = diagnostics.save_snapshot(

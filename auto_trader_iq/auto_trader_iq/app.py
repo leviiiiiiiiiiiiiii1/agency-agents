@@ -11,7 +11,6 @@ from datetime import datetime, timezone
 import os
 import sys
 import time
-from statistics import median
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -21,6 +20,7 @@ from PIL import Image, ImageDraw, ImageTk
 
 from .capture import ScreenCapture, ScreenRegion
 from .geometry_diagnostics import save_snapshot as _save_geometry_snapshot
+from .geometry_diagnostics import summarize as summarize_geometry
 from .capture_quality import (
     FrameFreshness,
     FrameFreshnessMonitor,
@@ -121,24 +121,11 @@ CANDLE_PALETTE_MAPS: dict[str, dict[str, str]] = {
 def _label_geometry(raw_candidates, bars) -> dict[str, object] | None:
     """Onde o rótulo mais à direita caiu em relação às velas detectadas.
 
-    Idade 1 em 20 de 20 quadros só se explica com esta geometria: sem ela, não há
-    como saber se o rótulo nasce velho, se as velas detectadas incluem barras
-    extras, ou se o espaçamento entre velas está sendo subestimado.
+    Delega para o diagnóstico, que também mede a regularidade da grade: uma
+    detecção fora da grade (eixo, linha, elemento de outro painel) não deve
+    envelhecer o rótulo.
     """
-    if not raw_candidates or not bars:
-        return None
-    newest = max(raw_candidates, key=lambda item: item.left + item.width / 2)
-    text_center = newest.left + newest.width / 2
-    index = min(range(len(bars)), key=lambda i: abs(bars[i].center_x - text_center))
-    gaps = [bars[i + 1].center_x - bars[i].center_x for i in range(len(bars) - 1)]
-    normal_gaps = [gap for gap in gaps if gap >= 8]
-    return {
-        "bar_count": len(bars),
-        "label_bar_index": index,
-        "bars_to_the_right": len(bars) - 1 - index,
-        "offset_px": round(abs(bars[index].center_x - text_center), 1),
-        "median_gap_px": round(median(normal_gaps), 1) if normal_gaps else None,
-    }
+    return summarize_geometry(bars, raw_candidates)
 
 
 def _analyze_ocr_frame(
