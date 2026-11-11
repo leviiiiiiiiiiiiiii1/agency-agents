@@ -2547,6 +2547,7 @@ class AutoTraderApp(tk.Tk):
                         "max_age_seconds": TIMER_MAX_AGE_SECONDS,
                         "ocr_timings": result[-1] if isinstance(result, tuple) else None,
                         "ocr_yield": summarize_ocr_yield(result),
+                        "clock_ocr_text": self.latest_clock_ocr_text[:200],
                         "clock_age_seconds": (
                             now - self.latest_clock_at
                             if self.latest_clock_at is not None else None
@@ -2590,7 +2591,7 @@ class AutoTraderApp(tk.Tk):
             raw_candidate_count,
             color_rejected_count,
             self.latest_bar_count,
-            self.latest_clock_ocr_text,
+            frame_clock_ocr_text,
             self.signal_label_counts,
             raw_candidates,
             ocr_timings,
@@ -2649,6 +2650,9 @@ class AutoTraderApp(tk.Tk):
         if frame_clock is not None:
             self.latest_platform_clock = frame_clock
             self.latest_clock_at = captured_at
+            self.latest_clock_ocr_text = frame_clock_ocr_text
+        # Caso contrário, preserva o diagnóstico do leitor dedicado do relógio, que
+        # é o único que descreve o que a faixa do rodapé realmente continha.
         self._refresh_market_context_status()
         self._cancel_auto_pending_for_context()
         self._observe_pending_platform_minute()
@@ -2680,6 +2684,7 @@ class AutoTraderApp(tk.Tk):
                     "clock_readable": self.latest_platform_clock is not None,
                     "capture_profile_id": self.active_signal_profile_id,
                     "ocr_timings": ocr_timings,
+                    "clock_ocr_text": self.latest_clock_ocr_text[:200],
                     "clock_age_seconds": (
                         now - self.latest_clock_at
                         if self.latest_clock_at is not None else None
