@@ -11,6 +11,7 @@ from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from statistics import median
 
+from .geometry_diagnostics import grid_end_index
 from .signal_detector import SignalCandidate
 
 
@@ -220,7 +221,6 @@ def _market_candles_from_bars(
     if len(bars) < 2:
         return []
     from math import ceil
-    from PIL import Image
 
     source = image.convert("RGB")
     pixels = source.load()
@@ -437,6 +437,7 @@ def filter_to_recent_candle(
     candidates: list[SignalCandidate],
     bars: list[CandleBar],
     recent_bars: int = 2,
+    reference: str = "detected",
 ) -> list[SignalCandidate]:
     """Retorna candidatos alinhados às últimas N barras e à mais recente delas.
 
@@ -462,24 +463,40 @@ def filter_to_recent_candle(
             enumerate(bars), key=lambda pair: abs(pair[1].center_x - text_center)
         )
         distance = abs(candle.center_x - text_center)
-        if distance <= tolerance and candle_index >= first_recent_index:
+        if distance > tolerance:
+            continue
+        if reference == "grid":
+            # A idade pela grade pode ser menor que a contagem bruta: detecções fora
+            # da grade não são velas e não devem envelhecer o rótulo.
+            age = label_age_bars(candidate, bars, reference="grid")
+            if age is None or age > recent_bars - 1:
+                continue
+            # Quanto menor a idade, mais recente.
+            matched.append((-age, distance, candidate))
+        elif candle_index >= first_recent_index:
             matched.append((candle_index, distance, candidate))
 
     if not matched:
         return []
-    # Entre rótulos recentes, use somente o mais à direita (mais próximo do candle atual).
-    newest_signal_bar = max(index for index, _distance, _candidate in matched)
-    return [candidate for index, _distance, candidate in matched if index == newest_signal_bar]
+    # Entre rótulos recentes, use somente o mais próximo do candle atual. Na
+    # referência "detected" a recência é o índice; na "grid" é a idade negada.
+    newest = max(entry[0] for entry in matched)
+    return [candidate for position, _distance, candidate in matched if position == newest]
 
 
-def label_age_bars(candidate, bars) -> int | None:
+def label_age_bars(candidate, bars, reference: str = "detected") -> int | None:
     """Distância em velas entre o rótulo e a vela mais recente.
 
     Zero significa "está na última vela". Retorna ``None`` quando não há velas ou o
     rótulo está longe demais de qualquer uma para ser contado, porque nesse caso a
     idade não é desconhecida por acaso: ela não pode ser medida.
+
+    ``reference="detected"`` conta contra a última vela detectada, inclusive uma
+    detecção fora da grade de velas. ``reference="grid"`` conta contra a última vela
+    da faixa regular que contém o rótulo, e devolve ``None`` quando a grade não pode
+    ser determinada — falha fechada, sem inventar idade.
     """
-    if not bars or candidate is None:
+    if not bars or candidate is None or reference not in ("detected", "grid"):
         return None
     gaps = [bars[i + 1].center_x - bars[i].center_x for i in range(len(bars) - 1)]
     normal_gaps = [gap for gap in gaps if gap >= 8]
@@ -490,4 +507,9 @@ def label_age_bars(candidate, bars) -> int | None:
     )
     if abs(bar.center_x - text_center) > tolerance:
         return None
+    if reference == "grid":
+        end = grid_end_index(bars, index)
+        if end is None:
+            return None
+        return end - index
     return len(bars) - 1 - index

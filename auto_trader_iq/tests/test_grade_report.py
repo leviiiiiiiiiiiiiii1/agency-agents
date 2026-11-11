@@ -209,6 +209,15 @@ class MethodAndGeometryTests(unittest.TestCase):
         result = summarize([frame(geometry=geometry)] * 3)
         self.assertIn("Grade irregular", format_report(result))
 
+    def test_age_reference_is_reported(self):
+        with_ref = frame()
+        with_ref["age_reference"] = "grid"
+        plain = frame()
+        plain["age_reference"] = "detected"
+        result = summarize([with_ref, plain])
+        self.assertEqual(result["age_references"], {"grid": 1, "detected": 1})
+        self.assertIn("Referência da idade do rótulo", format_report(result))
+
     def test_label_geometry_is_summarized(self):
         geometry = {"median_gap_px": 32.0, "bars_to_the_right": 1}
         result = summarize([frame(geometry=geometry)] * 3)

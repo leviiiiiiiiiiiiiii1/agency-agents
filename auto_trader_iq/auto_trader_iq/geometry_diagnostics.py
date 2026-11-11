@@ -21,6 +21,25 @@ SNAPSHOT_INTERVAL_SECONDS = 60.0
 _last_snapshot_at: float | None = None
 
 
+def grid_end_index(bars: Sequence[Any], index: int) -> int | None:
+    """Última vela da faixa regular que contém ``index``.
+
+    ``None`` quando não há espaçamento típico suficiente para definir a grade; nesse
+    caso a idade não deve ser estimada pela grade.
+    """
+    if not bars or not (0 <= index < len(bars)):
+        return None
+    gaps = [bars[i + 1].center_x - bars[i].center_x for i in range(len(bars) - 1)]
+    normal_gaps = [gap for gap in gaps if gap >= 8]
+    if not normal_gaps:
+        return None
+    gap_px = median(normal_gaps)
+    for start, end in _grid_runs(bars, gap_px):
+        if start <= index <= end:
+            return end
+    return None
+
+
 def _grid_runs(bars: Sequence[Any], gap_px: float, slack: float = 0.25):
     """Faixas de velas com espaçamento regular, da esquerda para a direita.
 

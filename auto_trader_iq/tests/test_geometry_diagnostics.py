@@ -133,3 +133,19 @@ class SnapshotTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GridEndTests(unittest.TestCase):
+    def test_grid_end_stops_at_the_first_break(self):
+        from auto_trader_iq.geometry_diagnostics import grid_end_index
+
+        noisy = bars([0, 40, 80, 120, 300, 420])
+        self.assertEqual(grid_end_index(noisy, 1), 3)
+        self.assertEqual(grid_end_index(noisy, 4), 4)
+
+    def test_grid_end_is_none_without_regular_spacing(self):
+        from auto_trader_iq.geometry_diagnostics import grid_end_index
+
+        self.assertIsNone(grid_end_index(bars([0, 1, 2]), 0))
+        self.assertIsNone(grid_end_index(bars([5]), 0))
+        self.assertIsNone(grid_end_index(bars([0, 40]), 7))

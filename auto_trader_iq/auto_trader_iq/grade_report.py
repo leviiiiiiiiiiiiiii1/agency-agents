@@ -100,6 +100,7 @@ def load_frames(db_path: str | Path) -> list[dict[str, Any]]:
                 "raw_candidate_count": payload.get("raw_candidate_count"),
                 "recent_candidate_count": payload.get("recent_candidate_count"),
                 "label_geometry": (payload.get("association") or {}).get("label_geometry"),
+                "age_reference": (payload.get("association") or {}).get("age_reference"),
                 "palette_calibrated": bool(
                     (payload.get("association") or {}).get("palette_calibrated")
                 ),
@@ -277,8 +278,14 @@ def summarize(
         and isinstance(frame["label_geometry"].get("regular_gap_share"), (int, float))
     ]
 
+    references: dict[str, int] = {}
+    for frame in frames:
+        key = str(frame.get("age_reference") or "detected")
+        references[key] = references.get(key, 0) + 1
+
     return {
         "frames": len(frames),
+        "age_references": references,
         "methods": methods,
         "current_method_measured": current_measured,
         "label_median_gap_px": round(median(gaps), 1) if gaps else None,
@@ -465,6 +472,12 @@ def format_report(summary: Mapping[str, Any], sweeps: Sequence[tuple[str, Sequen
                 f"    {name:<22} n={stats['n']:<5} p10={stats['p10']:<7} "
                 f"p50={stats['p50']:<7} p90={stats['p90']}"
             )
+
+    if summary.get("age_references"):
+        rendered = " · ".join(
+            f"{name}={count}" for name, count in sorted(summary["age_references"].items())
+        )
+        lines += ["", f"Referência da idade do rótulo: {rendered}"]
 
     if summary.get("methods"):
         lines += ["", "Método de medição (como a geometria foi lida):"]

@@ -83,6 +83,15 @@ Configuração inválida ou contraditória não vira "sem filtro": os critérios
 
 Regras padrão: contexto lateral ou rótulo acima de 2 velas → `NO_TRADE`; corpo acima de 2× a mediana, preço a menos de 15% do nível contrário, fechamento colado no extremo ou sinal contra o contexto → `C`; rótulo com 2 velas de idade ou corpo fora da faixa ideal (fraco ou acima de 1,5×) → `B`; rótulo na última vela fechada (idade ≤ 1, porque a vela em formação fica à direita da seta), corpo entre 0,4× e 1,5× a mediana e folga do nível → `A`. Limiares ficam em `config.json` na chave `grading`, são validados e voltam ao padrão declarado quando inválidos. `grading_version` registra a versão dos padrões: ao carregar uma configuração antiga, o valor `fresh_age_bars = 0` — que a tela nunca produz — é corrigido para 1, com aviso no painel; qualquer outro valor escolhido à mão é preservado. A classe, o hash dos limiares e as medidas usadas vão para o journal em `grade`.
 
+### Referência da idade do rótulo
+
+`label_age_reference` em `config.json` decide contra o que a idade do rótulo é contada:
+
+- `detected` (padrão) — contra a última vela **detectada**, inclusive uma detecção fora da grade (eixo, linha, outro painel). É conservador, mas uma detecção fantasma empurra o rótulo para fora da janela de 2 velas.
+- `grid` — contra a última vela da **faixa regular** que contém o rótulo. Se a grade não puder ser determinada, a idade volta `None` e o candidato é descartado (falha fechada).
+
+Medido no journal do usuário: com `detected`, a idade mediana é 4 velas; com `grid`, é 1. A janela continua sendo de 2 velas — muda só o que conta como vela.
+
 ### Diagnóstico visual de geometria
 
 Quando o rótulo mais à direita fica 3 ou mais velas à esquerda da última vela detectada, o app grava, no máximo uma vez por minuto, uma imagem anotada em `%LOCALAPPDATA%\AutoTraderIQ\screenshots\geometry_*.png` (centros de vela em azul, última vela em magenta, rótulos em laranja, o mais à direita em vermelho) junto de um `.json` com as medidas, os intervalos entre velas (`gaps_px`), os centros detectados (`bar_centers_x`) e o tamanho da imagem — detalhe suficiente para diagnosticar sem a imagem. Serve para separar velas fantasmas, rótulo desenhado longe do candle e sinal realmente antigo — coisas que nenhum número sozinho distingue.

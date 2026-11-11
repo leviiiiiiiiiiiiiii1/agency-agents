@@ -127,6 +127,39 @@ class CandleDetectionDiagnosticsTests(unittest.TestCase):
         self.assertEqual([bar.color for bar in bars], ["green"])
 
 
+class GridReferenceAgeTests(unittest.TestCase):
+    def bars(self, centers):
+        from types import SimpleNamespace
+
+        return [SimpleNamespace(center_x=float(center)) for center in centers]
+
+    def candidate(self, center):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(left=center - 20, width=40, top=0, height=14)
+
+    def test_detected_reference_counts_phantom_bars(self):
+        noisy = self.bars([0, 40, 80, 120, 300, 420])
+        self.assertEqual(label_age_bars(self.candidate(80), noisy), 3)
+
+    def test_grid_reference_ignores_them(self):
+        noisy = self.bars([0, 40, 80, 120, 300, 420])
+        self.assertEqual(label_age_bars(self.candidate(80), noisy, reference="grid"), 1)
+
+    def test_unknown_reference_is_refused(self):
+        self.assertIsNone(
+            label_age_bars(self.candidate(80), self.bars([0, 40, 80]), reference="outra")
+        )
+
+    def test_filter_accepts_a_label_that_phantoms_pushed_out(self):
+        noisy = self.bars([0, 40, 80, 120, 300, 420])
+        candidate = self.candidate(120)
+        self.assertEqual(filter_to_recent_candle([candidate], noisy), [])
+        self.assertEqual(
+            filter_to_recent_candle([candidate], noisy, reference="grid"), [candidate]
+        )
+
+
 class LabelAgeTests(unittest.TestCase):
     @staticmethod
     def candidate(center_x):

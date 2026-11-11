@@ -134,6 +134,7 @@ def _analyze_ocr_frame(
     color_direction_map: dict[str, str] | None = None,
     read_clock: bool = True,
     snapshot_dir: Path | None = None,
+    age_reference: str = "detected",
 ):
     """OCR labels and match them against candles detected in this exact frame."""
     color_map = dict(color_direction_map or {})
@@ -144,13 +145,15 @@ def _analyze_ocr_frame(
     )
     candle_seconds = round(time.monotonic() - candle_started_at, 3)
     raw_candidates, clock = detector.detect_frame(image, read_clock=read_clock)
-    candidates = filter_to_recent_candle(raw_candidates, bars)
+    candidates = filter_to_recent_candle(raw_candidates, bars, reference=age_reference)
     label_geometry = _label_geometry(raw_candidates, bars)
     if snapshot_dir is not None and label_geometry:
         # Uma imagem a cada minuto, no máximo, e só quando o rótulo está longe da
         # última vela detectada: é o caso que o relatório sinalizou.
         _save_geometry_snapshot(image, bars, raw_candidates, snapshot_dir)
-    label_ages = [label_age_bars(candidate, bars) for candidate in candidates]
+    label_ages = [
+        label_age_bars(candidate, bars, reference=age_reference) for candidate in candidates
+    ]
     # Geometria de corpo/pavio só é extraída quando existe candidato e a paleta está
     # calibrada: sem semântica de cor não há direção, e a extração custa caro.
     body_started_at = time.monotonic()
@@ -296,6 +299,7 @@ class AutoTraderApp(tk.Tk):
         self.eligibility_text = ""
         self.eligibility_hash: str | None = None
         self.grade_criteria = DEFAULT_GRADE_CRITERIA
+        self.label_age_reference = "detected"
         self.grade_code = "CRITERIA_UNDEFINED"
         self.grade_text = ""
         self.grade_reasons: tuple[str, ...] = ()
@@ -2438,6 +2442,7 @@ class AutoTraderApp(tk.Tk):
             dict(color_map) if color_map else None,
             False,
             self.data_dir / "screenshots",
+            self.label_age_reference,
         )
         self.after(50, self._poll_ocr_result)
 
@@ -2814,6 +2819,7 @@ class AutoTraderApp(tk.Tk):
                         "recent_count": len(self.last_candidates),
                         "bar_count": self.latest_bar_count,
                         "palette_calibrated": bool(self._active_candle_color_direction_map()),
+                        "age_reference": self.label_age_reference,
                         "label_age_bars": (
                             candidate_label_ages[-1]
                             if candidate_label_ages else None
@@ -4155,6 +4161,19 @@ class AutoTraderApp(tk.Tk):
                 "formação fica à direita da seta, então idade 0 nunca ocorre."
             )
 
+    def _load_label_age_reference(self, payload: object) -> None:
+        """Como a idade do rótulo é contada: contra toda detecção ou só a grade."""
+        if payload is None:
+            self.label_age_reference = "detected"
+            return
+        if payload not in ("detected", "grid"):
+            self.label_age_reference = "detected"
+            self.capture_status.set(
+                f"Referência de idade desconhecida ({payload!r}); usando detecção bruta."
+            )
+            return
+        self.label_age_reference = str(payload)
+
     def _persist_config(self) -> None:
         payload: dict[str, object] = {
             "operation_mode": self.operation_mode.value,
@@ -4169,6 +4188,7 @@ class AutoTraderApp(tk.Tk):
             "demo_mouse_keepalive_enabled": bool(self.demo_mouse_keepalive_var.get()),
             "demo_mouse_keepalive_interval_seconds": self.demo_mouse_keepalive_interval_var.get(),
             "eligibility": self.eligibility_criteria.as_dict(),
+            "label_age_reference": self.label_age_reference,
             "grading": self.grade_criteria.as_dict(),
             "grading_version": GRADE_CRITERIA_VERSION,
         }
@@ -4277,6 +4297,7 @@ class AutoTraderApp(tk.Tk):
             self._load_grade_criteria(
                 config.get("grading"), config.get("grading_version")
             )
+            self._load_label_age_reference(config.get("label_age_reference"))
             if isinstance(config.get("ocr_enabled"), bool):
                 self.ocr_enabled_var.set(config["ocr_enabled"])
             if isinstance(config.get("compact_during_capture"), bool):
