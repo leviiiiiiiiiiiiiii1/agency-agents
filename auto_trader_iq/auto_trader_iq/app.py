@@ -233,6 +233,8 @@ class AutoTraderApp(tk.Tk):
         self.latest_platform_clock: PlatformClockReading | None = None
         self.latest_clock_ocr_text = ""
         self.latest_clock_at: float | None = None
+        # Aviso exibido quando a sonda confirma que o relógio não está na seleção.
+        self.clock_probe_hint: str | None = None
         self.pending_armed_clock: PlatformClockReading | None = None
         self.pending_rollover_notified = False
         self.latest_bar_count = 0
@@ -2406,6 +2408,13 @@ class AutoTraderApp(tk.Tk):
             probe = getattr(detector, "last_clock_probe", None)
             if probe:
                 detector.last_clock_probe = None
+                if not probe.get("time_tokens") and not probe.get("clock_words"):
+                    self.clock_probe_hint = (
+                        "HORA ATUAL não encontrada na área capturada; selecione a região "
+                        "incluindo a barra do relógio da plataforma."
+                    )
+                else:
+                    self.clock_probe_hint = None
                 self._record_capture_journal_event(
                     "CLOCK_PROBE",
                     probe,
@@ -3591,7 +3600,10 @@ class AutoTraderApp(tk.Tk):
             and observed_at - self.latest_clock_at <= TIMER_MAX_AGE_SECONDS
         )
         if platform_clock is None or not fresh:
-            self.timer_status.set("M1: HORA ATUAL ausente/desatualizada; confirmação e clique bloqueados.")
+            hint = f" {self.clock_probe_hint}" if self.clock_probe_hint else ""
+            self.timer_status.set(
+                "M1: HORA ATUAL ausente/desatualizada; confirmação e clique bloqueados." + hint
+            )
             self._refresh_simulation_buttons()
             return
 
