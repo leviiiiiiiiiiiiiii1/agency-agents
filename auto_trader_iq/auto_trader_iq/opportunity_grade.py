@@ -8,7 +8,7 @@ recente e regime de contexto — e declara explicitamente o que ficou sem medir.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from statistics import median
 from typing import Any, Mapping, Sequence
 
@@ -20,6 +20,10 @@ GRADE_NO_TRADE = "NO_TRADE"
 # Medidas que a captura de tela não fornece hoje. Ficam explícitas para que a
 # classificação nunca sugira que foram consideradas.
 UNMEASURED = ("rsi20", "macd_histograma", "distancia_ema20")
+
+# Versão 1 gravava ``fresh_age_bars=0``, valor que a tela nunca produz (a vela em
+# formação fica sempre à direita da seta). Versão 2 corrige para 1.
+GRADE_CRITERIA_VERSION = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,8 +60,11 @@ class GradeCriteria:
         return cls(**{name: data.get(name) for name in cls().as_dict()})
 
 
+# A seta é desenhada na última vela fechada, e o gráfico mantém a vela em formação à
+# direita dela: idade 0 não ocorre na prática. Medido em 12 quadros com sinal — todos
+# com idade 1. Por isso "fresco" significa idade <= 1, aprovado pelo usuário.
 DEFAULT_CRITERIA = GradeCriteria(
-    fresh_age_bars=0,
+    fresh_age_bars=1,
     max_age_bars=2,
     min_body_vs_median=0.4,
     max_body_vs_median_a=1.5,
@@ -65,6 +72,21 @@ DEFAULT_CRITERIA = GradeCriteria(
     min_distance_to_level=0.15,
     block_lateral_regime=True,
 )
+
+
+def migrate_criteria(
+    criteria: GradeCriteria, version: int | None
+) -> tuple[GradeCriteria, bool]:
+    """Aplica correções de padrão antigo. Devolve ``(criteria, mudou)``.
+
+    Só mexe no valor que era padrão da versão anterior; um valor diferente foi
+    escolha explícita e é preservado.
+    """
+    if version is not None and version >= GRADE_CRITERIA_VERSION:
+        return criteria, False
+    if criteria.fresh_age_bars == 0:
+        return replace(criteria, fresh_age_bars=DEFAULT_CRITERIA.fresh_age_bars), True
+    return criteria, False
 
 
 def validate_grade_criteria(criteria: GradeCriteria) -> list[str]:
@@ -261,8 +283,10 @@ def grade_opportunity(
 
     if features.age_bars > criteria.fresh_age_bars:
         minor.append(f"rótulo com {features.age_bars} vela(s) de idade")
-    else:
+    elif features.age_bars == 0:
         strong.append("rótulo na vela atual")
+    else:
+        strong.append(f"rótulo na vela fechada mais recente ({features.age_bars} de idade)")
 
     ratio = features.body_vs_median
     if ratio is None:

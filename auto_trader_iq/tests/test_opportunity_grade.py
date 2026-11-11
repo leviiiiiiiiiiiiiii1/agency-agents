@@ -3,12 +3,14 @@ from types import SimpleNamespace
 
 from auto_trader_iq.opportunity_grade import (
     DEFAULT_CRITERIA,
+    GRADE_CRITERIA_VERSION,
     GRADE_GOOD,
     GRADE_IMMEDIATE,
     GRADE_NO_TRADE,
     GRADE_RISKY,
     GradeCriteria,
     SignalFeatures,
+    migrate_criteria,
     build_features,
     grade_opportunity,
     validate_grade_criteria,
@@ -60,45 +62,87 @@ class CriteriaValidationTests(unittest.TestCase):
         self.assertEqual(grade.code, "CRITERIA_UNDEFINED")
 
 
+class MigrationTests(unittest.TestCase):
+    def test_legacy_default_freshness_is_corrected(self):
+        legacy = GradeCriteria(**{**DEFAULT_CRITERIA.as_dict(), "fresh_age_bars": 0})
+        migrated, changed = migrate_criteria(legacy, None)
+        self.assertTrue(changed)
+        self.assertEqual(migrated.fresh_age_bars, 1)
+
+    def test_explicit_non_default_freshness_is_preserved(self):
+        chosen = GradeCriteria(**{**DEFAULT_CRITERIA.as_dict(), "fresh_age_bars": 2})
+        migrated, changed = migrate_criteria(chosen, 1)
+        self.assertFalse(changed)
+        self.assertEqual(migrated.fresh_age_bars, 2)
+
+    def test_current_version_is_untouched(self):
+        legacy = GradeCriteria(**{**DEFAULT_CRITERIA.as_dict(), "fresh_age_bars": 0})
+        migrated, changed = migrate_criteria(legacy, GRADE_CRITERIA_VERSION)
+        self.assertFalse(changed)
+        self.assertEqual(migrated.fresh_age_bars, 0)
+
+    def test_other_fields_survive_migration(self):
+        legacy = GradeCriteria(**{
+            **DEFAULT_CRITERIA.as_dict(),
+            "fresh_age_bars": 0,
+            "min_distance_to_level": 0.22,
+        })
+        migrated, _changed = migrate_criteria(legacy, 1)
+        self.assertEqual(migrated.min_distance_to_level, 0.22)
+
+
 class GradeTests(unittest.TestCase):
     def grade(self, **overrides):
         return grade_opportunity(features(**overrides), DEFAULT_CRITERIA)
 
     def test_fresh_signal_with_normal_body_is_immediate(self):
-        self.assertEqual(self.grade().code, GRADE_IMMEDIATE)
+        self.assertEqual(self.grade(age_bars=0).code, GRADE_IMMEDIATE)
 
-    def test_older_label_drops_to_good(self):
-        self.assertEqual(self.grade(age_bars=1).code, GRADE_GOOD)
+    def test_freshness_default_matches_measured_screen_behaviour(self):
+        self.assertEqual(DEFAULT_CRITERIA.fresh_age_bars, 1)
+
+    def test_label_on_last_closed_candle_is_still_immediate(self):
+        self.assertEqual(self.grade(age_bars=1).code, GRADE_IMMEDIATE)
+
+    def test_label_two_candles_old_drops_to_good(self):
+        self.assertEqual(self.grade(age_bars=2).code, GRADE_GOOD)
 
     def test_label_beyond_limit_is_no_trade(self):
         self.assertEqual(self.grade(age_bars=3).code, GRADE_NO_TRADE)
 
+    def test_last_closed_candle_has_its_own_reason_text(self):
+        grade = self.grade(age_bars=1, body_vs_median=1.0)
+        self.assertEqual(grade.code, GRADE_IMMEDIATE)
+        self.assertIn("vela fechada mais recente", grade.reasons[0])
+
     def test_lateral_market_is_no_trade(self):
-        self.assertEqual(self.grade(context_regime="lateral").code, GRADE_NO_TRADE)
+        self.assertEqual(
+            self.grade(age_bars=0, context_regime="lateral").code, GRADE_NO_TRADE
+        )
 
     def test_stretched_body_is_risky(self):
-        grade = self.grade(body_vs_median=2.6)
+        grade = self.grade(age_bars=0, body_vs_median=2.6)
         self.assertEqual(grade.code, GRADE_RISKY)
         self.assertIn("esticado", grade.reasons[0])
 
     def test_body_above_ideal_band_is_not_immediate(self):
-        grade = self.grade(body_vs_median=1.8)
+        grade = self.grade(age_bars=0, body_vs_median=1.8)
         self.assertEqual(grade.code, GRADE_GOOD)
         self.assertIn("acima do ideal", grade.reasons[0])
 
     def test_weak_body_is_only_good(self):
-        self.assertEqual(self.grade(body_vs_median=0.2).code, GRADE_GOOD)
+        self.assertEqual(self.grade(age_bars=0, body_vs_median=0.2).code, GRADE_GOOD)
 
     def test_price_near_blocking_level_is_risky(self):
-        grade = self.grade(distance_to_level=0.08)
+        grade = self.grade(age_bars=0, distance_to_level=0.08)
         self.assertEqual(grade.code, GRADE_RISKY)
         self.assertIn("nível contrário", grade.reasons[0])
 
     def test_close_at_own_extreme_is_risky(self):
-        self.assertEqual(self.grade(close_from_extreme=0.05).code, GRADE_RISKY)
+        self.assertEqual(self.grade(age_bars=0, close_from_extreme=0.05).code, GRADE_RISKY)
 
     def test_signal_against_context_is_risky(self):
-        grade = self.grade(context_direction="SELL")
+        grade = self.grade(age_bars=0, context_direction="SELL")
         self.assertEqual(grade.code, GRADE_RISKY)
         self.assertIn("contra contexto", grade.reasons[0])
 

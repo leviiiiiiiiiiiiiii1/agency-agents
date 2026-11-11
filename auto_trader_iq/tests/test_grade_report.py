@@ -121,14 +121,14 @@ class DiagnosisTests(unittest.TestCase):
         self.assertEqual(result["counts"]["LABEL_OUTSIDE_WINDOW"], 1)
 
     def test_unreachable_fresh_age_is_flagged(self):
-        result = summarize([frame("B", age=1), frame("B", age=1)])
-        self.assertEqual(result["min_age_observed"], 1)
+        result = summarize([frame("B", age=2), frame("B", age=2)])
+        self.assertEqual(result["min_age_observed"], 2)
         text = format_report(result)
         self.assertIn("classe A é inalcançável", text)
         self.assertIn("decisão sua", text)
 
     def test_reachable_fresh_age_is_not_flagged(self):
-        text = format_report(summarize([frame("A", age=0)]))
+        text = format_report(summarize([frame("A", age=1)]))
         self.assertNotIn("inalcançável", text)
 
     def test_report_prints_diagnosis_sections(self):

@@ -72,7 +72,9 @@ from .eligibility import (
 from .ocr_diagnostics import classify_association_outcome, summarize_ocr_yield
 from .opportunity_grade import (
     DEFAULT_CRITERIA as DEFAULT_GRADE_CRITERIA,
+    GRADE_CRITERIA_VERSION,
     GradeCriteria,
+    migrate_criteria,
     build_features,
     grade_opportunity,
     validate_grade_criteria,
@@ -4103,7 +4105,7 @@ class AutoTraderApp(tk.Tk):
             "context_direction": self.market_context_direction,
         }
 
-    def _load_grade_criteria(self, payload: object) -> None:
+    def _load_grade_criteria(self, payload: object, version: object = None) -> None:
         """Carrega limiares de classificação; inválido volta ao padrão declarado."""
         if payload is None:
             self.grade_criteria = DEFAULT_GRADE_CRITERIA
@@ -4119,7 +4121,15 @@ class AutoTraderApp(tk.Tk):
             self.grade_criteria = DEFAULT_GRADE_CRITERIA
             self.capture_status.set(f"Limiares de classificação ignorados ({exc}).")
             return
+        criteria, migrated = migrate_criteria(
+            criteria, version if isinstance(version, int) else None
+        )
         self.grade_criteria = criteria
+        if migrated:
+            self.capture_status.set(
+                "Limiar de rótulo fresco atualizado de 0 para 1 vela: a vela em "
+                "formação fica à direita da seta, então idade 0 nunca ocorre."
+            )
 
     def _persist_config(self) -> None:
         payload: dict[str, object] = {
@@ -4136,6 +4146,7 @@ class AutoTraderApp(tk.Tk):
             "demo_mouse_keepalive_interval_seconds": self.demo_mouse_keepalive_interval_var.get(),
             "eligibility": self.eligibility_criteria.as_dict(),
             "grading": self.grade_criteria.as_dict(),
+            "grading_version": GRADE_CRITERIA_VERSION,
         }
         try:
             timeout_seconds = int(self.demo_activation_timeout_var.get())
@@ -4239,7 +4250,9 @@ class AutoTraderApp(tk.Tk):
             if confidence is not None:
                 self.confidence_var.set(str(confidence))
             self._load_eligibility_criteria(config.get("eligibility"))
-            self._load_grade_criteria(config.get("grading"))
+            self._load_grade_criteria(
+                config.get("grading"), config.get("grading_version")
+            )
             if isinstance(config.get("ocr_enabled"), bool):
                 self.ocr_enabled_var.set(config["ocr_enabled"])
             if isinstance(config.get("compact_during_capture"), bool):
