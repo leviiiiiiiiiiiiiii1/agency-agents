@@ -6,6 +6,7 @@ Gera candidatos visuais para revisão humana. Não valida velas nem autoriza ord
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -172,6 +173,9 @@ class TesseractSignalDetector:
         self.last_clock_ocr_text = ""
         self.last_candidate_count = 0
         self.last_color_rejected_count = 0
+        # Phase timings for the most recent frame, so latency is measured instead of
+        # guessed. Values describe work already performed; they never affect detection.
+        self.last_ocr_timings: dict[str, Any] = {}
 
     def check_ready(self) -> None:
         try:
@@ -204,6 +208,17 @@ class TesseractSignalDetector:
         if self.executable:
             pytesseract.pytesseract.tesseract_cmd = self.executable
         self.last_clock_ocr_text = ""
+        started_at = time.monotonic()
+        timings: dict[str, Any] = {
+            "full_pass_seconds": 0.0,
+            "color_fallback_seconds": 0.0,
+            "color_fallback_passes": 0,
+            "clock_crop_seconds": 0.0,
+            "clock_crop_passes": 0,
+            "used_color_fallback": False,
+            "upscale_factor": 1,
+        }
+        self.last_ocr_timings = timings
         pixel_count = image.width * image.height
         # Enlarging large captures quadruples Tesseract's input work without helping
         # labels that are already legible at native resolution. Small crops retain 2×.
@@ -212,7 +227,10 @@ class TesseractSignalDetector:
         prepared = prepared.resize((image.width * scale, image.height * scale), Image.Resampling.LANCZOS)
         whitelist = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789:"
         config = f"--oem 3 --psm 11 -c tessedit_char_whitelist={whitelist}"
+        full_pass_started_at = time.monotonic()
         data = pytesseract.image_to_data(prepared, config=config, output_type=pytesseract.Output.DICT)
+        timings["full_pass_seconds"] = round(time.monotonic() - full_pass_started_at, 3)
+        timings["upscale_factor"] = scale
         color_backed_minimum = max(40.0, self.min_confidence - 20.0)
         candidates = parse_ocr_rows(
             data,
@@ -241,10 +259,14 @@ class TesseractSignalDetector:
                     (image.width * color_scale, image.height * color_scale),
                     Image.Resampling.NEAREST,
                 )
+                fallback_started_at = time.monotonic()
                 for page_segmentation in (11, 6):
                     color_config = (
                         f"--oem 3 --psm {page_segmentation} "
                         f"-c tessedit_char_whitelist={whitelist}"
+                    )
+                    timings["color_fallback_passes"] = (
+                        int(timings["color_fallback_passes"]) + 1
                     )
                     color_data = pytesseract.image_to_data(
                         enlarged_mask,
@@ -272,6 +294,10 @@ class TesseractSignalDetector:
                         ]
                         used_color_fallback = True
                         break
+                timings["color_fallback_seconds"] = round(
+                    time.monotonic() - fallback_started_at, 3
+                )
+                timings["used_color_fallback"] = used_color_fallback
         self.last_candidate_count = len(candidates)
         self.last_color_rejected_count = 0
         color_checked: list[SignalCandidate] = []
@@ -305,10 +331,12 @@ class TesseractSignalDetector:
             )
             clock = None
             diagnostics: list[str] = []
+            clock_started_at = time.monotonic()
             for page_segmentation in (7, 6):
                 # Não use whitelist na faixa do relógio: ela elimina os espaços,
                 # cola HORA/ATUAL/data em uma única palavra e derruba a confiança.
                 clock_config = f"--oem 3 --psm {page_segmentation}"
+                timings["clock_crop_passes"] = int(timings["clock_crop_passes"]) + 1
                 clock_data = pytesseract.image_to_data(
                     clock_crop, config=clock_config, output_type=pytesseract.Output.DICT
                 )
@@ -323,6 +351,8 @@ class TesseractSignalDetector:
                 if clock is not None:
                     break
             self.last_clock_ocr_text = " | ".join(diagnostics)[:360]
+            timings["clock_crop_seconds"] = round(time.monotonic() - clock_started_at, 3)
+        timings["total_seconds"] = round(time.monotonic() - started_at, 3)
         return candidates, clock
 
     def detect(self, image) -> list[SignalCandidate]:

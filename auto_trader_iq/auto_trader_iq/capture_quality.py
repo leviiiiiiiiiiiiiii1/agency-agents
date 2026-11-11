@@ -171,3 +171,34 @@ def assess_frame(
         usable=not reasons,
         reasons=tuple(reasons),
     )
+
+
+@dataclass(frozen=True, slots=True)
+class FrameRejection:
+    """Why a finished OCR frame may not be used for signals."""
+
+    reason: str
+    stale: bool
+    quality_invalid: bool
+
+
+def classify_frame_rejection(
+    frame_age_seconds: float,
+    *,
+    max_age_seconds: float,
+    quality_fresh: bool,
+) -> FrameRejection | None:
+    """Separate age from capture-quality rejection so diagnostics stay unambiguous.
+
+    A frame that is both late and poor quality reports ``STALE_FRAME`` while still
+    flagging both causes, and either cause keeps the frame unusable for signals.
+    """
+    stale = frame_age_seconds > max_age_seconds
+    quality_invalid = not quality_fresh
+    if not stale and not quality_invalid:
+        return None
+    return FrameRejection(
+        reason="STALE_FRAME" if stale else "CAPTURE_QUALITY_INVALID",
+        stale=stale,
+        quality_invalid=quality_invalid,
+    )

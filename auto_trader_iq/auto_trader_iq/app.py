@@ -19,7 +19,13 @@ from uuid import uuid4
 from PIL import Image, ImageDraw, ImageTk
 
 from .capture import ScreenCapture, ScreenRegion
-from .capture_quality import FrameFreshness, FrameFreshnessMonitor, FrameQuality, assess_frame
+from .capture_quality import (
+    FrameFreshness,
+    FrameFreshnessMonitor,
+    FrameQuality,
+    assess_frame,
+    classify_frame_rejection,
+)
 from .operation_modes import ModeDecision, OperationMode, actual_order_execution_allowed, mode_decision
 from .opportunity_store import OpportunityStore
 from .signal_lifecycle import SignalLifecycle, SignalLifecycleTracker
@@ -91,10 +97,14 @@ def _analyze_ocr_frame(
     palette_colors: set[str] | None = None,
 ):
     """OCR labels and match them against candles detected in this exact frame."""
+    candle_started_at = time.monotonic()
     bars = detect_candle_bars(image, palette_colors=palette_colors)
+    candle_seconds = round(time.monotonic() - candle_started_at, 3)
     raw_candidates, clock = detector.detect_frame(image)
     candidates = filter_to_recent_candle(raw_candidates, bars)
     label_counts = count_signal_labels_by_candle(raw_candidates, bars, lookback=12)
+    timings = dict(detector.last_ocr_timings)
+    timings["candle_detection_seconds"] = candle_seconds
     return (
         candidates,
         clock,
@@ -104,6 +114,7 @@ def _analyze_ocr_frame(
         detector.last_clock_ocr_text,
         label_counts,
         raw_candidates,
+        timings,
     )
 
 
@@ -2360,7 +2371,11 @@ class AutoTraderApp(tk.Tk):
         if not self.running or generation != self._capture_generation or captured_at is None:
             return
         frame_age = time.monotonic() - captured_at
-        if frame_age > TIMER_MAX_AGE_SECONDS or not self._capture_quality_is_fresh():
+        if classify_frame_rejection(
+            frame_age,
+            max_age_seconds=TIMER_MAX_AGE_SECONDS,
+            quality_fresh=self._capture_quality_is_fresh(),
+        ) is not None:
             self.last_context_change_sequence = None
             self.latest_candle_bars = []
             self.market_context_regime = "unknown"
@@ -2434,14 +2449,23 @@ class AutoTraderApp(tk.Tk):
 
         now = time.monotonic()
         frame_age = now - captured_at
-        if frame_age > TIMER_MAX_AGE_SECONDS or not self._capture_quality_is_fresh():
+        rejection = classify_frame_rejection(
+            frame_age,
+            max_age_seconds=TIMER_MAX_AGE_SECONDS,
+            quality_fresh=self._capture_quality_is_fresh(),
+        )
+        if rejection is not None:
             if frame_id is not None:
                 self._record_capture_journal_event(
                     "OCR_FAILED",
                     {
                         "frame_id": frame_id,
-                        "reason": "STALE_OR_CAPTURE_QUALITY_INVALID",
+                        "reason": rejection.reason,
+                        "stale": rejection.stale,
+                        "quality_invalid": rejection.quality_invalid,
                         "processing_age_seconds": frame_age,
+                        "max_age_seconds": TIMER_MAX_AGE_SECONDS,
+                        "ocr_timings": result[-1] if isinstance(result, tuple) else None,
                     },
                     idempotency_key=f"{self.capture_session_id}:ocr-stale:{frame_id}",
                     occurred_at_utc=captured_utc,
@@ -2484,6 +2508,7 @@ class AutoTraderApp(tk.Tk):
             self.latest_clock_ocr_text,
             self.signal_label_counts,
             raw_candidates,
+            ocr_timings,
         ) = result
         self.latest_candidates_at = captured_at
         # Passa todas as caixas OCR ao reconciliador central; a deduplicação e a
@@ -2564,6 +2589,7 @@ class AutoTraderApp(tk.Tk):
                     "color_rejected_count": color_rejected_count,
                     "clock_readable": self.latest_platform_clock is not None,
                     "capture_profile_id": self.active_signal_profile_id,
+                    "ocr_timings": ocr_timings,
                 },
                 idempotency_key=f"{self.capture_session_id}:ocr-completed:{frame_id}",
                 occurred_at_utc=captured_utc,

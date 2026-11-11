@@ -51,6 +51,10 @@ O journal SQLite fica em `%LOCALAPPDATA%\AutoTraderIQ\opportunities.sqlite3` no 
 
 Antes de migrar um banco existente, o inicializador cria uma cópia consistente pelo mecanismo de backup do SQLite, com nome `opportunities.backup-v3-<UTC>.sqlite3`. Na inicialização, `quick_check`, chaves estrangeiras, sessões de captura sem encerramento e execuções sem estado final são inspecionados. Sessões órfãs só podem ser marcadas como interrompidas depois de confirmação explícita de que a captura não está ativa; execuções incertas nunca são repetidas automaticamente. A migração foi verificada em banco local de teste e no Windows do usuário; sessões órfãs e motivos de falha OCR ainda exigem revisão.
 
+### Diagnóstico de latência do OCR
+
+Cada quadro lido termina em `OCR_COMPLETED` ou `OCR_FAILED`. O motivo do descarte é explícito: `STALE_FRAME` quando o quadro passou de `1,5 s` até a análise terminar, `CAPTURE_QUALITY_INVALID` quando a captura perdeu qualidade, e ambos os sinalizadores aparecem no payload se as duas causas ocorrerem. Os mesmos eventos trazem `ocr_timings` com `full_pass_seconds`, `color_fallback_seconds`, `color_fallback_passes`, `clock_crop_seconds`, `clock_crop_passes`, `candle_detection_seconds`, `upscale_factor` e `total_seconds`. Esses números existem para localizar o gargalo — o limite de idade continua valendo e quadro defasado nunca gera sinal nem clique.
+
 O CSV legado em `%LOCALAPPDATA%\AutoTraderIQ\simulation_history.csv` continua preservado e serve à compatibilidade/exportação; ele não é apagado nem substituído pelo journal.
 
 ## Histórico e arquivos locais
