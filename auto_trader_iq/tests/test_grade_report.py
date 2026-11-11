@@ -209,6 +209,16 @@ class MethodAndGeometryTests(unittest.TestCase):
         result = summarize([frame(geometry=geometry)] * 3)
         self.assertIn("Grade irregular", format_report(result))
 
+    def test_bar_hygiene_is_reported(self):
+        cleaned = frame(geometry={"median_gap_px": 36.0, "bar_count": 12,
+                                  "bars_to_the_right": 1, "bars_to_the_right_ongrid": 1,
+                                  "regular_gap_share": 1.0})
+        cleaned["bars_detected"] = 24
+        result = summarize([cleaned])
+        self.assertEqual(result["bars_detected_p50"], 24.0)
+        self.assertEqual(result["bars_kept_p50"], 12.0)
+        self.assertIn("após higiene", format_report(result))
+
     def test_age_reference_is_reported(self):
         with_ref = frame()
         with_ref["age_reference"] = "grid"

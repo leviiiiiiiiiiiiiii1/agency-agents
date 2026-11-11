@@ -102,6 +102,7 @@ def load_frames(db_path: str | Path) -> list[dict[str, Any]]:
                 "label_geometry": (payload.get("association") or {}).get("label_geometry"),
                 "price_ladder": (payload.get("association") or {}).get("price_ladder"),
                 "age_reference": (payload.get("association") or {}).get("age_reference"),
+                "bars_detected": (payload.get("association") or {}).get("bars_detected"),
                 "palette_calibrated": bool(
                     (payload.get("association") or {}).get("palette_calibrated")
                 ),
@@ -414,8 +415,28 @@ def summarize(
         key = str(frame.get("age_reference") or "detected")
         references[key] = references.get(key, 0) + 1
 
+    detected_counts = [
+        int(frame["bars_detected"])
+        for frame in frames
+        if isinstance(frame.get("bars_detected"), int)
+    ]
+    kept_counts = [
+        int(frame["label_geometry"]["bar_count"])
+        for frame in frames
+        if isinstance(frame.get("label_geometry"), dict)
+        and isinstance(frame["label_geometry"].get("bar_count"), int)
+    ]
+
     return {
         "frames": len(frames),
+        "bars_detected_p50": (
+            _percentile([float(value) for value in detected_counts], 0.5)
+            if detected_counts
+            else None
+        ),
+        "bars_kept_p50": (
+            _percentile([float(value) for value in kept_counts], 0.5) if kept_counts else None
+        ),
         "age_references": references,
         "methods": methods,
         "current_method_measured": current_measured,
@@ -658,6 +679,14 @@ def format_report(summary: Mapping[str, Any], sweeps: Sequence[tuple[str, Sequen
                 "    Nenhum quadro medido com o método atual: esta amostra ainda não "
                 "testou a correção do setup."
             )
+
+    if summary.get("bars_detected_p50") is not None:
+        kept = summary.get("bars_kept_p50")
+        kept_text = f"{kept:.0f}" if kept is not None else "—"
+        lines.append(
+            f"    velas por quadro: detector {summary['bars_detected_p50']:.0f} · "
+            f"após higiene {kept_text}"
+        )
 
     if summary.get("label_median_gap_px"):
         lines.append(

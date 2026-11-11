@@ -83,6 +83,12 @@ Configuração inválida ou contraditória não vira "sem filtro": os critérios
 
 Regras padrão: contexto lateral ou rótulo acima de 2 velas → `NO_TRADE`; corpo acima de 2× a mediana, preço a menos de 15% do nível contrário, fechamento colado no extremo ou sinal contra o contexto → `C`; rótulo com 2 velas de idade ou corpo fora da faixa ideal (fraco ou acima de 1,5×) → `B`; rótulo na última vela fechada (idade ≤ 1, porque a vela em formação fica à direita da seta), corpo entre 0,4× e 1,5× a mediana e folga do nível → `A`. Limiares ficam em `config.json` na chave `grading`, são validados e voltam ao padrão declarado quando inválidos. `grading_version` registra a versão dos padrões: ao carregar uma configuração antiga, o valor `fresh_age_bars = 0` — que a tela nunca produz — é corrigido para 1, com aviso no painel; qualquer outro valor escolhido à mão é preservado. A classe, o hash dos limiares e as medidas usadas vão para o journal em `grade`.
 
+### Higiene das barras
+
+`bar_hygiene.py` limpa a detecção antes de qualquer medida: descarta barra cujo corpo na cor da vela tem menos de 30% do espaçamento típico (cursor tracejado, eixo, marca de painel) e junta barras mais próximas que meia vela, mantendo a de maior corpo. Numa captura real havia **três barras dentro de um único candle** e outras sobre o cursor de tempo — sem isso, idade e preço eram medidos contra velas inexistentes.
+
+O relatório mostra `velas por quadro: detector N · após higiene M`.
+
 ### Referência da idade do rótulo
 
 `label_age_reference` em `config.json` decide contra o que a idade do rótulo é contada:

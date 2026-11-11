@@ -18,6 +18,7 @@ from uuid import uuid4
 
 from PIL import Image, ImageDraw, ImageTk
 
+from .bar_hygiene import consolidate_bars
 from .capture import ScreenCapture, ScreenRegion
 from .geometry_diagnostics import save_snapshot as _save_geometry_snapshot
 from .geometry_diagnostics import summarize as summarize_geometry
@@ -147,6 +148,12 @@ def _analyze_ocr_frame(
     bars, candle_stats = detect_candle_bars_detailed(
         image, palette_colors=palette_colors
     )
+    # O detector trabalha por coluna de cor: num candle largo ele acha mais de uma
+    # âncora, e um cursor tracejado vira "barra". Sem esta limpeza, idade e preço
+    # são medidos contra velas que não existem.
+    bars_detected = len(bars)
+    bars = consolidate_bars(image, bars)
+    candle_stats = {**candle_stats, "detected_bars": bars_detected, "kept_bars": len(bars)}
     candle_seconds = round(time.monotonic() - candle_started_at, 3)
     raw_candidates, clock = detector.detect_frame(image, read_clock=read_clock)
     candidates = filter_to_recent_candle(raw_candidates, bars, reference=age_reference)
@@ -194,7 +201,9 @@ def _analyze_market_context_frame(
 ):
     """Classify using only candle colors explicitly calibrated for this profile."""
     palette_colors = set(color_direction_map) if color_direction_map else None
-    bars = detect_candle_bars(image, palette_colors=palette_colors)
+    bars = consolidate_bars(
+        image, detect_candle_bars(image, palette_colors=palette_colors)
+    )
     return bars, classify_market_context(
         image, bars, color_direction_map=color_direction_map
     )
@@ -2824,6 +2833,9 @@ class AutoTraderApp(tk.Tk):
                         "raw_count": raw_candidate_count,
                         "recent_count": len(self.last_candidates),
                         "bar_count": self.latest_bar_count,
+                        "bars_detected": (
+                            ocr_timings.get("candle_detection", {}).get("detected_bars")
+                        ),
                         "palette_calibrated": bool(self._active_candle_color_direction_map()),
                         "age_reference": self.label_age_reference,
                         "label_age_bars": (
