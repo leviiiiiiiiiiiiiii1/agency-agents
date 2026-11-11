@@ -38,3 +38,46 @@ def summarize_ocr_yield(result: Any) -> dict[str, Any] | None:
         "color_rejected_count": int(color_rejected_count or 0),
         "label_counts": dict(label_counts) if isinstance(label_counts, dict) else None,
     }
+
+
+def classify_association_outcome(
+    *,
+    raw_count: int,
+    recent_count: int,
+    color_rejected_count: int,
+    bar_count: int,
+    palette_calibrated: bool,
+) -> tuple[str, str]:
+    """Nomeia o motivo pelo qual rótulos foram ou não associados às velas.
+
+    Sem esse código, "0 associado(s)" mistura quatro situações com correções
+    diferentes: paleta não calibrada, velas insuficientes, rótulos históricos e
+    ausência de rótulos legíveis.
+    """
+    if recent_count > 0:
+        return (
+            "ASSOCIATED",
+            f"{recent_count} rótulo(s) associado(s) às velas mais recentes.",
+        )
+    if color_rejected_count > 0:
+        return (
+            "COLOR_CONFLICT",
+            f"{color_rejected_count} candidato(s) bloqueado(s) por conflito de cor.",
+        )
+    if raw_count > 0 and bar_count < 2:
+        return (
+            "INSUFFICIENT_BARS",
+            f"{raw_count} rótulo(s) lido(s), mas menos de 2 velas localizadas.",
+        )
+    if raw_count > 0 and not palette_calibrated:
+        return (
+            "PALETTE_NOT_CALIBRATED",
+            "paleta de velas não calibrada: a direção das cores não é presumida, "
+            "então a associação fica bloqueada.",
+        )
+    if raw_count > 0:
+        return (
+            "LABELS_HISTORICAL",
+            f"{raw_count} rótulo(s) lido(s) fora das velas mais recentes.",
+        )
+    return ("NO_LABELS", "nenhum rótulo legível neste quadro.")

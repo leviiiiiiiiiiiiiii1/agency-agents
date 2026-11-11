@@ -61,7 +61,7 @@ from .sequence_recorder import SequenceRecorder
 from .screen_mask import mask_screen_regions, point_is_masked_with_margin
 from .settings import find_tesseract_executable, load_settings, save_settings
 from .demo_signal_guard import DemoSignalRepeatGuard
-from .ocr_diagnostics import summarize_ocr_yield
+from .ocr_diagnostics import classify_association_outcome, summarize_ocr_yield
 from .signal_detector import SignalCandidate, TesseractSignalDetector
 from .simulation_history import SimulationHistoryStore, append_event_best_effort
 from .simulation import PendingSignal, SimulationWorkflow
@@ -239,6 +239,8 @@ class AutoTraderApp(tk.Tk):
         self.latest_clock_at: float | None = None
         # Aviso exibido quando a sonda confirma que o relógio não está na seleção.
         self.clock_probe_hint: str | None = None
+        self.association_code = "NO_LABELS"
+        self.association_text = ""
         self.pending_armed_clock: PlatformClockReading | None = None
         self.pending_rollover_notified = False
         self.latest_bar_count = 0
@@ -2712,6 +2714,13 @@ class AutoTraderApp(tk.Tk):
                     "color_rejected_count": color_rejected_count,
                     "clock_readable": self.latest_platform_clock is not None,
                     "capture_profile_id": self.active_signal_profile_id,
+                    "association": {
+                        "code": self.association_code,
+                        "raw_count": raw_candidate_count,
+                        "recent_count": len(self.last_candidates),
+                        "bar_count": self.latest_bar_count,
+                        "palette_calibrated": bool(self._active_candle_color_direction_map()),
+                    },
                     "ocr_timings": ocr_timings,
                     "clock_ocr_text": self.latest_clock_ocr_text[:200],
                     "clock_age_seconds": (
@@ -3073,24 +3082,17 @@ class AutoTraderApp(tk.Tk):
         color_rejected_count: int = 0,
     ) -> None:
         self._update_candidate_table(candidates)
+        self.association_code, self.association_text = classify_association_outcome(
+            raw_count=raw_count,
+            recent_count=len(candidates),
+            color_rejected_count=color_rejected_count,
+            bar_count=candle_count,
+            palette_calibrated=bool(self._active_candle_color_direction_map()),
+        )
         if not candidates:
-            if color_rejected_count:
-                self.ocr_status.set(
-                    f"OCR viu {raw_count} etiqueta(s), mas a cor não confirmou a direção; "
-                    f"{color_rejected_count} candidato(s) bloqueado(s)."
-                )
-            elif raw_count and candle_count < 2:
-                self.ocr_status.set(
-                    f"OCR viu {raw_count} etiqueta(s), mas não localizou 2 velas com segurança; "
-                    "candidatos bloqueados."
-                )
-            elif raw_count:
-                self.ocr_status.set(
-                    f"OCR viu {raw_count} etiqueta(s); todas parecem históricas ou desalinhadas "
-                    "das 2 velas mais recentes e foram ignoradas."
-                )
-            else:
-                self.ocr_status.set("Nenhuma etiqueta recente legível; rótulos de velas passadas são ignorados.")
+            self.ocr_status.set(
+                f"OCR viu {raw_count} etiqueta(s); {self.association_text}"
+            )
             return
         summary = " | ".join(
             f"{'COMPRA' if item.direction == 'BUY' else 'VENDER'} {item.confidence:.0f}% "

@@ -63,6 +63,8 @@ Se o recorte do rodapé voltar vazio repetidamente, o app registra um evento `CL
 
 A detecção de velas também registra por que aceitou ou descartou barras, dentro de `ocr_timings.candle_detection`: colunas dominantes por cor, número de trechos, barras estreitas, barras curtas/esparsas e quantas sobraram depois da calibração de paleta. Assim "0 velas" deixa de ser ambíguo entre cor não reconhecida e geometria insuficiente.
 
+Quando nenhum rótulo é associado, o app nomeia a causa em vez de dizer apenas "desalinhado": `PALETTE_NOT_CALIBRATED` (paleta não calibrada — a direção das cores não é presumida), `INSUFFICIENT_BARS`, `COLOR_CONFLICT`, `LABELS_HISTORICAL` ou `NO_LABELS`. O mesmo código vai para o journal em `association.code`, junto de `raw_count`, `recent_count`, `bar_count` e `palette_calibrated`.
+
 O CSV legado em `%LOCALAPPDATA%\AutoTraderIQ\simulation_history.csv` continua preservado e serve à compatibilidade/exportação; ele não é apagado nem substituído pelo journal.
 
 ## Histórico e arquivos locais
