@@ -186,6 +186,7 @@ def extract_clock_tokens(
     others = 0
     times: list[dict[str, Any]] = []
     words: list[dict[str, Any]] = []
+    grid = [[0, 0, 0], [0, 0, 0], [0, 0, 0]]
     for index, raw in enumerate(texts):
         text = str(raw or "").strip()
         if not text:
@@ -200,6 +201,10 @@ def extract_clock_tokens(
             "x_percent": round(100 * float(lefts[index]) / width, 1) if index < len(lefts) and width else None,
             "y_percent": round(100 * float(tops[index]) / height, 1) if index < len(tops) and height else None,
         }
+        if index < len(lefts) and index < len(tops) and width and height:
+            column = min(2, max(0, int(3 * float(lefts[index]) / width)))
+            row = min(2, max(0, int(3 * float(tops[index]) / height)))
+            grid[row][column] += 1
         if _TIME_TOKEN.match(text):
             times.append(position)
         elif text.upper().strip(".:-|") in _CLOCK_WORDS:
@@ -210,6 +215,7 @@ def extract_clock_tokens(
         "time_tokens": times[:max_tokens],
         "clock_words": words[:max_tokens],
         "other_token_count": others,
+        "grid_token_counts": grid,
         "frame_width": int(width),
         "frame_height": int(height),
     }
@@ -474,6 +480,13 @@ class TesseractSignalDetector:
         )
         probe = extract_clock_tokens(data, image.width, image.height)
         probe["full_pass_text"] = (self.last_clock_ocr_text or "")[:120]
+        # Fração de preto indica área mascarada (a máscara pinta a região antes do
+        # OCR), o que explica uma faixa vazia sem sugerir que o texto ilegível.
+        sample = prepared.resize((64, 64))
+        pixels = list(sample.getdata())
+        probe["black_fraction"] = round(
+            sum(1 for value in pixels if value <= 8) / max(1, len(pixels)), 3
+        )
         return probe
 
     def detect(self, image) -> list[SignalCandidate]:

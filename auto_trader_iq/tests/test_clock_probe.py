@@ -48,12 +48,21 @@ class ClockProbeTests(unittest.TestCase):
         )
         self.assertEqual([item["text"] for item in probe["time_tokens"]], ["9:05"])
 
+    def test_grid_locates_where_text_appears(self):
+        probe = extract_clock_tokens(
+            data(["A", "B", "C"], left=[10, 500, 990], top=[10, 500, 990]),
+            width=1000,
+            height=1000,
+        )
+        self.assertEqual(probe["grid_token_counts"], [[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+
     def test_empty_ocr_result_is_reported_as_empty(self):
         probe = extract_clock_tokens({"text": []}, width=800, height=600)
         self.assertEqual(probe["time_tokens"], [])
         self.assertEqual(probe["clock_words"], [])
         self.assertEqual(probe["other_token_count"], 0)
         self.assertEqual(probe["frame_width"], 800)
+        self.assertEqual(probe["grid_token_counts"], [[0, 0, 0], [0, 0, 0], [0, 0, 0]])
 
 
 if __name__ == "__main__":
