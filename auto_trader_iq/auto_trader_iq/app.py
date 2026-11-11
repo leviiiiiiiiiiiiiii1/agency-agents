@@ -44,6 +44,7 @@ from .candle_monitor import (
     classify_market_context,
     count_signal_labels_by_candle,
     detect_candle_bars,
+    detect_candle_bars_detailed,
     filter_to_recent_candle,
 )
 from .candle_timer import (
