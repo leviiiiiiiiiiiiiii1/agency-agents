@@ -77,6 +77,12 @@ O perfil recomendado para iniciar é `equilibrada`: `min_confidence` 80, BUY e S
 
 Configuração inválida ou contraditória não vira "sem filtro": os critérios são esvaziados, a decisão fica bloqueada e o motivo aparece no painel. Na abertura de cada sessão, `CAPTURE_SESSION_STARTED` grava os critérios, o hash e os problemas encontrados; cada quadro grava `eligibility.code` e `criteria_hash`. Mudar parâmetros depois não altera eventos já gravados.
 
+## Classificação do momento (A / B / C / NO TRADE)
+
+`opportunity_grade.py` classifica a oportunidade usando apenas o que a captura permite medir: idade do rótulo em velas, corpo da vela em relação à mediana das últimas 10, distância percentual até o nível contrário dentro da faixa de 20 velas, posição do fechamento no próprio candle e regime de contexto. **RSI, histograma MACD e distância à EMA20 não são legíveis por pixel** e aparecem em `unmeasured` — a classificação nunca finge tê-los considerado.
+
+Regras padrão: contexto lateral ou rótulo acima de 2 velas → `NO_TRADE`; corpo acima de 2× a mediana, preço a menos de 15% do nível contrário, fechamento colado no extremo ou sinal contra o contexto → `C`; rótulo com 1 vela de idade ou corpo fraco → `B`; rótulo atual, corpo entre 0,4× e 1,5× a mediana e folga do nível → `A`. Limiares ficam em `config.json` na chave `grading`, são validados e voltam ao padrão declarado quando inválidos. A classe, o hash dos limiares e as medidas usadas vão para o journal em `grade`.
+
 O CSV legado em `%LOCALAPPDATA%\AutoTraderIQ\simulation_history.csv` continua preservado e serve à compatibilidade/exportação; ele não é apagado nem substituído pelo journal.
 
 ## Histórico e arquivos locais

@@ -43,6 +43,7 @@ from .demo_click import (
 from .candle_monitor import (
     classify_market_context,
     count_signal_labels_by_candle,
+    _market_candles_from_bars,
     detect_candle_bars,
     detect_candle_bars_detailed,
     filter_to_recent_candle,
@@ -69,6 +70,13 @@ from .eligibility import (
     validate_criteria,
 )
 from .ocr_diagnostics import classify_association_outcome, summarize_ocr_yield
+from .opportunity_grade import (
+    DEFAULT_CRITERIA as DEFAULT_GRADE_CRITERIA,
+    GradeCriteria,
+    build_features,
+    grade_opportunity,
+    validate_grade_criteria,
+)
 from .signal_detector import SignalCandidate, TesseractSignalDetector
 from .simulation_history import SimulationHistoryStore, append_event_best_effort
 from .simulation import PendingSignal, SimulationWorkflow
@@ -108,10 +116,12 @@ CANDLE_PALETTE_MAPS: dict[str, dict[str, str]] = {
 def _analyze_ocr_frame(
     detector: TesseractSignalDetector,
     image: Image.Image,
-    palette_colors: set[str] | None = None,
+    color_direction_map: dict[str, str] | None = None,
     read_clock: bool = True,
 ):
     """OCR labels and match them against candles detected in this exact frame."""
+    color_map = dict(color_direction_map or {})
+    palette_colors = set(color_map) or None
     candle_started_at = time.monotonic()
     bars, candle_stats = detect_candle_bars_detailed(
         image, palette_colors=palette_colors
@@ -120,10 +130,19 @@ def _analyze_ocr_frame(
     raw_candidates, clock = detector.detect_frame(image, read_clock=read_clock)
     candidates = filter_to_recent_candle(raw_candidates, bars)
     label_ages = [label_age_bars(candidate, bars) for candidate in candidates]
+    # Geometria de corpo/pavio só é extraída quando existe candidato e a paleta está
+    # calibrada: sem semântica de cor não há direção, e a extração custa caro.
+    body_started_at = time.monotonic()
+    market_candles = (
+        _market_candles_from_bars(image, bars, color_direction_map=color_map)
+        if candidates and color_map else []
+    )
+    body_seconds = round(time.monotonic() - body_started_at, 3)
     label_counts = count_signal_labels_by_candle(raw_candidates, bars, lookback=12)
     timings = dict(detector.last_ocr_timings)
     timings["candle_detection_seconds"] = candle_seconds
     timings["candle_detection"] = candle_stats
+    timings["candle_body_seconds"] = body_seconds
     return (
         candidates,
         clock,
@@ -135,6 +154,7 @@ def _analyze_ocr_frame(
         raw_candidates,
         timings,
         label_ages,
+        market_candles,
     )
 
 
@@ -253,6 +273,10 @@ class AutoTraderApp(tk.Tk):
         self.eligibility_code = "CRITERIA_UNDEFINED"
         self.eligibility_text = ""
         self.eligibility_hash: str | None = None
+        self.grade_criteria = DEFAULT_GRADE_CRITERIA
+        self.grade_code = "CRITERIA_UNDEFINED"
+        self.grade_text = ""
+        self.grade_features: dict[str, object] | None = None
         # Perfil inicial recomendado; cada campo continua explícito e auditável.
         self.eligibility_criteria = BALANCED_CRITERIA
         self.eligibility_problems: list[str] = []
@@ -2388,7 +2412,7 @@ class AutoTraderApp(tk.Tk):
             _analyze_ocr_frame,
             detector,
             image.copy(),
-            set(color_map) if color_map else None,
+            dict(color_map) if color_map else None,
             False,
         )
         self.after(50, self._poll_ocr_result)
@@ -2654,6 +2678,7 @@ class AutoTraderApp(tk.Tk):
             raw_candidates,
             ocr_timings,
             candidate_label_ages,
+            candidate_market_candles,
         ) = result
         self.latest_candidates_at = captured_at
         # Passa todas as caixas OCR ao reconciliador central; a deduplicação e a
@@ -2722,6 +2747,7 @@ class AutoTraderApp(tk.Tk):
             self.latest_bar_count,
             color_rejected_count,
             candidate_label_ages,
+            candidate_market_candles,
         )
         self._record_ocr_opportunities(
             tracked_candidates,
@@ -2743,6 +2769,11 @@ class AutoTraderApp(tk.Tk):
                     "color_rejected_count": color_rejected_count,
                     "clock_readable": self.latest_platform_clock is not None,
                     "capture_profile_id": self.active_signal_profile_id,
+                    "grade": {
+                        "code": self.grade_code,
+                        "criteria_hash": self.grade_criteria_hash(),
+                        "features": self.grade_features,
+                    },
                     "eligibility": {
                         "code": self.eligibility_code,
                         "criteria_hash": self.eligibility_hash,
@@ -3137,6 +3168,7 @@ class AutoTraderApp(tk.Tk):
         candle_count: int = 0,
         color_rejected_count: int = 0,
         label_ages: list[int | None] | None = None,
+        market_candles: list | None = None,
     ) -> None:
         self._update_candidate_table(candidates)
         self.association_code, self.association_text = classify_association_outcome(
@@ -3147,6 +3179,7 @@ class AutoTraderApp(tk.Tk):
             palette_calibrated=bool(self._active_candle_color_direction_map()),
         )
         self._evaluate_candidates(candidates, label_ages)
+        self._grade_candidates(candidates, label_ages, market_candles)
         if not candidates:
             self.ocr_status.set(
                 f"OCR viu {raw_count} etiqueta(s); {self.association_text}"
@@ -3164,11 +3197,49 @@ class AutoTraderApp(tk.Tk):
         eligibility_note = ""
         if self.eligibility_code != "ASSOCIATED":
             eligibility_note = f" · elegibilidade: {self.eligibility_text}"
+        grade_note = f" · {self.grade_text}" if self.grade_text else ""
         self.ocr_status.set(
             f"Candidato(s) nas velas mais recentes — revise: {summary} "
             f"(OCR bruto: {raw_count}; barras detectadas: {candle_count})"
-            f"{eligibility_note}"
+            f"{grade_note}{eligibility_note}"
         )
+
+    def grade_criteria_hash(self) -> str:
+        payload = json.dumps(self.grade_criteria.as_dict(), sort_keys=True)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+    def _grade_candidates(
+        self,
+        candidates: list[SignalCandidate],
+        label_ages: list[int | None] | None,
+        market_candles: list | None,
+    ) -> None:
+        """Classifica o momento usando só o que a tela permite medir.
+
+        RSI, histograma MACD e distância à EMA20 não são legíveis por pixel; a
+        classificação registra isso explicitamente em vez de assumir valores.
+        """
+        if not candidates:
+            self.grade_code = "NO_CANDIDATE"
+            self.grade_text = "sem candidato para classificar"
+            self.grade_features = None
+            return
+        ages = list(label_ages or [])
+        latest = candidates[-1]
+        age = ages[-1] if ages else None
+        features = build_features(
+            latest,
+            self.latest_candle_bars,
+            list(market_candles or []),
+            direction=latest.direction,
+            age_bars=age,
+            context_regime=self.market_context_regime,
+            context_direction=self.market_context_direction,
+        )
+        grade = grade_opportunity(features, self.grade_criteria)
+        self.grade_code = grade.code
+        self.grade_text = grade.display_text
+        self.grade_features = features.as_dict() if features is not None else None
 
     def _evaluate_candidates(
         self, candidates: list[SignalCandidate], label_ages: list[int | None] | None
@@ -4016,6 +4087,24 @@ class AutoTraderApp(tk.Tk):
             "context_direction": self.market_context_direction,
         }
 
+    def _load_grade_criteria(self, payload: object) -> None:
+        """Carrega limiares de classificação; inválido volta ao padrão declarado."""
+        if payload is None:
+            self.grade_criteria = DEFAULT_GRADE_CRITERIA
+            return
+        try:
+            if not isinstance(payload, dict):
+                raise ValueError("limiares em formato inesperado")
+            criteria = GradeCriteria.from_dict(payload)
+            problems = validate_grade_criteria(criteria)
+            if problems:
+                raise ValueError("; ".join(problems))
+        except (TypeError, ValueError) as exc:
+            self.grade_criteria = DEFAULT_GRADE_CRITERIA
+            self.capture_status.set(f"Limiares de classificação ignorados ({exc}).")
+            return
+        self.grade_criteria = criteria
+
     def _persist_config(self) -> None:
         payload: dict[str, object] = {
             "operation_mode": self.operation_mode.value,
@@ -4030,6 +4119,7 @@ class AutoTraderApp(tk.Tk):
             "demo_mouse_keepalive_enabled": bool(self.demo_mouse_keepalive_var.get()),
             "demo_mouse_keepalive_interval_seconds": self.demo_mouse_keepalive_interval_var.get(),
             "eligibility": self.eligibility_criteria.as_dict(),
+            "grading": self.grade_criteria.as_dict(),
         }
         try:
             timeout_seconds = int(self.demo_activation_timeout_var.get())
@@ -4133,6 +4223,7 @@ class AutoTraderApp(tk.Tk):
             if confidence is not None:
                 self.confidence_var.set(str(confidence))
             self._load_eligibility_criteria(config.get("eligibility"))
+            self._load_grade_criteria(config.get("grading"))
             if isinstance(config.get("ocr_enabled"), bool):
                 self.ocr_enabled_var.set(config["ocr_enabled"])
             if isinstance(config.get("compact_during_capture"), bool):
