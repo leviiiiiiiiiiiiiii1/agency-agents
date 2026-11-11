@@ -1,0 +1,101 @@
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+
+from PIL import Image
+
+from auto_trader_iq import geometry_diagnostics as diagnostics
+
+
+def bars(centers):
+    return [SimpleNamespace(center_x=float(center)) for center in centers]
+
+
+def label(left, top=40, width=40, height=14):
+    return SimpleNamespace(left=left, top=top, width=width, height=height)
+
+
+class SummarizeTests(unittest.TestCase):
+    def test_bars_to_the_right_is_measured(self):
+        summary = diagnostics.summarize(bars([0, 40, 80, 120]), [label(30)])
+        self.assertEqual(summary["bar_count"], 4)
+        self.assertEqual(summary["rightmost_label_index"], 1)
+        self.assertEqual(summary["bars_to_the_right"], 2)
+        self.assertEqual(summary["median_gap_px"], 40.0)
+
+    def test_label_near_the_right_edge(self):
+        summary = diagnostics.summarize(bars([0, 40, 80]), [label(160)])
+        self.assertEqual(summary["bars_to_the_right"], 0)
+
+    def test_without_bars_there_is_no_geometry(self):
+        self.assertIsNone(diagnostics.summarize([], [label(30)]))
+
+    def test_without_labels_geometry_is_partial(self):
+        summary = diagnostics.summarize(bars([0, 40]), [])
+        self.assertIsNone(summary["bars_to_the_right"])
+        self.assertEqual(summary["bar_count"], 2)
+
+    def test_irregular_gaps_use_the_median(self):
+        summary = diagnostics.summarize(bars([0, 40, 41, 81]), [label(35)])
+        self.assertEqual(summary["median_gap_px"], 40.0)
+
+
+class SnapshotTests(unittest.TestCase):
+    def setUp(self):
+        diagnostics.reset_rate_limit()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+        self.image = Image.new("RGB", (200, 120), (16, 16, 16))
+
+    def test_snapshot_when_label_is_far_from_the_last_bar(self):
+        path = diagnostics.save_snapshot(
+            self.image, bars([0, 40, 80, 120, 160]), [label(30)], self.dir
+        )
+        self.assertIsNotNone(path)
+        self.assertTrue(path.exists())
+        payload = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+        self.assertEqual(payload["bars_to_the_right"], 3)
+        self.assertEqual(Image.open(path).size, (200, 120))
+
+    def test_no_snapshot_when_label_is_recent(self):
+        path = diagnostics.save_snapshot(
+            self.image, bars([0, 40, 80]), [label(50)], self.dir
+        )
+        self.assertIsNone(path)
+
+    def test_rate_limit_blocks_a_second_snapshot(self):
+        first = diagnostics.save_snapshot(
+            self.image, bars([0, 40, 80, 120, 160]), [label(30)], self.dir
+        )
+        second = diagnostics.save_snapshot(
+            self.image, bars([0, 40, 80, 120, 160]), [label(30)], self.dir
+        )
+        self.assertIsNotNone(first)
+        self.assertIsNone(second)
+
+    def test_force_ignores_rate_limit(self):
+        diagnostics.save_snapshot(self.image, bars([0, 40, 80, 160]), [label(30)], self.dir)
+        forced = diagnostics.save_snapshot(
+            self.image, bars([0, 40, 80, 160]), [label(30)], self.dir, force=True
+        )
+        self.assertIsNotNone(forced)
+
+    def test_annotation_marks_bars_and_never_mutates_input(self):
+        original = self.image.copy()
+        annotated = diagnostics.save_snapshot(
+            self.image, bars([0, 40, 80, 160]), [label(30)], self.dir, force=True
+        )
+        self.assertIsNotNone(annotated)
+        self.assertEqual(list(self.image.getdata()), list(original.getdata()))
+
+    def test_failure_does_not_raise(self):
+        self.assertIsNone(
+            diagnostics.save_snapshot("não é imagem", bars([0, 1, 2, 3]), [label(0)], self.dir)
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

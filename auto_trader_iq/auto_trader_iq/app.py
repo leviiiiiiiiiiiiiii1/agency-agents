@@ -20,6 +20,7 @@ from uuid import uuid4
 from PIL import Image, ImageDraw, ImageTk
 
 from .capture import ScreenCapture, ScreenRegion
+from .geometry_diagnostics import save_snapshot as _save_geometry_snapshot
 from .capture_quality import (
     FrameFreshness,
     FrameFreshnessMonitor,
@@ -145,6 +146,7 @@ def _analyze_ocr_frame(
     image: Image.Image,
     color_direction_map: dict[str, str] | None = None,
     read_clock: bool = True,
+    snapshot_dir: Path | None = None,
 ):
     """OCR labels and match them against candles detected in this exact frame."""
     color_map = dict(color_direction_map or {})
@@ -157,6 +159,10 @@ def _analyze_ocr_frame(
     raw_candidates, clock = detector.detect_frame(image, read_clock=read_clock)
     candidates = filter_to_recent_candle(raw_candidates, bars)
     label_geometry = _label_geometry(raw_candidates, bars)
+    if snapshot_dir is not None and label_geometry:
+        # Uma imagem a cada minuto, no máximo, e só quando o rótulo está longe da
+        # última vela detectada: é o caso que o relatório sinalizou.
+        _save_geometry_snapshot(image, bars, raw_candidates, snapshot_dir)
     label_ages = [label_age_bars(candidate, bars) for candidate in candidates]
     # Geometria de corpo/pavio só é extraída quando existe candidato e a paleta está
     # calibrada: sem semântica de cor não há direção, e a extração custa caro.
@@ -2444,6 +2450,7 @@ class AutoTraderApp(tk.Tk):
             image.copy(),
             dict(color_map) if color_map else None,
             False,
+            self.data_dir / "screenshots",
         )
         self.after(50, self._poll_ocr_result)
 
