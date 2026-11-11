@@ -18,11 +18,15 @@ from auto_trader_iq.opportunity_grade import DEFAULT_CRITERIA
 
 
 def frame(code="A", features=True, palette=True, age=0, body=1.0, distance=0.5,
-          close=0.6, regime="flow", context="BUY", direction="BUY"):
+          close=0.6, regime="flow", context="BUY", direction="BUY",
+          reasons=(), raw=1, recent=1):
     payload = {
         "grade": {
             "code": code,
             "criteria_hash": "abc",
+            "reasons": list(reasons),
+            "context_regime": regime,
+            "context_direction": context,
             "features": None
             if not features
             else {
@@ -40,6 +44,8 @@ def frame(code="A", features=True, palette=True, age=0, body=1.0, distance=0.5,
             },
         },
         "association": {"palette_calibrated": palette},
+        "raw_candidate_count": raw,
+        "recent_candidate_count": recent,
     }
     return {
         "occurred_at_utc": "2026-10-30T12:00:00Z",
@@ -48,6 +54,11 @@ def frame(code="A", features=True, palette=True, age=0, body=1.0, distance=0.5,
         "code": code,
         "criteria_hash": "abc",
         "features": payload["grade"]["features"],
+        "reasons": payload["grade"]["reasons"],
+        "context_regime": regime,
+        "context_direction": context,
+        "raw_candidate_count": raw,
+        "recent_candidate_count": recent,
         "palette_calibrated": palette,
     }
 
@@ -79,6 +90,44 @@ class SummarizeTests(unittest.TestCase):
         self.assertIn("Nenhum quadro", text)
 
 
+class DiagnosisTests(unittest.TestCase):
+    def test_regime_distribution_is_summarized(self):
+        result = summarize([frame(regime="lateral"), frame(regime="flow"), frame(regime="flow")])
+        self.assertEqual(result["context_regimes"], {"lateral": 1, "flow": 2})
+
+    def test_reasons_are_ranked(self):
+        result = summarize(
+            [
+                frame("C", reasons=("mercado lateralizado",)),
+                frame("C", reasons=("mercado lateralizado",)),
+                frame("B", reasons=("rótulo com 1 vela(s) de idade",)),
+            ]
+        )
+        self.assertEqual(result["top_reasons"][0]["reason"], "mercado lateralizado")
+        self.assertEqual(result["top_reasons"][0]["count"], 2)
+
+    def test_label_visibility_is_separated(self):
+        result = summarize(
+            [
+                frame("NO_LABEL", features=False, raw=0, recent=0),
+                frame("LABEL_OUTSIDE_WINDOW", features=False, raw=2, recent=0),
+                frame("A"),
+            ]
+        )
+        self.assertEqual(result["frames_with_raw_label"], 2)
+        self.assertEqual(result["frames_with_recent_label"], 1)
+        self.assertEqual(result["counts"]["NO_LABEL"], 1)
+        self.assertEqual(result["counts"]["LABEL_OUTSIDE_WINDOW"], 1)
+
+    def test_report_prints_diagnosis_sections(self):
+        text = format_report(
+            summarize([frame("C", reasons=("mercado lateralizado",), regime="lateral")])
+        )
+        self.assertIn("Regime de contexto", text)
+        self.assertIn("Motivos de bloqueio", text)
+        self.assertIn("mercado lateralizado", text)
+
+
 class SweepTests(unittest.TestCase):
     def test_moving_body_limit_reclassifies_recorded_frames(self):
         frames = [frame("B", body=1.5), frame("B", body=2.5)]
@@ -94,6 +143,14 @@ class SweepTests(unittest.TestCase):
     def test_unknown_parameter_is_rejected(self):
         with self.assertRaises(ValueError):
             sweep([frame()], "nao_existe", [1])
+
+    def test_identical_sweep_results_are_explained(self):
+        frames = [frame("NO_TRADE", regime="lateral", body=1.0)]
+        text = format_report(
+            summarize(frames),
+            [("max_body_vs_median_b", sweep(frames, "max_body_vs_median_b", [2.0, 3.0]))],
+        )
+        self.assertIn("outro critério", text)
 
     def test_sweep_ignores_frames_without_features(self):
         results = sweep([frame(features=False), frame()], "fresh_age_bars", [0])

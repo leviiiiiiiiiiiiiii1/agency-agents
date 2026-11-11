@@ -36,5 +36,30 @@ class StaticAnalysisTests(unittest.TestCase):
             self.assertEqual(blocking, [], f"problemas em {target}:\n" + "\n".join(blocking))
 
 
+class GradingWiringTests(unittest.TestCase):
+    """A classificação só é útil se o motivo e o regime chegarem ao journal."""
+
+    def setUp(self):
+        path = os.path.join(PACKAGE_ROOT, "auto_trader_iq", "app.py")
+        with open(path, encoding="utf-8") as handle:
+            self.source = handle.read()
+
+    def test_journal_payload_carries_reasons_and_context(self):
+        for needle in (
+            '"reasons": list(self.grade_reasons)',
+            '"context_regime": self.market_context_regime',
+            '"context_direction": self.market_context_direction',
+        ):
+            self.assertIn(needle, self.source)
+
+    def test_label_outside_window_is_distinguished_from_absent_label(self):
+        self.assertIn('"LABEL_OUTSIDE_WINDOW"', self.source)
+        self.assertIn('"NO_LABEL"', self.source)
+        self.assertIn(
+            "self._grade_candidates(candidates, label_ages, market_candles, raw_count)",
+            self.source,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

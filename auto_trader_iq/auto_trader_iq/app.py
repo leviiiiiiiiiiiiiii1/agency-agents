@@ -276,6 +276,7 @@ class AutoTraderApp(tk.Tk):
         self.grade_criteria = DEFAULT_GRADE_CRITERIA
         self.grade_code = "CRITERIA_UNDEFINED"
         self.grade_text = ""
+        self.grade_reasons: tuple[str, ...] = ()
         self.grade_features: dict[str, object] | None = None
         # Perfil inicial recomendado; cada campo continua explícito e auditável.
         self.eligibility_criteria = BALANCED_CRITERIA
@@ -2772,7 +2773,10 @@ class AutoTraderApp(tk.Tk):
                     "grade": {
                         "code": self.grade_code,
                         "criteria_hash": self.grade_criteria_hash(),
+                        "reasons": list(self.grade_reasons),
                         "features": self.grade_features,
+                        "context_regime": self.market_context_regime,
+                        "context_direction": self.market_context_direction,
                     },
                     "eligibility": {
                         "code": self.eligibility_code,
@@ -3179,7 +3183,7 @@ class AutoTraderApp(tk.Tk):
             palette_calibrated=bool(self._active_candle_color_direction_map()),
         )
         self._evaluate_candidates(candidates, label_ages)
-        self._grade_candidates(candidates, label_ages, market_candles)
+        self._grade_candidates(candidates, label_ages, market_candles, raw_count)
         if not candidates:
             self.ocr_status.set(
                 f"OCR viu {raw_count} etiqueta(s); {self.association_text}"
@@ -3213,6 +3217,7 @@ class AutoTraderApp(tk.Tk):
         candidates: list[SignalCandidate],
         label_ages: list[int | None] | None,
         market_candles: list | None,
+        raw_candidate_count: int | None = None,
     ) -> None:
         """Classifica o momento usando só o que a tela permite medir.
 
@@ -3220,8 +3225,18 @@ class AutoTraderApp(tk.Tk):
         classificação registra isso explicitamente em vez de assumir valores.
         """
         if not candidates:
-            self.grade_code = "NO_CANDIDATE"
-            self.grade_text = "sem candidato para classificar"
+            # Distinguir "não havia rótulo" de "havia rótulo, mas fora da janela
+            # recente" evita tratar filtro estrito como se fosse falta de sinal.
+            if raw_candidate_count:
+                self.grade_code = "LABEL_OUTSIDE_WINDOW"
+                self.grade_text = (
+                    f"rótulo lido, mas fora das duas últimas velas "
+                    f"({raw_candidate_count} no quadro)"
+                )
+            else:
+                self.grade_code = "NO_LABEL"
+                self.grade_text = "nenhum rótulo no quadro"
+            self.grade_reasons = ()
             self.grade_features = None
             return
         ages = list(label_ages or [])
@@ -3239,6 +3254,7 @@ class AutoTraderApp(tk.Tk):
         grade = grade_opportunity(features, self.grade_criteria)
         self.grade_code = grade.code
         self.grade_text = grade.display_text
+        self.grade_reasons = grade.reasons
         self.grade_features = features.as_dict() if features is not None else None
 
     def _evaluate_candidates(

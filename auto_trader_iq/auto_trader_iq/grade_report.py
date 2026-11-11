@@ -31,7 +31,16 @@ from .opportunity_grade import (
 
 FEATURE_FIELDS = tuple(field.name for field in fields(SignalFeatures))
 NUMERIC_FEATURES = ("body_vs_median", "distance_to_level", "close_from_extreme")
-GRADE_ORDER = ("A", "B", "C", "NO_TRADE", "NO_CANDIDATE", "CRITERIA_UNDEFINED")
+GRADE_ORDER = (
+    "A",
+    "B",
+    "C",
+    "NO_TRADE",
+    "NO_LABEL",
+    "LABEL_OUTSIDE_WINDOW",
+    "NO_CANDIDATE",  # registros anteriores à separação dos dois casos acima
+    "CRITERIA_UNDEFINED",
+)
 
 
 def default_journal_path() -> Path:
@@ -82,6 +91,11 @@ def load_frames(db_path: str | Path) -> list[dict[str, Any]]:
                 "code": grade.get("code"),
                 "criteria_hash": grade.get("criteria_hash"),
                 "features": features if isinstance(features, dict) else None,
+                "reasons": [str(item) for item in (grade.get("reasons") or [])],
+                "context_regime": grade.get("context_regime"),
+                "context_direction": grade.get("context_direction"),
+                "raw_candidate_count": payload.get("raw_candidate_count"),
+                "recent_candidate_count": payload.get("recent_candidate_count"),
                 "palette_calibrated": bool(
                     (payload.get("association") or {}).get("palette_calibrated")
                 ),
@@ -134,8 +148,32 @@ def summarize(frames: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
         key = str(age) if age <= 2 else "3+"
         age_counts[key] = age_counts.get(key, 0) + 1
 
+    regimes: dict[str, int] = {}
+    for frame in frames:
+        key = str(frame.get("context_regime") or "desconhecido")
+        regimes[key] = regimes.get(key, 0) + 1
+
+    reason_counts: dict[str, int] = {}
+    for frame in frames:
+        seen = set()
+        for reason in frame.get("reasons") or []:
+            if reason in seen:
+                continue
+            seen.add(reason)
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+    top_reasons = sorted(reason_counts.items(), key=lambda item: (-item[1], item[0]))[:6]
+
+    raw_labels = sum(1 for frame in frames if (frame.get("raw_candidate_count") or 0) > 0)
+    recent_labels = sum(
+        1 for frame in frames if (frame.get("recent_candidate_count") or 0) > 0
+    )
+
     return {
         "frames": len(frames),
+        "frames_with_raw_label": raw_labels,
+        "frames_with_recent_label": recent_labels,
+        "context_regimes": regimes,
+        "top_reasons": [{"reason": reason, "count": count} for reason, count in top_reasons],
         "frames_with_features": len(with_features),
         "palette_calibrated_frames": sum(1 for frame in frames if frame.get("palette_calibrated")),
         "sessions": len({frame.get("session_id") for frame in frames if frame.get("session_id")}),
@@ -225,6 +263,24 @@ def format_report(summary: Mapping[str, Any], sweeps: Sequence[tuple[str, Sequen
         share = f"{count / base:.0%}" if base else "—"
         lines.append(f"    {name:<22} {count:>6}  ({share})")
 
+    lines += ["", "Rótulos vistos pelo OCR:"]
+    lines.append(f"    com algum rótulo no quadro   {summary['frames_with_raw_label']}")
+    lines.append(f"    com rótulo nas 2 últimas     {summary['frames_with_recent_label']}")
+
+    if summary["context_regimes"]:
+        ordered = sorted(
+            summary["context_regimes"].items(), key=lambda item: (-item[1], item[0])
+        )
+        lines += ["", "Regime de contexto nos quadros:"]
+        lines.append(
+            "    " + " · ".join(f"{name}={count}" for name, count in ordered)
+        )
+
+    if summary["top_reasons"]:
+        lines += ["", "Motivos de bloqueio mais frequentes:"]
+        for item in summary["top_reasons"]:
+            lines.append(f"    {item['count']:>5}  {item['reason']}")
+
     if summary["age_bars_counts"]:
         ages = " · ".join(
             f"{age} vela(s)={count}" for age, count in sorted(summary["age_bars_counts"].items())
@@ -241,6 +297,14 @@ def format_report(summary: Mapping[str, Any], sweeps: Sequence[tuple[str, Sequen
 
     for parameter, results in sweeps:
         lines += ["", f"Sensibilidade de {parameter}:"]
+        fingerprints = {
+            json.dumps(result.get("counts", {}), sort_keys=True) for result in results
+        }
+        if len(results) > 1 and len(fingerprints) == 1:
+            lines.append(
+                "    todos os valores dão o mesmo resultado: outro critério "
+                "(idade, regime ou distância) bloqueia antes deste limiar"
+            )
         for result in results:
             if "invalid" in result:
                 lines.append(f"    {result['value']!r:<8} inválido: {result['invalid']}")
