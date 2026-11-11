@@ -149,6 +149,65 @@ class OcrTimingDiagnosticsTests(unittest.TestCase):
             timings["total_seconds"],
         )
 
+class SplitClockReadingTests(unittest.TestCase):
+    def line_data(self):
+        return rows(
+            ["HORA", "ATUAL", "31", "OUTUBRO", "21:44:50"],
+            [80, 80, 55, 60, 92],
+            left=[10, 90, 180, 220, 400],
+            top=[10, 10, 10, 10, 10],
+        )
+
+    def test_label_pass_can_skip_the_expensive_clock_strip(self):
+        ocr = SimpleNamespace(
+            Output=SimpleNamespace(DICT="dict"),
+            pytesseract=SimpleNamespace(),
+            image_to_data=Mock(return_value={"text": []}),
+        )
+        detector = TesseractSignalDetector()
+        with patch.dict(sys.modules, {"pytesseract": ocr}):
+            candidates, clock = detector.detect_frame(
+                Image.new("RGB", (1156, 814)), read_clock=False
+            )
+
+        self.assertEqual(candidates, [])
+        self.assertIsNone(clock)
+        # Só a passada geral roda: a faixa do rodapé sai do caminho crítico.
+        self.assertEqual(ocr.image_to_data.call_count, 1)
+        self.assertEqual(detector.last_ocr_timings["clock_crop_passes"], 0)
+
+    def test_dedicated_clock_reader_only_reads_the_strip(self):
+        ocr = SimpleNamespace(
+            Output=SimpleNamespace(DICT="dict"),
+            pytesseract=SimpleNamespace(),
+            image_to_data=Mock(return_value=self.line_data()),
+        )
+        detector = TesseractSignalDetector()
+        with patch.dict(sys.modules, {"pytesseract": ocr}):
+            clock = detector.detect_clock(Image.new("RGB", (1156, 814)))
+
+        self.assertIsNotNone(clock)
+        self.assertEqual((clock.hour, clock.minute, clock.second), (21, 44, 50))
+        self.assertEqual(ocr.image_to_data.call_count, 1)
+        self.assertEqual(detector.last_clock_timings["clock_crop_passes"], 1)
+        # Não mexe no estado da leitura de rótulos.
+        self.assertEqual(detector.last_ocr_timings, {})
+        self.assertEqual(detector.last_candidate_count, 0)
+
+    def test_dedicated_clock_reader_returns_none_when_strip_is_unreadable(self):
+        ocr = SimpleNamespace(
+            Output=SimpleNamespace(DICT="dict"),
+            pytesseract=SimpleNamespace(),
+            image_to_data=Mock(return_value={"text": []}),
+        )
+        detector = TesseractSignalDetector()
+        with patch.dict(sys.modules, {"pytesseract": ocr}):
+            clock = detector.detect_clock(Image.new("RGB", (1156, 814)))
+
+        self.assertIsNone(clock)
+        self.assertEqual(ocr.image_to_data.call_count, 2)
+        self.assertEqual(detector.last_clock_timings["clock_crop_passes"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

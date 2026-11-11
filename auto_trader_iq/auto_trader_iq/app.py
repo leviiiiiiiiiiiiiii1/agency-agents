@@ -60,6 +60,7 @@ from .sequence_recorder import SequenceRecorder
 from .screen_mask import mask_screen_regions, point_is_masked_with_margin
 from .settings import find_tesseract_executable, load_settings, save_settings
 from .demo_signal_guard import DemoSignalRepeatGuard
+from .ocr_diagnostics import summarize_ocr_yield
 from .signal_detector import SignalCandidate, TesseractSignalDetector
 from .simulation_history import SimulationHistoryStore, append_event_best_effort
 from .simulation import PendingSignal, SimulationWorkflow
@@ -71,6 +72,11 @@ DEMO_CLOCK_SOURCE = "windows_utc_minus_3"
 POLL_MS = 250
 OCR_INTERVAL_SECONDS = 0.5
 CONTEXT_INTERVAL_SECONDS = 1.0
+# A faixa do relógio é a etapa mais cara do OCR. Ela roda em executor próprio,
+# encadeada sem intervalo: assim que uma leitura termina, a próxima começa. Isso
+# mantém a leitura mais recente possível sem somar segundos ao caminho crítico dos
+# rótulos. O limite de idade do relógio não muda.
+CLOCK_INTERVAL_SECONDS = 0.0
 TIMER_MAX_AGE_SECONDS = 1.5
 DEFAULT_DEMO_ACTIVATION_TIMEOUT_SECONDS = 75
 MIN_DEMO_ACTIVATION_TIMEOUT_SECONDS = 15
@@ -95,12 +101,13 @@ def _analyze_ocr_frame(
     detector: TesseractSignalDetector,
     image: Image.Image,
     palette_colors: set[str] | None = None,
+    read_clock: bool = True,
 ):
     """OCR labels and match them against candles detected in this exact frame."""
     candle_started_at = time.monotonic()
     bars = detect_candle_bars(image, palette_colors=palette_colors)
     candle_seconds = round(time.monotonic() - candle_started_at, 3)
-    raw_candidates, clock = detector.detect_frame(image)
+    raw_candidates, clock = detector.detect_frame(image, read_clock=read_clock)
     candidates = filter_to_recent_candle(raw_candidates, bars)
     label_counts = count_signal_labels_by_candle(raw_candidates, bars, lookback=12)
     timings = dict(detector.last_ocr_timings)
@@ -204,6 +211,7 @@ class AutoTraderApp(tk.Tk):
         self.detector: TesseractSignalDetector | None = None
         self._ocr_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="auto-trader-ocr")
         self._context_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="auto-trader-context")
+        self._clock_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="auto-trader-clock")
         self._ocr_future: Future | None = None
         self._ocr_frame_captured_at: float | None = None
         self._ocr_frame_captured_utc: str | None = None
@@ -213,6 +221,11 @@ class AutoTraderApp(tk.Tk):
         self._context_future: Future | None = None
         self._context_frame_captured_at: float | None = None
         self._context_future_generation = 0
+        self._clock_future: Future | None = None
+        self._clock_frame_captured_at: float | None = None
+        self._clock_future_generation = 0
+        self.last_clock_submit_at = 0.0
+        self.last_clock_reading_seconds: float | None = None
         self._capture_generation = 0
         self._closing = False
         self.last_candidates: list[SignalCandidate] = []
@@ -2295,6 +2308,14 @@ class AutoTraderApp(tk.Tk):
                     and now - self.last_ocr_at >= OCR_INTERVAL_SECONDS
                 ):
                     self._submit_ocr_frame(image, captured_at)
+                if (
+                    self.detector is not None
+                    and freshness is not None
+                    and not freshness.frozen
+                    and self._clock_future is None
+                    and now - self.last_clock_submit_at >= CLOCK_INTERVAL_SECONDS
+                ):
+                    self._submit_clock_frame(image, captured_at)
             self._update_timer_status(now)
             self._update_sequence_recording(image, now)
             self._show_preview(image)
@@ -2333,8 +2354,67 @@ class AutoTraderApp(tk.Tk):
             detector,
             image.copy(),
             set(color_map) if color_map else None,
+            False,
         )
         self.after(50, self._poll_ocr_result)
+
+    def _submit_clock_frame(self, image: Image.Image, captured_at: float) -> None:
+        """Lê a faixa do relógio em paralelo, fora do caminho crítico dos rótulos."""
+        detector = self.detector
+        if detector is None or self._clock_future is not None:
+            return
+        self.last_clock_submit_at = captured_at
+        self._clock_frame_captured_at = captured_at
+        self._clock_future_generation = self._capture_generation
+        self._clock_future = self._clock_executor.submit(
+            detector.detect_clock, image.copy()
+        )
+        self.after(50, self._poll_clock_result)
+
+    def _poll_clock_result(self) -> None:
+        if self._closing:
+            return
+        future = self._clock_future
+        if future is None:
+            return
+        if not future.done():
+            self.after(50, self._poll_clock_result)
+            return
+
+        captured_at = self._clock_frame_captured_at
+        generation = self._clock_future_generation
+        self._clock_future = None
+        self._clock_frame_captured_at = None
+        if future.cancelled():
+            return
+        if not self.running or generation != self._capture_generation or captured_at is None:
+            return
+        try:
+            clock = future.result()
+        except Exception as exc:
+            self.latest_clock_ocr_text = f"clock:{type(exc).__name__}"
+            return
+
+        now = time.monotonic()
+        reading_age = now - captured_at
+        self.last_clock_reading_seconds = reading_age
+        if clock is None:
+            # Sem leitura válida, o relógio existente envelhece naturalmente e o
+            # portão de 1,5 s passa a bloquear sinais. Nada é inventado aqui.
+            self.latest_clock_ocr_text = self.detector.last_clock_ocr_text if self.detector else ""
+            self._update_timer_status(now)
+            return
+        if reading_age > TIMER_MAX_AGE_SECONDS:
+            self._update_timer_status(now)
+            return
+
+        self.latest_platform_clock = clock
+        self.latest_clock_at = captured_at
+        self.latest_clock_ocr_text = (
+            self.detector.last_clock_ocr_text if self.detector else ""
+        )
+        self._observe_pending_platform_minute()
+        self._update_timer_status(now)
 
     def _submit_context_frame(self, image: Image.Image, captured_at: float) -> None:
         if self._context_future is not None:
@@ -2466,14 +2546,19 @@ class AutoTraderApp(tk.Tk):
                         "processing_age_seconds": frame_age,
                         "max_age_seconds": TIMER_MAX_AGE_SECONDS,
                         "ocr_timings": result[-1] if isinstance(result, tuple) else None,
+                        "ocr_yield": summarize_ocr_yield(result),
+                        "clock_age_seconds": (
+                            now - self.latest_clock_at
+                            if self.latest_clock_at is not None else None
+                        ),
                     },
                     idempotency_key=f"{self.capture_session_id}:ocr-stale:{frame_id}",
                     occurred_at_utc=captured_utc,
                     source="OCR_ENGINE",
                 )
             self.last_ocr_change_sequence = None
-            self.latest_platform_clock = None
-            self.latest_clock_at = None
+            # O relógio pertence ao leitor dedicado; descartar este quadro não
+            # invalida a última leitura, que expira pelo próprio limite de idade.
             self.last_candidates = []
             self.candidate_lifecycle_by_id.clear()
             self.candidate_fingerprint_by_id.clear()
@@ -2501,7 +2586,7 @@ class AutoTraderApp(tk.Tk):
 
         (
             self.last_candidates,
-            self.latest_platform_clock,
+            frame_clock,
             raw_candidate_count,
             color_rejected_count,
             self.latest_bar_count,
@@ -2558,7 +2643,12 @@ class AutoTraderApp(tk.Tk):
         }
         tracked_candidates = [item.candidate for item in tracked_signals]
         self.signal_label_context_at = captured_at
-        self.latest_clock_at = captured_at if self.latest_platform_clock is not None else None
+        # O relógio tem leitor próprio. Um quadro de rótulos só atualiza o relógio
+        # quando a passada geral o leu de fato; caso contrário preserva a última
+        # leitura válida, cuja idade continua checada pelo limite de 1,5 s.
+        if frame_clock is not None:
+            self.latest_platform_clock = frame_clock
+            self.latest_clock_at = captured_at
         self._refresh_market_context_status()
         self._cancel_auto_pending_for_context()
         self._observe_pending_platform_minute()
@@ -2590,6 +2680,10 @@ class AutoTraderApp(tk.Tk):
                     "clock_readable": self.latest_platform_clock is not None,
                     "capture_profile_id": self.active_signal_profile_id,
                     "ocr_timings": ocr_timings,
+                    "clock_age_seconds": (
+                        now - self.latest_clock_at
+                        if self.latest_clock_at is not None else None
+                    ),
                 },
                 idempotency_key=f"{self.capture_session_id}:ocr-completed:{frame_id}",
                 occurred_at_utc=captured_utc,
@@ -3913,6 +4007,7 @@ class AutoTraderApp(tk.Tk):
         self._capture_generation += 1
         self._ocr_executor.shutdown(wait=False, cancel_futures=True)
         self._context_executor.shutdown(wait=False, cancel_futures=True)
+        self._clock_executor.shutdown(wait=False, cancel_futures=True)
         self.destroy()
 
 

@@ -162,6 +162,45 @@ def _summarize_clock_ocr(data: dict[str, Any], limit: int = 180) -> str:
     return " ".join(snippets)[:limit]
 
 
+def _read_clock_from_bottom_right(image, pytesseract) -> tuple[PlatformClockReading | None, str, int]:
+    """Lê HORA ATUAL apenas na faixa inferior direita, que costuma ser fonte pequena.
+
+    Retorna (leitura, diagnóstico textual, quantidade de passadas). A faixa é cara em
+    relação ao resto do quadro, por isso é isolada: quem chama decide quando pagar.
+    """
+    from PIL import Image, ImageOps
+
+    crop_left = int(image.width * 0.70)
+    crop_top = int(image.height * 0.93)
+    clock_crop = image.crop((crop_left, crop_top, image.width, image.height)).convert("L")
+    clock_scale = 4
+    clock_crop = ImageOps.autocontrast(clock_crop).resize(
+        (clock_crop.width * clock_scale, clock_crop.height * clock_scale),
+        Image.Resampling.LANCZOS,
+    )
+    clock = None
+    passes = 0
+    diagnostics: list[str] = []
+    for page_segmentation in (7, 6):
+        # Não use whitelist na faixa do relógio: ela elimina os espaços,
+        # cola HORA/ATUAL/data em uma única palavra e derruba a confiança.
+        clock_config = f"--oem 3 --psm {page_segmentation}"
+        passes += 1
+        clock_data = pytesseract.image_to_data(
+            clock_crop, config=clock_config, output_type=pytesseract.Output.DICT
+        )
+        diagnostics.append(f"psm{page_segmentation}:{_summarize_clock_ocr(clock_data)}")
+        clock = parse_platform_clock_line(
+            clock_data,
+            origin_left=crop_left,
+            origin_top=crop_top,
+            scale=clock_scale,
+        )
+        if clock is not None:
+            break
+    return clock, " | ".join(diagnostics)[:360], passes
+
+
 class TesseractSignalDetector:
     """Detector configurável; requer o pacote pytesseract e o executável Tesseract OCR."""
 
@@ -176,6 +215,7 @@ class TesseractSignalDetector:
         # Phase timings for the most recent frame, so latency is measured instead of
         # guessed. Values describe work already performed; they never affect detection.
         self.last_ocr_timings: dict[str, Any] = {}
+        self.last_clock_timings: dict[str, Any] = {}
 
     def check_ready(self) -> None:
         try:
@@ -193,11 +233,17 @@ class TesseractSignalDetector:
                 "defina TESSERACT_CMD com o caminho completo para tesseract.exe."
             ) from exc
 
-    def detect_frame(self, image) -> tuple[list[SignalCandidate], PlatformClockReading | None]:
-        """Lê sinais e relógio; usa OCR focado no rodapé se a leitura geral falhar.
+    def detect_frame(
+        self, image, *, read_clock: bool = True
+    ) -> tuple[list[SignalCandidate], PlatformClockReading | None]:
+        """Lê sinais e, opcionalmente, o relógio do rodapé.
 
         As coordenadas retornadas são relativas à captura original. O relógio só é
         aceito junto ao rótulo HORA ATUAL no canto inferior direito, nunca pelo PC.
+
+        ``read_clock=False`` mantém a leitura de rótulos no caminho crítico e devolve
+        apenas o relógio que a passada geral já conseguiu ler. A faixa do rodapé é
+        cara e passa a ser lida por ``detect_clock`` em um executor próprio.
         """
         try:
             import pytesseract
@@ -318,42 +364,40 @@ class TesseractSignalDetector:
                 clock.left // scale, clock.top // scale, clock.text,
             )
             self.last_clock_ocr_text = f"full:{clock.text}"
+        elif not read_clock:
+            timings["clock_crop_passes"] = 0
         else:
-            # HORA ATUAL costuma estar em fonte pequena no rodapé. Leia apenas
-            # essa faixa ampliada; tente um segundo layout se o primeiro não bastar.
-            crop_left = int(image.width * 0.70)
-            crop_top = int(image.height * 0.93)
-            clock_crop = image.crop((crop_left, crop_top, image.width, image.height)).convert("L")
-            clock_scale = 4
-            clock_crop = ImageOps.autocontrast(clock_crop).resize(
-                (clock_crop.width * clock_scale, clock_crop.height * clock_scale),
-                Image.Resampling.LANCZOS,
-            )
-            clock = None
-            diagnostics: list[str] = []
             clock_started_at = time.monotonic()
-            for page_segmentation in (7, 6):
-                # Não use whitelist na faixa do relógio: ela elimina os espaços,
-                # cola HORA/ATUAL/data em uma única palavra e derruba a confiança.
-                clock_config = f"--oem 3 --psm {page_segmentation}"
-                timings["clock_crop_passes"] = int(timings["clock_crop_passes"]) + 1
-                clock_data = pytesseract.image_to_data(
-                    clock_crop, config=clock_config, output_type=pytesseract.Output.DICT
-                )
-                diagnostic = _summarize_clock_ocr(clock_data)
-                diagnostics.append(f"psm{page_segmentation}:{diagnostic}")
-                clock = parse_platform_clock_line(
-                    clock_data,
-                    origin_left=crop_left,
-                    origin_top=crop_top,
-                    scale=clock_scale,
-                )
-                if clock is not None:
-                    break
-            self.last_clock_ocr_text = " | ".join(diagnostics)[:360]
+            clock, clock_text, passes = _read_clock_from_bottom_right(image, pytesseract)
+            self.last_clock_ocr_text = clock_text
+            timings["clock_crop_passes"] = passes
             timings["clock_crop_seconds"] = round(time.monotonic() - clock_started_at, 3)
         timings["total_seconds"] = round(time.monotonic() - started_at, 3)
         return candidates, clock
+
+    def detect_clock(self, image) -> PlatformClockReading | None:
+        """Lê somente a faixa do relógio, para rodar fora do caminho crítico.
+
+        Não altera candidatos nem contadores da leitura de rótulos: o estado do
+        relógio é atualizado pelo chamador, que decide se a leitura ainda vale.
+        """
+        try:
+            import pytesseract
+        except ImportError as exc:
+            raise RuntimeError(
+                "Instale as dependências Python com: python -m pip install -r requirements.txt"
+            ) from exc
+
+        if self.executable:
+            pytesseract.pytesseract.tesseract_cmd = self.executable
+        started_at = time.monotonic()
+        clock, clock_text, passes = _read_clock_from_bottom_right(image, pytesseract)
+        self.last_clock_ocr_text = clock_text
+        self.last_clock_timings = {
+            "clock_crop_passes": passes,
+            "total_seconds": round(time.monotonic() - started_at, 3),
+        }
+        return clock
 
     def detect(self, image) -> list[SignalCandidate]:
         """Compatibilidade: retorna apenas os candidatos de sinal."""

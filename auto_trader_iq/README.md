@@ -55,6 +55,10 @@ Antes de migrar um banco existente, o inicializador cria uma cópia consistente 
 
 Cada quadro lido termina em `OCR_COMPLETED` ou `OCR_FAILED`. O motivo do descarte é explícito: `STALE_FRAME` quando o quadro passou de `1,5 s` até a análise terminar, `CAPTURE_QUALITY_INVALID` quando a captura perdeu qualidade, e ambos os sinalizadores aparecem no payload se as duas causas ocorrerem. Os mesmos eventos trazem `ocr_timings` com `full_pass_seconds`, `color_fallback_seconds`, `color_fallback_passes`, `clock_crop_seconds`, `clock_crop_passes`, `candle_detection_seconds`, `upscale_factor` e `total_seconds`. Esses números existem para localizar o gargalo — o limite de idade continua valendo e quadro defasado nunca gera sinal nem clique.
 
+Cada evento de OCR também traz quanto o quadro **entregou**, não só quanto custou: `ocr_yield` informa `raw_candidate_count`, `recent_candidate_count`, `bar_count`, `clock_readable`, `color_rejected_count` e `label_counts`. Isso separa "o quadro tinha rótulos e chegou tarde" de "o quadro não tinha nada legível", que exigem correções diferentes.
+
+A faixa do relógio no rodapé é a etapa mais cara do OCR e roda em executor próprio, em paralelo à leitura de rótulos e encadeada sem intervalo (assim que uma leitura termina, a próxima começa). Ela deixa de somar segundos ao caminho crítico dos sinais. O limite de 1,5 s e o bloqueio por relógio velho permanecem iguais: a leitura muda de lugar, não de critério, e um quadro de rótulos descartado não apaga a última leitura válida do relógio.
+
 O CSV legado em `%LOCALAPPDATA%\AutoTraderIQ\simulation_history.csv` continua preservado e serve à compatibilidade/exportação; ele não é apagado nem substituído pelo journal.
 
 ## Histórico e arquivos locais
