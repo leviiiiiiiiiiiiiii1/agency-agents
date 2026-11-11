@@ -88,8 +88,10 @@ Regras padrão: contexto lateral ou rótulo acima de 2 velas → `NO_TRADE`; cor
 Os limiares acima são valores iniciais, **não calibrados**. Para calibrar com medição, e não com opinião:
 
 ```powershell
-python -m auto_trader_iq.grade_report --db C:\caminho\journal.db --sweep max_body_vs_median_b=2,2.5,3
+python -m auto_trader_iq.grade_report --sweep max_body_vs_median_b=2,2.5,3
 ```
+
+Sem `--db`, o comando procura o journal do próprio app em `%LOCALAPPDATA%\AutoTraderIQ\opportunities.sqlite3` e diz onde olhou se não encontrar. `--db` continua disponível para apontar outro arquivo. Rode a partir da pasta `auto_trader_iq` do repositório, com o mesmo Python que abre o app.
 
 O comando abre o banco em **modo somente-leitura** e mostra: cobertura de cada medida, distribuição das classes, percentis de corpo/distância/fechamento, idade dos rótulos e o efeito de variar um limiar sobre os quadros já gravados. Use `--json` para exportar.
 

@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
+import sys
 from dataclasses import fields
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -30,6 +32,14 @@ from .opportunity_grade import (
 FEATURE_FIELDS = tuple(field.name for field in fields(SignalFeatures))
 NUMERIC_FEATURES = ("body_vs_median", "distance_to_level", "close_from_extreme")
 GRADE_ORDER = ("A", "B", "C", "NO_TRADE", "NO_CANDIDATE", "CRITERIA_UNDEFINED")
+
+
+def default_journal_path() -> Path:
+    """Mesmo diretório de dados que o app usa, sem criar nada em disco."""
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home()))
+        return base / "AutoTraderIQ" / "opportunities.sqlite3"
+    return Path.home() / ".auto_trader_iq" / "opportunities.sqlite3"
 
 
 def load_frames(db_path: str | Path) -> list[dict[str, Any]]:
@@ -280,7 +290,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Resume as medidas de classificação gravadas no journal (somente leitura)."
     )
-    parser.add_argument("--db", required=True, help="Caminho do banco do journal.")
+    parser.add_argument(
+        "--db",
+        default=None,
+        help=(
+            "Caminho do banco do journal. Padrão: o mesmo do app "
+            "(%LOCALAPPDATA%\\AutoTraderIQ\\opportunities.sqlite3)."
+        ),
+    )
     parser.add_argument(
         "--sweep",
         action="append",
@@ -291,8 +308,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="Saída em JSON.")
     args = parser.parse_args(argv)
 
+    db_path = Path(args.db) if args.db else default_journal_path()
+    if not db_path.exists():
+        print(f"Erro: Banco não encontrado: {db_path}")
+        print("       Informe outro caminho com --db, ou abra o app uma vez para criar o journal.")
+        return 2
+
     try:
-        frames = load_frames(args.db)
+        frames = load_frames(db_path)
     except (FileNotFoundError, ValueError) as exc:
         print(f"Erro: {exc}")
         return 2

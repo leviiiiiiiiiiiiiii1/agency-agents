@@ -4,7 +4,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from unittest import mock
+
 from auto_trader_iq.grade_report import (
+    default_journal_path,
     format_report,
     load_frames,
     main,
@@ -170,6 +173,34 @@ class JournalTests(unittest.TestCase):
             code = main(["--db", str(Path(self.tmp.name) / "nada.db")])
         self.assertEqual(code, 2)
         self.assertIn("Erro", buffer.getvalue())
+
+    def test_report_runs_without_explicit_db(self):
+        self.insert(payload={"grade": {"code": "A", "features": {"age_bars": 0}}}, key="a")
+        import contextlib, io
+
+        buffer = io.StringIO()
+        with mock.patch(
+            "auto_trader_iq.grade_report.default_journal_path", return_value=self.db
+        ), contextlib.redirect_stdout(buffer):
+            code = main(["--json"])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(buffer.getvalue())["summary"]["frames"], 1)
+
+    def test_missing_default_journal_explains_where_it_looked(self):
+        import contextlib, io
+
+        absent = Path(self.tmp.name) / "sem_journal.sqlite3"
+        buffer = io.StringIO()
+        with mock.patch(
+            "auto_trader_iq.grade_report.default_journal_path", return_value=absent
+        ), contextlib.redirect_stdout(buffer):
+            code = main([])
+        self.assertEqual(code, 2)
+        self.assertIn(str(absent), buffer.getvalue())
+        self.assertIn("--db", buffer.getvalue())
+
+    def test_default_path_points_to_app_journal(self):
+        self.assertEqual(default_journal_path().name, "opportunities.sqlite3")
 
     def test_default_criteria_are_used_by_sweep(self):
         self.assertFalse(DEFAULT_CRITERIA.missing_fields())
