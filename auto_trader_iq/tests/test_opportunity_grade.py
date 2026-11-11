@@ -158,6 +158,37 @@ class BuildFeaturesTests(unittest.TestCase):
         self.assertAlmostEqual(built.close_from_extreme, 0.0)
         self.assertAlmostEqual(built.distance_to_level, 0.0)
 
+    def test_candle_matched_with_small_offset(self):
+        candles = [self.candle(0), self.candle(104), self.candle(200)]
+        built = build_features(
+            self.candidate(200),
+            self.bars([0, 100, 200]),
+            candles,
+            direction="BUY",
+            age_bars=0,
+            context_regime="flow",
+            context_direction="BUY",
+        )
+        self.assertIsNotNone(built)
+        self.assertEqual(built.body, 20.0)
+
+    def test_body_median_ignores_candles_to_the_right(self):
+        # três velas pequenas à esquerda, uma grande à direita: a mediana do corpo
+        # da vela analisada não pode ser contaminada pela vela futura.
+        candles = [self.candle(0, body=(100, 110)), self.candle(100, body=(100, 110))]
+        candles.append(self.candle(200, body=(100, 200)))
+        built = build_features(
+            self.candidate(100),
+            self.bars([0, 100, 200]),
+            candles,
+            direction="BUY",
+            age_bars=0,
+            context_regime="flow",
+            context_direction="BUY",
+        )
+        self.assertIsNotNone(built)
+        self.assertAlmostEqual(built.body_vs_median, 1.0)
+
     def test_unknown_candle_returns_none(self):
         built = build_features(
             self.candidate(900),

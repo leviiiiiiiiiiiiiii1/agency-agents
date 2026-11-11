@@ -8,6 +8,7 @@ from unittest import mock
 
 from auto_trader_iq.grade_report import (
     default_journal_path,
+    load_tracks,
     format_report,
     load_frames,
     main,
@@ -119,6 +120,17 @@ class DiagnosisTests(unittest.TestCase):
         self.assertEqual(result["counts"]["NO_LABEL"], 1)
         self.assertEqual(result["counts"]["LABEL_OUTSIDE_WINDOW"], 1)
 
+    def test_unreachable_fresh_age_is_flagged(self):
+        result = summarize([frame("B", age=1), frame("B", age=1)])
+        self.assertEqual(result["min_age_observed"], 1)
+        text = format_report(result)
+        self.assertIn("classe A é inalcançável", text)
+        self.assertIn("decisão sua", text)
+
+    def test_reachable_fresh_age_is_not_flagged(self):
+        text = format_report(summarize([frame("A", age=0)]))
+        self.assertNotIn("inalcançável", text)
+
     def test_report_prints_diagnosis_sections(self):
         text = format_report(
             summarize([frame("C", reasons=("mercado lateralizado",), regime="lateral")])
@@ -126,6 +138,33 @@ class DiagnosisTests(unittest.TestCase):
         self.assertIn("Regime de contexto", text)
         self.assertIn("Motivos de bloqueio", text)
         self.assertIn("mercado lateralizado", text)
+
+
+class TrackTests(unittest.TestCase):
+    def test_repeat_ratio_is_reported(self):
+        tracks = [{"tracking_id": "t1"}, {"tracking_id": "t2"}]
+        result = summarize([frame(raw=5)] * 40, tracks)
+        self.assertEqual(result["distinct_signals"], 2)
+        self.assertEqual(result["frames_per_distinct_signal"], 20.0)
+        text = format_report(result)
+        self.assertIn("repetição, não sinal perdido", text)
+
+    def test_missing_track_table_is_not_an_error(self):
+        db = Path(tempfile.mkdtemp()) / "v1.db"
+        connection = sqlite3.connect(db)
+        connection.executescript(
+            "CREATE TABLE opportunity_events (event_id INTEGER PRIMARY KEY,"
+            " session_id TEXT, event_type TEXT, occurred_at_utc TEXT,"
+            " payload_json TEXT, idempotency_key TEXT); PRAGMA user_version=1;"
+        )
+        connection.commit()
+        connection.close()
+        self.assertEqual(load_tracks(db), [])
+
+    def test_ratio_absent_without_tracks(self):
+        result = summarize([frame()])
+        self.assertIsNone(result["frames_per_distinct_signal"])
+        self.assertNotIn("repetição, não sinal perdido", format_report(result))
 
 
 class SweepTests(unittest.TestCase):

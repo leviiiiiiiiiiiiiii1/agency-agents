@@ -93,7 +93,7 @@ python -m auto_trader_iq.grade_report --sweep max_body_vs_median_b=2,2.5,3
 
 Sem `--db`, o comando procura o journal do próprio app em `%LOCALAPPDATA%\AutoTraderIQ\opportunities.sqlite3` e diz onde olhou se não encontrar. `--db` continua disponível para apontar outro arquivo. Rode a partir da pasta `auto_trader_iq` do repositório, com o mesmo Python que abre o app.
 
-O comando abre o banco em **modo somente-leitura** e mostra: cobertura de cada medida, distribuição das classes, percentis de corpo/distância/fechamento, idade dos rótulos e o efeito de variar um limiar sobre os quadros já gravados. Use `--json` para exportar.
+O comando abre o banco em **modo somente-leitura** e mostra: cobertura de cada medida, distribuição das classes, percentis de corpo/distância/fechamento, idade dos rótulos, regime de contexto, motivos de bloqueio, sinais distintos rastreados (para separar repetição de rótulo antigo de sinal novo) e o efeito de variar um limiar sobre os quadros já gravados. Quando a idade mínima observada for maior que `fresh_age_bars`, o relatório avisa que a classe A é inalcançável — sem alterar nada por conta própria. Use `--json` para exportar.
 
 Cada quadro é classificado como `NO_LABEL` (nenhum rótulo na tela), `LABEL_OUTSIDE_WINDOW` (rótulo existe, mas fora das duas últimas velas) ou `A/B/C/NO_TRADE`. Registros anteriores separam os dois primeiros casos como `NO_CANDIDATE`; a partir de `b905d15`+motivos, a distinção aparece.
 

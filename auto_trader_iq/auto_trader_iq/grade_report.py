@@ -104,6 +104,31 @@ def load_frames(db_path: str | Path) -> list[dict[str, Any]]:
     return frames
 
 
+def load_tracks(db_path: str | Path) -> list[dict[str, Any]]:
+    """Sinais distintos rastreados pelo app, também em modo somente-leitura."""
+    path = Path(db_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Banco não encontrado: {path}")
+    connection = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=5.0)
+    connection.row_factory = sqlite3.Row
+    try:
+        return _read_tracks(connection)
+    finally:
+        connection.close()
+
+
+def _read_tracks(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Sinais distintos já rastreados. Ausente em bancos anteriores à versão 2."""
+    try:
+        rows = connection.execute(
+            "SELECT tracking_id, direction, left_px, top_px, first_seen_at_utc, "
+            "last_seen_at_utc, lifecycle, consecutive_observations FROM signal_tracks"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    return [dict(row) for row in rows]
+
+
 def _percentile(values: Sequence[float], fraction: float) -> float:
     ordered = sorted(values)
     if not ordered:
@@ -112,8 +137,12 @@ def _percentile(values: Sequence[float], fraction: float) -> float:
     return ordered[index]
 
 
-def summarize(frames: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+def summarize(
+    frames: Iterable[Mapping[str, Any]],
+    tracks: Iterable[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
     frames = list(frames)
+    tracks = list(tracks or [])
     counts: dict[str, int] = {}
     for frame in frames:
         code = str(frame.get("code") or "DESCONHECIDO")
@@ -168,8 +197,14 @@ def summarize(frames: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
         1 for frame in frames if (frame.get("recent_candidate_count") or 0) > 0
     )
 
+    raw_label_frames = raw_labels
+    distinct = len(tracks)
     return {
         "frames": len(frames),
+        "distinct_signals": distinct,
+        "frames_per_distinct_signal": (
+            round(raw_label_frames / distinct, 1) if distinct else None
+        ),
         "frames_with_raw_label": raw_labels,
         "frames_with_recent_label": recent_labels,
         "context_regimes": regimes,
@@ -185,6 +220,8 @@ def summarize(frames: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
         },
         "coverage": coverage,
         "age_bars_counts": age_counts,
+        "min_age_observed": min(ages) if ages else None,
+        "max_age_observed": max(ages) if ages else None,
         "distributions": distributions,
         "criteria_hashes": sorted(
             {str(frame["criteria_hash"]) for frame in frames if frame.get("criteria_hash")}
@@ -267,6 +304,17 @@ def format_report(summary: Mapping[str, Any], sweeps: Sequence[tuple[str, Sequen
     lines.append(f"    com algum rótulo no quadro   {summary['frames_with_raw_label']}")
     lines.append(f"    com rótulo nas 2 últimas     {summary['frames_with_recent_label']}")
 
+    if summary.get("distinct_signals"):
+        lines.append(f"    sinais distintos rastreados  {summary['distinct_signals']}")
+        lines.append(
+            f"    quadros por sinal distinto   {summary['frames_per_distinct_signal']}"
+        )
+        if summary["frames_per_distinct_signal"] and summary["frames_per_distinct_signal"] >= 10:
+            lines.append(
+                "    Um mesmo rótulo fica na tela por muitos quadros: "
+                "LABEL_OUTSIDE_WINDOW é majoritariamente repetição, não sinal perdido."
+            )
+
     if summary["context_regimes"]:
         ordered = sorted(
             summary["context_regimes"].items(), key=lambda item: (-item[1], item[0])
@@ -286,6 +334,22 @@ def format_report(summary: Mapping[str, Any], sweeps: Sequence[tuple[str, Sequen
             f"{age} vela(s)={count}" for age, count in sorted(summary["age_bars_counts"].items())
         )
         lines += ["", f"Idade do rótulo: {ages}"]
+
+    observed_min = summary.get("min_age_observed")
+    if observed_min is not None:
+        lines.append(
+            f"    idade mínima observada: {observed_min} vela(s); "
+            f"máxima: {summary.get('max_age_observed')}"
+        )
+        if DEFAULT_CRITERIA.fresh_age_bars is not None and observed_min > DEFAULT_CRITERIA.fresh_age_bars:
+            lines.append(
+                f"ATENÇÃO: fresh_age_bars={DEFAULT_CRITERIA.fresh_age_bars} exige idade "
+                f"{DEFAULT_CRITERIA.fresh_age_bars}, mas nenhum quadro observado ficou abaixo de "
+                f"{observed_min}. Com esse limite a classe A é inalcançável nesta tela."
+            )
+            lines.append(
+                "    Nada foi alterado automaticamente: mudar o limite é decisão sua."
+            )
 
     if summary["distributions"]:
         lines += ["", "Percentis das medidas (somente quadros com candidato):"]
@@ -380,11 +444,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         frames = load_frames(db_path)
+        tracks = load_tracks(db_path)
     except (FileNotFoundError, ValueError) as exc:
         print(f"Erro: {exc}")
         return 2
 
-    summary = summarize(frames)
+    summary = summarize(frames, tracks)
     sweeps: list[tuple[str, list[dict[str, Any]]]] = []
     for spec in args.sweep:
         try:

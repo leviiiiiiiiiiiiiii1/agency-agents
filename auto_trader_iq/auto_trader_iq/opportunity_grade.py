@@ -173,21 +173,32 @@ def build_features(
     reference_window: int = 20,
     body_window: int = 10,
 ) -> SignalFeatures | None:
-    """Reúne as medidas de um candidato; ``None`` se a vela não for identificável."""
+    """Reúne as medidas de um candidato; ``None`` se a vela não for identificável.
+
+    A geometria só existe para velas com cor calibrada, então ``candles`` pode ser
+    menor que ``bars``. O casamento é por proximidade dentro da mesma tolerância
+    usada pela idade do rótulo, e a mediana usa as velas à esquerda desta — nunca
+    índices de ``bars`` aplicados a ``candles``.
+    """
     if not bars or not candles:
         return None
-    by_center = {round(candle.center_x, 3): candle for candle in candles}
-    index = min(range(len(bars)), key=lambda i: abs(bars[i].center_x - (candidate.left + candidate.width / 2)))
-    key = round(bars[index].center_x, 3)
-    candle = by_center.get(key)
-    if candle is None:
+    text_center = candidate.left + candidate.width / 2
+    index = min(range(len(bars)), key=lambda i: abs(bars[i].center_x - text_center))
+    gaps = [bars[i + 1].center_x - bars[i].center_x for i in range(len(bars) - 1)]
+    normal_gaps = [gap for gap in gaps if gap >= 8]
+    tolerance = max(18.0, (median(normal_gaps) if normal_gaps else 24.0) * 0.65)
+    candle = min(candles, key=lambda item: abs(item.center_x - bars[index].center_x))
+    if abs(candle.center_x - bars[index].center_x) > tolerance:
         return None
 
     body = max(0.0, float(candle.body_bottom - candle.body_top))
     candle_range = max(1.0, float(candle.low - candle.high))
+    at_or_before = [
+        item for item in candles if float(item.center_x) <= float(candle.center_x) + 1e-6
+    ]
     bodies = [
         max(0.0, float(item.body_bottom - item.body_top))
-        for item in candles[max(0, index - body_window + 1): index + 1]
+        for item in at_or_before[-body_window:]
     ]
     typical_body = median(bodies) if bodies else 0.0
     body_vs_median = (body / typical_body) if typical_body > 0 else None
