@@ -81,7 +81,19 @@ Configuração inválida ou contraditória não vira "sem filtro": os critérios
 
 `opportunity_grade.py` classifica a oportunidade usando apenas o que a captura permite medir: idade do rótulo em velas, corpo da vela em relação à mediana das últimas 10, distância percentual até o nível contrário dentro da faixa de 20 velas, posição do fechamento no próprio candle e regime de contexto. **RSI, histograma MACD e distância à EMA20 não são legíveis por pixel** e aparecem em `unmeasured` — a classificação nunca finge tê-los considerado.
 
-Regras padrão: contexto lateral ou rótulo acima de 2 velas → `NO_TRADE`; corpo acima de 2× a mediana, preço a menos de 15% do nível contrário, fechamento colado no extremo ou sinal contra o contexto → `C`; rótulo com 1 vela de idade ou corpo fraco → `B`; rótulo atual, corpo entre 0,4× e 1,5× a mediana e folga do nível → `A`. Limiares ficam em `config.json` na chave `grading`, são validados e voltam ao padrão declarado quando inválidos. A classe, o hash dos limiares e as medidas usadas vão para o journal em `grade`.
+Regras padrão: contexto lateral ou rótulo acima de 2 velas → `NO_TRADE`; corpo acima de 2× a mediana, preço a menos de 15% do nível contrário, fechamento colado no extremo ou sinal contra o contexto → `C`; rótulo com 1 vela de idade ou corpo fora da faixa ideal (fraco ou acima de 1,5×) → `B`; rótulo atual, corpo entre 0,4× e 1,5× a mediana e folga do nível → `A`. Limiares ficam em `config.json` na chave `grading`, são validados e voltam ao padrão declarado quando inválidos. A classe, o hash dos limiares e as medidas usadas vão para o journal em `grade`.
+
+### Relatório de calibração
+
+Os limiares acima são valores iniciais, **não calibrados**. Para calibrar com medição, e não com opinião:
+
+```powershell
+python -m auto_trader_iq.grade_report --db C:\caminho\journal.db --sweep max_body_vs_median_b=2,2.5,3
+```
+
+O comando abre o banco em **modo somente-leitura** e mostra: cobertura de cada medida, distribuição das classes, percentis de corpo/distância/fechamento, idade dos rótulos e o efeito de variar um limiar sobre os quadros já gravados. Use `--json` para exportar.
+
+O relatório **não calcula taxa de acerto**. Os quadros não têm desfecho vinculado porque nenhuma ordem é enviada; qualquer número nesse sentido seria inventado. Amostra abaixo de 200 quadros com candidato não sustenta mudança de limiar.
 
 O CSV legado em `%LOCALAPPDATA%\AutoTraderIQ\simulation_history.csv` continua preservado e serve à compatibilidade/exportação; ele não é apagado nem substituído pelo journal.
 

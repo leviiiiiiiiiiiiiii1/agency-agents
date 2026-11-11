@@ -81,6 +81,11 @@ class GradeTests(unittest.TestCase):
         self.assertEqual(grade.code, GRADE_RISKY)
         self.assertIn("esticado", grade.reasons[0])
 
+    def test_body_above_ideal_band_is_not_immediate(self):
+        grade = self.grade(body_vs_median=1.8)
+        self.assertEqual(grade.code, GRADE_GOOD)
+        self.assertIn("acima do ideal", grade.reasons[0])
+
     def test_weak_body_is_only_good(self):
         self.assertEqual(self.grade(body_vs_median=0.2).code, GRADE_GOOD)
 

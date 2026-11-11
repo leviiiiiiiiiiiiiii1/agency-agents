@@ -262,6 +262,9 @@ def grade_opportunity(
         severe.append(f"corpo {ratio:.2f}× a mediana (esticado)")
     elif ratio <= criteria.max_body_vs_median_a:
         strong.append(f"corpo {ratio:.2f}× a mediana")
+    else:
+        # Faixa intermediária: vela maior que o ideal, ainda não esticada.
+        minor.append(f"corpo {ratio:.2f}× a mediana (acima do ideal)")
 
     distance = features.distance_to_level
     if distance is None:
