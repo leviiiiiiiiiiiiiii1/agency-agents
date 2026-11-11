@@ -61,6 +61,8 @@ A faixa do relógio no rodapé é a etapa mais cara do OCR e roda em executor pr
 
 Se o recorte do rodapé voltar vazio repetidamente, o app registra um evento `CLOCK_PROBE` a cada 20 tentativas sem leitura: ele procura horários no quadro inteiro e grava apenas os horários encontrados, as palavras de relógio e as posições relativas. Nomes de ativo, preços e demais textos do gráfico não são registrados — só contados. Isso localiza o relógio quando o layout muda, sem capturar dados financeiros.
 
+A detecção de velas também registra por que aceitou ou descartou barras, dentro de `ocr_timings.candle_detection`: colunas dominantes por cor, número de trechos, barras estreitas, barras curtas/esparsas e quantas sobraram depois da calibração de paleta. Assim "0 velas" deixa de ser ambíguo entre cor não reconhecida e geometria insuficiente.
+
 O CSV legado em `%LOCALAPPDATA%\AutoTraderIQ\simulation_history.csv` continua preservado e serve à compatibilidade/exportação; ele não é apagado nem substituído pelo journal.
 
 ## Histórico e arquivos locais

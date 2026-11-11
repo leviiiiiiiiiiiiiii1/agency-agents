@@ -105,13 +105,16 @@ def _analyze_ocr_frame(
 ):
     """OCR labels and match them against candles detected in this exact frame."""
     candle_started_at = time.monotonic()
-    bars = detect_candle_bars(image, palette_colors=palette_colors)
+    bars, candle_stats = detect_candle_bars_detailed(
+        image, palette_colors=palette_colors
+    )
     candle_seconds = round(time.monotonic() - candle_started_at, 3)
     raw_candidates, clock = detector.detect_frame(image, read_clock=read_clock)
     candidates = filter_to_recent_candle(raw_candidates, bars)
     label_counts = count_signal_labels_by_candle(raw_candidates, bars, lookback=12)
     timings = dict(detector.last_ocr_timings)
     timings["candle_detection_seconds"] = candle_seconds
+    timings["candle_detection"] = candle_stats
     return (
         candidates,
         clock,

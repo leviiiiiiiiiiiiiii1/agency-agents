@@ -6,6 +6,7 @@ from auto_trader_iq.candle_monitor import (
     CandleBar,
     _market_candles_from_bars,
     detect_candle_bars,
+    detect_candle_bars_detailed,
     filter_to_recent_candle,
 )
 from auto_trader_iq.signal_detector import SignalCandidate
@@ -78,6 +79,51 @@ class CandleFilterTests(unittest.TestCase):
         self.assertEqual(len(bearish), 2)
         self.assertGreater(bearish[0].close_y, bearish[0].open_y)
         self.assertLess(bullish[0].close_y, bullish[0].open_y)
+
+
+class CandleDetectionDiagnosticsTests(unittest.TestCase):
+    @staticmethod
+    def chart(body_colors):
+        image = Image.new("RGB", (400, 200), (12, 16, 22))
+        draw = ImageDraw.Draw(image)
+        for index, color in enumerate(body_colors):
+            left = 40 + index * 60
+            draw.rectangle((left, 80, left + 20, 150), fill=color)
+        return image
+
+    def test_reports_detected_bars_and_palette(self):
+        bars, stats = detect_candle_bars_detailed(
+            self.chart([(0, 200, 80), (0, 200, 80)]),
+            palette_colors=["green"],
+        )
+        self.assertEqual(len(bars), 2)
+        self.assertEqual(stats["bars_before_palette"], 2)
+        self.assertEqual(stats["bars_after_palette"], 2)
+        self.assertEqual(stats["palette"], ["green"])
+        self.assertEqual(stats["dominant_columns_by_color"].get("green", 0) > 0, True)
+
+    def test_reports_empty_chart_without_bars(self):
+        bars, stats = detect_candle_bars_detailed(
+            self.chart([]), palette_colors=["green"]
+        )
+        self.assertEqual(bars, [])
+        self.assertEqual(stats["runs"], 0)
+        self.assertEqual(stats["bars_after_palette"], 0)
+        self.assertEqual(stats["dominant_columns_by_color"], {})
+
+    def test_reports_bars_dropped_by_palette_calibration(self):
+        bars, stats = detect_candle_bars_detailed(
+            self.chart([(0, 200, 80), (0, 200, 80)]),
+            palette_colors=["white"],
+        )
+        self.assertEqual(bars, [])
+        self.assertEqual(stats["bars_before_palette"], 2)
+        self.assertEqual(stats["bars_after_palette"], 0)
+        self.assertEqual(stats["palette"], ["white"])
+
+    def test_legacy_helper_still_returns_plain_bars(self):
+        bars = detect_candle_bars(self.chart([(0, 200, 80)]), palette_colors=["green"])
+        self.assertEqual([bar.color for bar in bars], ["green"])
 
 
 if __name__ == "__main__":

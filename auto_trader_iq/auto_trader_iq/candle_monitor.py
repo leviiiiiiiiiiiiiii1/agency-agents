@@ -38,6 +38,22 @@ def _candle_pixel_color(r: int, g: int, b: int) -> str | None:
 def detect_candle_bars(
     image, downscale: int = 2, *, palette_colors: Collection[str] | None = None
 ) -> list[CandleBar]:
+    """Versão de produção: apenas as barras, sem estatísticas."""
+    bars, _stats = detect_candle_bars_detailed(
+        image, downscale, palette_colors=palette_colors
+    )
+    return bars
+
+
+def detect_candle_bars_detailed(
+    image, downscale: int = 2, *, palette_colors: Collection[str] | None = None
+) -> tuple[list[CandleBar], dict[str, object]]:
+    """Mesma detecção, devolvendo por que barras foram aceitas ou descartadas.
+
+    Sem esse detalhamento, "0 velas" é indistinguível entre cor não reconhecida
+    (paleta do gráfico fora das faixas) e geometria insuficiente (barra estreita ou
+    curta). São causas com correções opostas, então o número precisa ser medido.
+    """
     """Localiza corpos/pavios em paletas verde/vermelha ou branca/roxa.
 
     Reduz a imagem para acelerar a varredura; exige largura, área e altura mínimas
@@ -78,11 +94,22 @@ def detect_candle_bars(
             top, bottom = bounds[dominant]
             column_stats[x] = (dominant, top, bottom, counts[dominant])
     column_color = {x: stats[0] for x, stats in column_stats.items()}
+    dominant_by_color: dict[str, int] = {}
+    for stats in column_stats.values():
+        dominant_by_color[stats[0]] = dominant_by_color.get(stats[0], 0) + 1
 
     runs: list[tuple[int, int, str]] = []
     active = sorted(column_color)
     if not active:
-        return []
+        return [], {
+            "dominant_columns_by_color": dominant_by_color,
+            "runs": 0,
+            "rejected_narrow": 0,
+            "rejected_short_or_sparse": 0,
+            "bars_before_palette": 0,
+            "bars_after_palette": 0,
+            "palette": sorted(palette_colors) if palette_colors else None,
+        }
     start = previous = active[0]
     current_color = column_color[start]
     for x in active[1:]:
@@ -95,10 +122,13 @@ def detect_candle_bars(
     runs.append((start, previous, current_color))
 
     bars: list[CandleBar] = []
+    rejected_narrow = 0
+    rejected_short_or_sparse = 0
     for left, right, color in runs:
         run_width = right - left + 1
         # Keep narrower candle bodies, especially the forming bar at the right edge.
         if run_width < 2:
+            rejected_narrow += 1
             continue
         run_stats = [
             column_stats[x]
@@ -111,6 +141,7 @@ def detect_candle_bars(
         bottom = max(stats[2] for stats in run_stats)
         color_pixels = sum(stats[3] for stats in run_stats)
         if bottom - top + 1 < 9 or color_pixels < 24:
+            rejected_short_or_sparse += 1
             continue
         bars.append(CandleBar(
             center_x=((left + right + 1) / 2) * downscale,
@@ -118,6 +149,7 @@ def detect_candle_bars(
             top=top * downscale,
             bottom=(bottom + 1) * downscale,
         ))
+    bars_before_palette = len(bars)
     if palette_colors is not None:
         bars = [bar for bar in bars if bar.color in palette_colors]
     else:
@@ -128,7 +160,16 @@ def detect_candle_bars(
             bars = light_palette_bars
         else:
             bars = [bar for bar in bars if bar.color in {"green", "red"}]
-    return sorted(bars, key=lambda bar: bar.center_x)
+    stats_summary = {
+        "dominant_columns_by_color": dominant_by_color,
+        "runs": len(runs),
+        "rejected_narrow": rejected_narrow,
+        "rejected_short_or_sparse": rejected_short_or_sparse,
+        "bars_before_palette": bars_before_palette,
+        "bars_after_palette": len(bars),
+        "palette": sorted(palette_colors) if palette_colors else None,
+    }
+    return sorted(bars, key=lambda bar: bar.center_x), stats_summary
 
 
 @dataclass(frozen=True, slots=True)
