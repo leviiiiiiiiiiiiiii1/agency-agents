@@ -21,6 +21,30 @@ SNAPSHOT_INTERVAL_SECONDS = 60.0
 _last_snapshot_at: float | None = None
 
 
+def _typical_gap(gaps: Sequence[float]) -> float:
+    """Espaçamento típico entre velas.
+
+    O quartil inferior, não a mediana: detecções fantasmas produzem intervalos
+    maiores que o das velas, e a mediana pode ser contaminada por elas até o ponto
+    de nenhum intervalo parecer regular.
+    """
+    ordered = sorted(gaps)
+    index = max(0, min(len(ordered) - 1, round(0.25 * (len(ordered) - 1))))
+    return float(ordered[index])
+
+
+def longest_grid_run(bars: Sequence[Any]) -> tuple[int, int] | None:
+    """Faixa regular mais longa: é a série de velas de verdade do quadro."""
+    if not bars or len(bars) < 2:
+        return None
+    gaps = [bars[i + 1].center_x - bars[i].center_x for i in range(len(bars) - 1)]
+    normal_gaps = [gap for gap in gaps if gap >= 8]
+    if not normal_gaps:
+        return None
+    runs = _grid_runs(bars, _typical_gap(normal_gaps))
+    return max(runs, key=lambda run: run[1] - run[0])
+
+
 def grid_end_index(bars: Sequence[Any], index: int) -> int | None:
     """Última vela da faixa regular que contém ``index``.
 
@@ -33,7 +57,7 @@ def grid_end_index(bars: Sequence[Any], index: int) -> int | None:
     normal_gaps = [gap for gap in gaps if gap >= 8]
     if not normal_gaps:
         return None
-    gap_px = median(normal_gaps)
+    gap_px = _typical_gap(normal_gaps)
     for start, end in _grid_runs(bars, gap_px):
         if start <= index <= end:
             return end
@@ -64,9 +88,10 @@ def summarize(bars: Sequence[Any], candidates: Sequence[Any]) -> dict[str, Any] 
     gaps = [bars[i + 1].center_x - bars[i].center_x for i in range(len(bars) - 1)]
     normal_gaps = [gap for gap in gaps if gap >= 8]
     gap_px = round(median(normal_gaps), 1) if normal_gaps else None
+    typical = _typical_gap(normal_gaps) if normal_gaps else None
     regular = (
-        sum(1 for gap in normal_gaps if abs(gap - gap_px) <= max(4.0, gap_px * 0.25))
-        if gap_px
+        sum(1 for gap in normal_gaps if abs(gap - typical) <= max(4.0, typical * 0.25))
+        if typical
         else 0
     )
     summary: dict[str, Any] = {
@@ -88,7 +113,7 @@ def summarize(bars: Sequence[Any], candidates: Sequence[Any]) -> dict[str, Any] 
     newest = max(candidates, key=lambda item: item.left + item.width / 2)
     text_center = newest.left + newest.width / 2
     index = min(range(len(bars)), key=lambda i: abs(bars[i].center_x - text_center))
-    runs = _grid_runs(bars, gap_px) if gap_px else []
+    runs = _grid_runs(bars, typical) if typical else []
     on_grid_run = next((run for run in runs if run[0] <= index <= run[1]), None)
     summary.update(
         {

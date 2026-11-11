@@ -100,6 +100,7 @@ def load_frames(db_path: str | Path) -> list[dict[str, Any]]:
                 "raw_candidate_count": payload.get("raw_candidate_count"),
                 "recent_candidate_count": payload.get("recent_candidate_count"),
                 "label_geometry": (payload.get("association") or {}).get("label_geometry"),
+                "price_ladder": (payload.get("association") or {}).get("price_ladder"),
                 "age_reference": (payload.get("association") or {}).get("age_reference"),
                 "palette_calibrated": bool(
                     (payload.get("association") or {}).get("palette_calibrated")
@@ -157,6 +158,136 @@ def _fresh_signal_runs(frames: Sequence[Mapping[str, Any]]) -> int:
             runs += 1
         previous_fresh = fresh
     return runs
+
+
+FAVORABLE = "favorável"
+ADVERSE = "adversa"
+NEUTRAL = "neutra"
+
+
+def _parse_time(value: Any) -> Any:
+    from datetime import datetime
+
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def compute_outcomes(
+    frames: Sequence[Mapping[str, Any]],
+    *,
+    bar_seconds: float = 60.0,
+    horizon_bars: int = 3,
+    min_move_units: float = 0.5,
+) -> dict[str, Any]:
+    """O que o preço fez depois de cada sinal, em unidades de faixa.
+
+    A vela do sinal é localizada na escada de idades de um quadro posterior, de modo
+    que entrada e leitura atual ficam no mesmo quadro — imune a mudança de escala.
+    Não há preço, nome de ativo nem payout aqui: é deslocamento relativo à faixa
+    mediana do momento.
+    """
+    if horizon_bars < 1:
+        raise ValueError("horizon_bars precisa ser pelo menos 1.")
+    ordered = sorted(
+        (
+            frame
+            for frame in frames
+            if frame.get("price_ladder") and frame.get("code") in ("A", "B", "C")
+        ),
+        key=lambda item: str(item.get("occurred_at_utc")),
+    )
+    results: list[dict[str, Any]] = []
+    skipped = 0
+    for position, frame in enumerate(ordered):
+        features = frame.get("features") or {}
+        direction = features.get("direction")
+        age = features.get("age_bars")
+        started = _parse_time(frame.get("occurred_at_utc"))
+        if direction not in ("BUY", "SELL") or not isinstance(age, int) or started is None:
+            skipped += 1
+            continue
+        target = None
+        for later in ordered[position + 1:]:
+            if later.get("session_id") != frame.get("session_id"):
+                continue
+            when = _parse_time(later.get("occurred_at_utc"))
+            if when is None:
+                continue
+            elapsed = (when - started).total_seconds()
+            if elapsed >= bar_seconds * horizon_bars * 0.8:
+                target = (later, elapsed)
+                break
+        if target is None:
+            skipped += 1
+            continue
+        later, elapsed = target
+        bars_elapsed = max(1, round(elapsed / bar_seconds))
+        ladder = later["price_ladder"]
+        closes = ladder.get("closes_px") or []
+        typical_range = ladder.get("median_range_px")
+        entry_index = age + bars_elapsed
+        if not typical_range or typical_range <= 0 or entry_index >= len(closes):
+            skipped += 1
+            continue
+        entry_now = closes[entry_index]
+        current = closes[0]
+        if entry_now is None or current is None:
+            skipped += 1
+            continue
+        # y menor = preço maior.
+        move = (float(entry_now) - float(current)) / float(typical_range)
+        if direction == "SELL":
+            move = -move
+        if move >= min_move_units:
+            outcome = FAVORABLE
+        elif move <= -min_move_units:
+            outcome = ADVERSE
+        else:
+            outcome = NEUTRAL
+        results.append(
+            {
+                "grade": frame.get("code"),
+                "direction": direction,
+                "outcome": outcome,
+                "move_units": round(move, 3),
+                "bars_elapsed": bars_elapsed,
+            }
+        )
+
+    by_grade: dict[str, dict[str, Any]] = {}
+    for item in results:
+        bucket = by_grade.setdefault(
+            item["grade"],
+            {"favorável": 0, "neutra": 0, "adversa": 0, "moves": []},
+        )
+        bucket[item["outcome"]] += 1
+        bucket["moves"].append(item["move_units"])
+
+    summary: dict[str, Any] = {}
+    for grade, bucket in sorted(by_grade.items()):
+        total = bucket["favorável"] + bucket["neutra"] + bucket["adversa"]
+        summary[grade] = {
+            "total": total,
+            "favorável": bucket["favorável"],
+            "neutra": bucket["neutra"],
+            "adversa": bucket["adversa"],
+            "median_move_units": (
+                round(median(bucket["moves"]), 3) if bucket["moves"] else None
+            ),
+        }
+
+    return {
+        "evaluated": len(results),
+        "skipped": skipped,
+        "horizon_bars": horizon_bars,
+        "bar_seconds": bar_seconds,
+        "min_move_units": min_move_units,
+        "by_grade": summary,
+    }
 
 
 def _percentile(values: Sequence[float], fraction: float) -> float:
@@ -386,6 +517,44 @@ def _format_counts(counts: Mapping[str, int], total: int) -> str:
     return "    " + " · ".join(parts)
 
 
+def format_outcomes(outcomes: Mapping[str, Any]) -> str:
+    lines = ["", "DESFECHO OBSERVADO DEPOIS DOS SINAIS"]
+    lines.append(
+        f"    horizonte: {outcomes['horizon_bars']} vela(s) · "
+        f"vela de {outcomes['bar_seconds']:.0f} s · "
+        f"movimento mínimo: {outcomes['min_move_units']} faixa(s)"
+    )
+    if not outcomes["evaluated"]:
+        lines.append("    Nenhum sinal pôde ser acompanhado até o horizonte.")
+        lines.append(
+            f"    ({outcomes['skipped']} sinal(is) sem quadro posterior suficiente.)"
+        )
+    else:
+        lines.append(
+            f"    sinais acompanhados: {outcomes['evaluated']} · "
+            f"descartados: {outcomes['skipped']}"
+        )
+        lines.append("")
+        lines.append("    classe   n     favorável   neutra   adversa   movimento mediano")
+        for grade, bucket in outcomes["by_grade"].items():
+            total = bucket["total"] or 1
+            lines.append(
+                f"    {grade:<7} {bucket['total']:>4}   "
+                f"{bucket['favorável']:>4} ({bucket['favorável'] / total:>4.0%})   "
+                f"{bucket['neutra']:>4}   {bucket['adversa']:>4}   "
+                f"{bucket['median_move_units']:>7}"
+            )
+    lines += [
+        "",
+        "    Isto NÃO é taxa de acerto. Mede deslocamento relativo à faixa mediana,",
+        "    sem custo, sem spread, sem payout e sem resultado financeiro. Serve para",
+        "    comparar classes entre si na mesma amostra, não para prever nada.",
+        "    A conversão de tempo em velas assume o período informado em --bar-seconds;",
+        "    se o gráfico não for de 1 minuto, o horizonte medido estará errado.",
+    ]
+    return "\n".join(lines)
+
+
 def format_report(summary: Mapping[str, Any], sweeps: Sequence[tuple[str, Sequence[Mapping[str, Any]]]] = ()) -> str:
     lines = ["RELATÓRIO DE CALIBRAÇÃO DA CLASSIFICAÇÃO", ""]
     if not summary["frames"]:
@@ -588,7 +757,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None,
         help=(
             "Caminho do banco do journal. Padrão: o mesmo do app "
-            "(%LOCALAPPDATA%\\AutoTraderIQ\\opportunities.sqlite3)."
+            "(%%LOCALAPPDATA%%\\AutoTraderIQ\\opportunities.sqlite3)."
         ),
     )
     parser.add_argument(
@@ -599,6 +768,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Varre valores de um limiar, ex.: --sweep max_body_vs_median_b=2,2.5,3",
     )
     parser.add_argument("--json", action="store_true", help="Saída em JSON.")
+    parser.add_argument(
+        "--bar-seconds",
+        type=float,
+        default=60.0,
+        help="Duração da vela em segundos (padrão: 60, gráfico de 1 minuto).",
+    )
+    parser.add_argument(
+        "--horizon-bars",
+        type=int,
+        default=3,
+        help="Quantas velas depois do sinal avaliar (padrão: 3).",
+    )
+    parser.add_argument(
+        "--min-move",
+        type=float,
+        default=0.5,
+        help="Movimento mínimo, em faixas medianas, para contar como desfecho (padrão: 0.5).",
+    )
     args = parser.parse_args(argv)
 
     db_path = Path(args.db) if args.db else default_journal_path()
@@ -615,6 +802,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     summary = summarize(frames, tracks)
+    outcomes = compute_outcomes(
+        frames,
+        bar_seconds=args.bar_seconds,
+        horizon_bars=args.horizon_bars,
+        min_move_units=args.min_move,
+    )
     sweeps: list[tuple[str, list[dict[str, Any]]]] = []
     for spec in args.sweep:
         try:
@@ -631,6 +824,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "summary": summary,
                     "sweeps": {parameter: results for parameter, results in sweeps},
                     "accuracy_available": False,
+                    "outcomes": outcomes,
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -638,6 +832,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     else:
         print(format_report(summary, sweeps))
+        print(format_outcomes(outcomes))
     return 0
 
 

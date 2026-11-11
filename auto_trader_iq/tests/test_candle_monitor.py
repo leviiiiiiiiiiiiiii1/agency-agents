@@ -9,6 +9,7 @@ from auto_trader_iq.candle_monitor import (
     detect_candle_bars_detailed,
     filter_to_recent_candle,
     label_age_bars,
+    price_ladder,
     resolve_age_reference,
 )
 from auto_trader_iq.signal_detector import SignalCandidate
@@ -228,3 +229,50 @@ class LabelAgeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PriceLadderTests(unittest.TestCase):
+    def bars(self, centers):
+        return [CandleBar(center, "green", 10, 40) for center in centers]
+
+    def candles(self, closes):
+        from types import SimpleNamespace
+
+        return [
+            SimpleNamespace(
+                center_x=float(index * 40),
+                high=10.0,
+                low=40.0,
+                close_y=float(close),
+            )
+            for index, close in enumerate(closes)
+        ]
+
+    def test_index_zero_is_the_newest_bar(self):
+        ladder = price_ladder(self.candles([1.0, 2.0, 3.0]), self.bars([0, 40, 80]))
+        self.assertEqual(ladder["closes_px"][0], 3.0)
+        self.assertEqual(ladder["closes_px"][2], 1.0)
+
+    def test_median_range_is_reported(self):
+        ladder = price_ladder(self.candles([1.0, 2.0, 3.0]), self.bars([0, 40, 80]))
+        self.assertEqual(ladder["median_range_px"], 30.0)
+
+    def test_phantom_bar_does_not_become_the_current_price(self):
+        ladder = price_ladder(self.candles([1.0, 2.0]), self.bars([0, 40, 400]))
+        self.assertEqual(ladder["closes_px"][0], 2.0)
+        self.assertEqual(ladder["closes_px"][1], 1.0)
+
+    def test_bar_without_candle_inside_the_run_is_missing(self):
+        from types import SimpleNamespace
+
+        candles = [
+            SimpleNamespace(center_x=0.0, high=10.0, low=40.0, close_y=1.0),
+            SimpleNamespace(center_x=80.0, high=10.0, low=40.0, close_y=3.0),
+        ]
+        ladder = price_ladder(candles, self.bars([0, 40, 80]))
+        self.assertEqual(ladder["closes_px"][0], 3.0)
+        self.assertIsNone(ladder["closes_px"][1])
+
+    def test_empty_inputs_return_none(self):
+        self.assertIsNone(price_ladder([], self.bars([0, 40])))
+        self.assertIsNone(price_ladder(self.candles([1.0]), []))

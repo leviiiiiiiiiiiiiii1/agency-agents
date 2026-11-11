@@ -11,7 +11,7 @@ from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from statistics import median
 
-from .geometry_diagnostics import grid_end_index
+from .geometry_diagnostics import grid_end_index, longest_grid_run
 from .signal_detector import SignalCandidate
 
 AGE_REFERENCE_DETECTED = "detected"
@@ -516,6 +516,46 @@ def resolve_age_reference(
     ):
         return AGE_REFERENCE_GRID, True, _AGE_REFERENCE_NOTES["grid"]
     return str(value), False, None
+
+
+def price_ladder(candles, bars, max_age: int = 8) -> dict[str, object] | None:
+    """Fechamentos das últimas velas por idade, em pixels.
+
+    O índice 0 é a vela mais recente; o índice N é N velas atrás. Como tudo está
+    no mesmo quadro, a diferença entre dois fechamentos é imune a mudança de escala
+    do gráfico — e nenhum preço ou nome de ativo é registrado.
+    """
+    if not candles or not bars:
+        return None
+    gaps = [bars[i + 1].center_x - bars[i].center_x for i in range(len(bars) - 1)]
+    normal_gaps = [gap for gap in gaps if gap >= 8]
+    tolerance = max(18.0, (median(normal_gaps) if normal_gaps else 24.0) * 0.65)
+    # Ancora na faixa regular mais longa: se a última detecção for fantasma, ela não
+    # pode virar o "preço atual" da escada.
+    run = longest_grid_run(bars)
+    anchor = run[1] if run else len(bars) - 1
+    closes: list[float | None] = []
+    for offset in range(max_age + 1):
+        index = anchor - offset
+        if index < 0:
+            break
+        bar_x = float(bars[index].center_x)
+        candle = min(candles, key=lambda item: abs(float(item.center_x) - bar_x))
+        if abs(float(candle.center_x) - bar_x) > tolerance:
+            closes.append(None)
+        else:
+            closes.append(round(float(candle.close_y), 2))
+    if not any(value is not None for value in closes):
+        return None
+    ranges = [
+        float(candle.low) - float(candle.high)
+        for candle in candles[-10:]
+        if float(candle.low) > float(candle.high)
+    ]
+    return {
+        "closes_px": closes,
+        "median_range_px": round(median(ranges), 2) if ranges else None,
+    }
 
 
 def label_age_bars(candidate, bars, reference: str = AGE_REFERENCE_DEFAULT) -> int | None:

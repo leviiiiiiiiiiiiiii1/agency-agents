@@ -94,6 +94,18 @@ Regras padrão: contexto lateral ou rótulo acima de 2 velas → `NO_TRADE`; cor
 
 Medido no journal do usuário: com `detected`, a idade mediana é 4 velas; com `grid`, é 1. A janela continua sendo de 2 velas — muda só o que conta como vela.
 
+### Desfecho observado depois do sinal
+
+Cada quadro grava uma **escada de fechamentos** (`price_ladder`): o fechamento das últimas velas por idade, em pixels, mais a faixa mediana. Como entrada e leitura ficam no mesmo quadro, o movimento é imune a mudança de escala do gráfico — e nenhum preço ou nome de ativo é registrado.
+
+O relatório acompanha cada sinal A/B/C até `--horizon-bars` velas depois (padrão 3), localiza a vela de entrada pela idade e mede o deslocamento em faixas medianas. Resultado por classe: **favorável / neutra / adversa** e o movimento mediano.
+
+```powershell
+python -m auto_trader_iq.grade_report --bar-seconds 60 --horizon-bars 3 --min-move 0.5
+```
+
+**Isto não é taxa de acerto.** Não há custo, spread, payout ou resultado financeiro: é deslocamento relativo, útil para comparar classes entre si na mesma amostra. A conversão de tempo em velas assume o período informado em `--bar-seconds`; num gráfico de 5 minutos, use `300`.
+
 ### Diagnóstico visual de geometria
 
 Quando o rótulo mais à direita fica 3 ou mais velas à esquerda da última vela detectada, o app grava, no máximo uma vez por minuto, uma imagem anotada em `%LOCALAPPDATA%\AutoTraderIQ\screenshots\geometry_*.png` (centros de vela em azul, última vela em magenta, rótulos em laranja, o mais à direita em vermelho) junto de um `.json` com as medidas, os intervalos entre velas (`gaps_px`), os centros detectados (`bar_centers_x`) e o tamanho da imagem — detalhe suficiente para diagnosticar sem a imagem. Serve para separar velas fantasmas, rótulo desenhado longe do candle e sinal realmente antigo — coisas que nenhum número sozinho distingue.

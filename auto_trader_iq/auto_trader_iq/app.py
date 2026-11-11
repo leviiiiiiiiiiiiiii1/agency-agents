@@ -50,6 +50,7 @@ from .candle_monitor import (
     detect_candle_bars_detailed,
     filter_to_recent_candle,
     label_age_bars,
+    price_ladder,
     resolve_age_reference,
     AGE_REFERENCE_DEFAULT,
     AGE_REFERENCE_VERSION,
@@ -183,6 +184,7 @@ def _analyze_ocr_frame(
         label_ages,
         market_candles,
         label_geometry,
+        price_ladder(market_candles, bars),
     )
 
 
@@ -2712,6 +2714,7 @@ class AutoTraderApp(tk.Tk):
             candidate_label_ages,
             candidate_market_candles,
             label_geometry,
+            ladder,
         ) = result
         self.latest_candidates_at = captured_at
         # Passa todas as caixas OCR ao reconciliador central; a deduplicação e a
@@ -2828,6 +2831,7 @@ class AutoTraderApp(tk.Tk):
                             if candidate_label_ages else None
                         ),
                         "label_geometry": label_geometry,
+                        "price_ladder": ladder,
                     },
                     "ocr_timings": ocr_timings,
                     "clock_ocr_text": self.latest_clock_ocr_text[:200],
