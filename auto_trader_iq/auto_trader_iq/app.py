@@ -61,6 +61,7 @@ from .sequence_recorder import SequenceRecorder
 from .screen_mask import mask_screen_regions, point_is_masked_with_margin
 from .settings import find_tesseract_executable, load_settings, save_settings
 from .demo_signal_guard import DemoSignalRepeatGuard
+from .eligibility import EligibilityCriteria, evaluate_eligibility
 from .ocr_diagnostics import classify_association_outcome, summarize_ocr_yield
 from .signal_detector import SignalCandidate, TesseractSignalDetector
 from .simulation_history import SimulationHistoryStore, append_event_best_effort
@@ -241,6 +242,9 @@ class AutoTraderApp(tk.Tk):
         self.clock_probe_hint: str | None = None
         self.association_code = "NO_LABELS"
         self.association_text = ""
+        # Critérios vazios de propósito: a elegibilidade falha fechada até o
+        # operador declarar cada limite explicitamente.
+        self.eligibility_criteria = EligibilityCriteria()
         self.pending_armed_clock: PlatformClockReading | None = None
         self.pending_rollover_notified = False
         self.latest_bar_count = 0
@@ -2953,8 +2957,26 @@ class AutoTraderApp(tk.Tk):
             self.research_status.set(
                 f"Journal: {len(raw_candidates)} rótulo(s) reconciliado(s); "
                 f"{len(recent_candidates)} associado(s) às velas mais recentes. "
-                "Ativo e dados financeiros não disponíveis; elegibilidade estratégica não implementada."
+                "Ativo e dados financeiros não disponíveis. "
+                f"Elegibilidade: {self._eligibility_status_text()}."
             )
+
+    def _eligibility_status_text(self) -> str:
+        """Mostra o estado real da elegibilidade sem sugerir que já existe regra."""
+        decision = evaluate_eligibility(
+            self.eligibility_criteria,
+            {
+                "confidence": None,
+                "direction": None,
+                "palette_calibrated": bool(self._active_candle_color_direction_map()),
+                "bar_count": self.latest_bar_count,
+                "label_age_bars": None,
+                "context_direction": self.market_context_direction,
+            },
+        )
+        if decision.code == "CRITERIA_UNDEFINED":
+            return "critérios não definidos (falha fechada)"
+        return decision.code
 
     def _handle_ocr_failure(self, exc: Exception) -> None:
         if self.demo_automation_enabled:

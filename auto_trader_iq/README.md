@@ -65,6 +65,12 @@ A detecção de velas também registra por que aceitou ou descartou barras, dent
 
 Quando nenhum rótulo é associado, o app nomeia a causa em vez de dizer apenas "desalinhado": `PALETTE_NOT_CALIBRATED` (paleta não calibrada — a direção das cores não é presumida), `INSUFFICIENT_BARS`, `COLOR_CONFLICT`, `LABELS_HISTORICAL` ou `NO_LABELS`. O mesmo código vai para o journal em `association.code`, junto de `raw_count`, `recent_count`, `bar_count` e `palette_calibrated`.
 
+O filtro de associação é estrito por decisão do operador: só a última vela e a imediatamente anterior contam. Rótulo em vela mais antiga continua registrado no journal, mas nunca vira candidato.
+
+## Elegibilidade estratégica
+
+`eligibility.py` não define estratégia: garante que nada seja elegível sem critérios declarados. `EligibilityCriteria` tem todos os campos opcionais e **ausente significa não definido**, então o resultado padrão é `CRITERIA_UNDEFINED` e o app exibe "critérios não definidos (falha fechada)". Com critérios completos, a avaliação devolve `ELIGIBLE_FOR_REVIEW` ou `NOT_ELIGIBLE` com o motivo, e medida ausente (confiança, idade do rótulo em velas) bloqueia em vez de ser presumida.
+
 O CSV legado em `%LOCALAPPDATA%\AutoTraderIQ\simulation_history.csv` continua preservado e serve à compatibilidade/exportação; ele não é apagado nem substituído pelo journal.
 
 ## Histórico e arquivos locais
