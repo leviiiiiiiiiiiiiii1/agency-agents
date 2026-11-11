@@ -46,6 +46,7 @@ from .candle_monitor import (
     detect_candle_bars,
     detect_candle_bars_detailed,
     filter_to_recent_candle,
+    label_age_bars,
 )
 from .candle_timer import (
     PlatformClockReading,
@@ -61,7 +62,12 @@ from .sequence_recorder import SequenceRecorder
 from .screen_mask import mask_screen_regions, point_is_masked_with_margin
 from .settings import find_tesseract_executable, load_settings, save_settings
 from .demo_signal_guard import DemoSignalRepeatGuard
-from .eligibility import EligibilityCriteria, evaluate_eligibility
+from .eligibility import (
+    BALANCED_CRITERIA,
+    EligibilityCriteria,
+    evaluate_eligibility,
+    validate_criteria,
+)
 from .ocr_diagnostics import classify_association_outcome, summarize_ocr_yield
 from .signal_detector import SignalCandidate, TesseractSignalDetector
 from .simulation_history import SimulationHistoryStore, append_event_best_effort
@@ -113,6 +119,7 @@ def _analyze_ocr_frame(
     candle_seconds = round(time.monotonic() - candle_started_at, 3)
     raw_candidates, clock = detector.detect_frame(image, read_clock=read_clock)
     candidates = filter_to_recent_candle(raw_candidates, bars)
+    label_ages = [label_age_bars(candidate, bars) for candidate in candidates]
     label_counts = count_signal_labels_by_candle(raw_candidates, bars, lookback=12)
     timings = dict(detector.last_ocr_timings)
     timings["candle_detection_seconds"] = candle_seconds
@@ -127,6 +134,7 @@ def _analyze_ocr_frame(
         label_counts,
         raw_candidates,
         timings,
+        label_ages,
     )
 
 
@@ -242,9 +250,12 @@ class AutoTraderApp(tk.Tk):
         self.clock_probe_hint: str | None = None
         self.association_code = "NO_LABELS"
         self.association_text = ""
-        # Critérios vazios de propósito: a elegibilidade falha fechada até o
-        # operador declarar cada limite explicitamente.
-        self.eligibility_criteria = EligibilityCriteria()
+        self.eligibility_code = "CRITERIA_UNDEFINED"
+        self.eligibility_text = ""
+        self.eligibility_hash: str | None = None
+        # Perfil inicial recomendado; cada campo continua explícito e auditável.
+        self.eligibility_criteria = BALANCED_CRITERIA
+        self.eligibility_problems: list[str] = []
         self.pending_armed_clock: PlatformClockReading | None = None
         self.pending_rollover_notified = False
         self.latest_bar_count = 0
@@ -2022,6 +2033,14 @@ class AutoTraderApp(tk.Tk):
             if self.region is None:
                 return
         self._persist_config()
+        problems = validate_criteria(self.eligibility_criteria, ocr_floor=self._ocr_floor())
+        self.eligibility_problems = problems
+        if problems:
+            # Configuração incoerente com o piso atual do OCR: nada fica elegível.
+            self.eligibility_criteria = EligibilityCriteria()
+            self.research_status.set(
+                "Elegibilidade bloqueada por configuração inválida: " + "; ".join(problems)
+            )
         self._capture_generation += 1
         self.detector = None
         if self.ocr_enabled_var.get():
@@ -2055,6 +2074,10 @@ class AutoTraderApp(tk.Tk):
                     "operation_mode": self.operation_mode.value,
                     "ocr_enabled": bool(self.ocr_enabled_var.get()),
                     "region": self.region.as_mss_dict() if self.region is not None else None,
+                    "ocr_floor_confidence": self._ocr_floor(),
+                    "eligibility_criteria": self.eligibility_criteria.as_dict(),
+                    "eligibility_criteria_hash": self.eligibility_criteria.criteria_hash(),
+                    "eligibility_problems": list(self.eligibility_problems),
                 },
             )
         except Exception as exc:
@@ -2630,6 +2653,7 @@ class AutoTraderApp(tk.Tk):
             self.signal_label_counts,
             raw_candidates,
             ocr_timings,
+            candidate_label_ages,
         ) = result
         self.latest_candidates_at = captured_at
         # Passa todas as caixas OCR ao reconciliador central; a deduplicação e a
@@ -2697,6 +2721,7 @@ class AutoTraderApp(tk.Tk):
             raw_candidate_count,
             self.latest_bar_count,
             color_rejected_count,
+            candidate_label_ages,
         )
         self._record_ocr_opportunities(
             tracked_candidates,
@@ -2718,12 +2743,21 @@ class AutoTraderApp(tk.Tk):
                     "color_rejected_count": color_rejected_count,
                     "clock_readable": self.latest_platform_clock is not None,
                     "capture_profile_id": self.active_signal_profile_id,
+                    "eligibility": {
+                        "code": self.eligibility_code,
+                        "criteria_hash": self.eligibility_hash,
+                        "text": self.eligibility_text[:200],
+                    },
                     "association": {
                         "code": self.association_code,
                         "raw_count": raw_candidate_count,
                         "recent_count": len(self.last_candidates),
                         "bar_count": self.latest_bar_count,
                         "palette_calibrated": bool(self._active_candle_color_direction_map()),
+                        "label_age_bars": (
+                            candidate_label_ages[-1]
+                            if candidate_label_ages else None
+                        ),
                     },
                     "ocr_timings": ocr_timings,
                     "clock_ocr_text": self.latest_clock_ocr_text[:200],
@@ -3102,6 +3136,7 @@ class AutoTraderApp(tk.Tk):
         raw_count: int = 0,
         candle_count: int = 0,
         color_rejected_count: int = 0,
+        label_ages: list[int | None] | None = None,
     ) -> None:
         self._update_candidate_table(candidates)
         self.association_code, self.association_text = classify_association_outcome(
@@ -3111,6 +3146,7 @@ class AutoTraderApp(tk.Tk):
             bar_count=candle_count,
             palette_calibrated=bool(self._active_candle_color_direction_map()),
         )
+        self._evaluate_candidates(candidates, label_ages)
         if not candidates:
             self.ocr_status.set(
                 f"OCR viu {raw_count} etiqueta(s); {self.association_text}"
@@ -3125,10 +3161,44 @@ class AutoTraderApp(tk.Tk):
             summary += f" | +{len(candidates) - 4}"
         if color_rejected_count:
             summary += f" · {color_rejected_count} rótulo(s) bloqueado(s) por conflito de cor"
+        eligibility_note = ""
+        if self.eligibility_code != "ASSOCIATED":
+            eligibility_note = f" · elegibilidade: {self.eligibility_text}"
         self.ocr_status.set(
             f"Candidato(s) nas velas mais recentes — revise: {summary} "
             f"(OCR bruto: {raw_count}; barras detectadas: {candle_count})"
+            f"{eligibility_note}"
         )
+
+    def _evaluate_candidates(
+        self, candidates: list[SignalCandidate], label_ages: list[int | None] | None
+    ) -> None:
+        """Avalia elegibilidade sem liberar nada: o resultado é sempre para revisão.
+
+        Guarda o código do candidato mais recente para o status e para o journal; um
+        bloqueio em qualquer candidato não é mascarado por outro mais permissivo.
+        """
+        if not candidates:
+            self.eligibility_code = "NO_CANDIDATE"
+            self.eligibility_text = "sem candidato associado a vela recente"
+            self.eligibility_hash = self.eligibility_criteria.criteria_hash()
+            return
+        ages = list(label_ages or [])
+        decisions = []
+        for index, candidate in enumerate(candidates):
+            age = ages[index] if index < len(ages) else None
+            decisions.append(
+                evaluate_eligibility(
+                    self.eligibility_criteria,
+                    self._eligibility_observation(candidate, age),
+                )
+            )
+        best = decisions[-1]
+        self.eligibility_code = best.code
+        self.eligibility_text = (
+            best.display_text if not best.eligible else best.display_text
+        )
+        self.eligibility_hash = best.criteria_hash
 
     @staticmethod
     def _candidate_row_id(candidate: SignalCandidate) -> str:
@@ -3902,6 +3972,50 @@ class AutoTraderApp(tk.Tk):
                 self.demo_mouse_keepalive_window = neutral_window
         return True
 
+    def _ocr_floor(self) -> float:
+        """Confiança mínima que o detector já aplica antes de qualquer decisão."""
+        try:
+            return float(self.confidence_var.get())
+        except (AttributeError, TypeError, ValueError):
+            return 70.0
+
+    def _load_eligibility_criteria(self, payload: object) -> None:
+        """Carrega critérios validados; configuração inválida falha fechada.
+
+        Um JSON corrompido ou contraditório não deve virar "sem filtro": nesse caso
+        os critérios ficam vazios e nenhum candidato é elegível até correção.
+        """
+        if payload is None:
+            self.eligibility_criteria = BALANCED_CRITERIA
+        elif isinstance(payload, dict):
+            try:
+                criteria = EligibilityCriteria.from_dict(payload)
+            except (TypeError, ValueError) as exc:
+                self.eligibility_criteria = EligibilityCriteria()
+                self.eligibility_problems = [f"critérios inválidos: {exc}"]
+                return
+            self.eligibility_criteria = criteria
+        else:
+            self.eligibility_criteria = EligibilityCriteria()
+            self.eligibility_problems = ["critérios em formato inesperado"]
+            return
+
+        problems = validate_criteria(self.eligibility_criteria, ocr_floor=self._ocr_floor())
+        self.eligibility_problems = problems
+        if problems:
+            # Mantém a decisão bloqueada, mas preserva os valores para exibição.
+            self.eligibility_criteria = EligibilityCriteria()
+
+    def _eligibility_observation(self, candidate: SignalCandidate, label_age: int | None) -> dict[str, object]:
+        return {
+            "confidence": candidate.confidence,
+            "direction": candidate.direction,
+            "palette_calibrated": bool(self._active_candle_color_direction_map()),
+            "bar_count": self.latest_bar_count,
+            "label_age_bars": label_age,
+            "context_direction": self.market_context_direction,
+        }
+
     def _persist_config(self) -> None:
         payload: dict[str, object] = {
             "operation_mode": self.operation_mode.value,
@@ -3915,6 +4029,7 @@ class AutoTraderApp(tk.Tk):
             "demo_entry_second": self.demo_entry_second_var.get(),
             "demo_mouse_keepalive_enabled": bool(self.demo_mouse_keepalive_var.get()),
             "demo_mouse_keepalive_interval_seconds": self.demo_mouse_keepalive_interval_var.get(),
+            "eligibility": self.eligibility_criteria.as_dict(),
         }
         try:
             timeout_seconds = int(self.demo_activation_timeout_var.get())
@@ -4017,6 +4132,7 @@ class AutoTraderApp(tk.Tk):
             confidence = config.get("confidence")
             if confidence is not None:
                 self.confidence_var.set(str(confidence))
+            self._load_eligibility_criteria(config.get("eligibility"))
             if isinstance(config.get("ocr_enabled"), bool):
                 self.ocr_enabled_var.set(config["ocr_enabled"])
             if isinstance(config.get("compact_during_capture"), bool):

@@ -8,6 +8,7 @@ from auto_trader_iq.candle_monitor import (
     detect_candle_bars,
     detect_candle_bars_detailed,
     filter_to_recent_candle,
+    label_age_bars,
 )
 from auto_trader_iq.signal_detector import SignalCandidate
 
@@ -124,6 +125,31 @@ class CandleDetectionDiagnosticsTests(unittest.TestCase):
     def test_legacy_helper_still_returns_plain_bars(self):
         bars = detect_candle_bars(self.chart([(0, 200, 80)]), palette_colors=["green"])
         self.assertEqual([bar.color for bar in bars], ["green"])
+
+
+class LabelAgeTests(unittest.TestCase):
+    @staticmethod
+    def candidate(center_x):
+        return SignalCandidate("BUY", 95.0, center_x - 20, 30, 40, 12, "COMPRA")
+
+    def setUp(self):
+        self.age = staticmethod(label_age_bars)
+        self.bars = [CandleBar(x, "green", 20, 80) for x in (80, 150, 220, 290, 360)]
+
+    def test_label_on_last_candle_is_zero(self):
+        self.assertEqual(self.age(self.candidate(360), self.bars), 0)
+
+    def test_label_on_previous_candle_is_one(self):
+        self.assertEqual(self.age(self.candidate(290), self.bars), 1)
+
+    def test_historical_label_has_larger_age(self):
+        self.assertEqual(self.age(self.candidate(150), self.bars), 3)
+
+    def test_unmeasurable_label_returns_none(self):
+        self.assertIsNone(self.age(self.candidate(20), self.bars))
+
+    def test_without_bars_returns_none(self):
+        self.assertIsNone(self.age(self.candidate(360), []))
 
 
 if __name__ == "__main__":

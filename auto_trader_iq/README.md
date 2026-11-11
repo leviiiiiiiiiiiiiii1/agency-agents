@@ -69,7 +69,13 @@ O filtro de associação é estrito por decisão do operador: só a última vela
 
 ## Elegibilidade estratégica
 
-`eligibility.py` não define estratégia: garante que nada seja elegível sem critérios declarados. `EligibilityCriteria` tem todos os campos opcionais e **ausente significa não definido**, então o resultado padrão é `CRITERIA_UNDEFINED` e o app exibe "critérios não definidos (falha fechada)". Com critérios completos, a avaliação devolve `ELIGIBLE_FOR_REVIEW` ou `NOT_ELIGIBLE` com o motivo, e medida ausente (confiança, idade do rótulo em velas) bloqueia em vez de ser presumida.
+`eligibility.py` não define estratégia: garante que nada seja elegível sem critérios declarados. `EligibilityCriteria` tem todos os campos opcionais e **ausente significa não definido**, então o resultado padrão é `CRITERIA_UNDEFINED`. Com critérios completos, a avaliação devolve `ELIGIBLE_FOR_REVIEW` ou `NOT_ELIGIBLE` com o motivo, e medida ausente (confiança, idade do rótulo em velas) bloqueia em vez de ser presumida.
+
+Critérios ficam em `config.json`, na chave `eligibility`, e são validados antes de uso: faixa 0–100, direções existentes, `min_bars` acima do piso do contexto (6), `max_label_age_bars` até 1 (limite do filtro de associação), booleanos reais e recusa de contradições — alinhamento sem exigir direção, ou exigir direção com paleta não calibrada. `min_confidence` abaixo do piso do OCR é **erro**, não escolha conservadora, porque não filtraria nada.
+
+O perfil recomendado para iniciar é `equilibrada`: `min_confidence` 80, BUY e SELL, paleta calibrada obrigatória, `min_bars` 8, idade máxima 1 vela, contexto direcional exigido e alinhamento **não** exigido. `conservadora` e `seletiva` existem em `PROFILES` como referência.
+
+Configuração inválida ou contraditória não vira "sem filtro": os critérios são esvaziados, a decisão fica bloqueada e o motivo aparece no painel. Na abertura de cada sessão, `CAPTURE_SESSION_STARTED` grava os critérios, o hash e os problemas encontrados; cada quadro grava `eligibility.code` e `criteria_hash`. Mudar parâmetros depois não altera eventos já gravados.
 
 O CSV legado em `%LOCALAPPDATA%\AutoTraderIQ\simulation_history.csv` continua preservado e serve à compatibilidade/exportação; ele não é apagado nem substituído pelo journal.
 

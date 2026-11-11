@@ -470,3 +470,24 @@ def filter_to_recent_candle(
     # Entre rótulos recentes, use somente o mais à direita (mais próximo do candle atual).
     newest_signal_bar = max(index for index, _distance, _candidate in matched)
     return [candidate for index, _distance, candidate in matched if index == newest_signal_bar]
+
+
+def label_age_bars(candidate, bars) -> int | None:
+    """Distância em velas entre o rótulo e a vela mais recente.
+
+    Zero significa "está na última vela". Retorna ``None`` quando não há velas ou o
+    rótulo está longe demais de qualquer uma para ser contado, porque nesse caso a
+    idade não é desconhecida por acaso: ela não pode ser medida.
+    """
+    if not bars or candidate is None:
+        return None
+    gaps = [bars[i + 1].center_x - bars[i].center_x for i in range(len(bars) - 1)]
+    normal_gaps = [gap for gap in gaps if gap >= 8]
+    tolerance = max(18.0, (median(normal_gaps) if normal_gaps else 24.0) * 0.65)
+    text_center = candidate.left + candidate.width / 2
+    index, bar = min(
+        enumerate(bars), key=lambda pair: abs(pair[1].center_x - text_center)
+    )
+    if abs(bar.center_x - text_center) > tolerance:
+        return None
+    return len(bars) - 1 - index
