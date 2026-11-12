@@ -5,9 +5,11 @@ from auto_trader_iq.grade_report import (
     FAVORABLE,
     NEUTRAL,
     compute_baseline,
+    compute_flow_rule,
     compute_outcomes,
     compute_session_comparison,
     format_baseline,
+    format_flow_rule,
     format_outcomes,
     format_session_comparison,
 )
@@ -440,6 +442,67 @@ class SessionComparisonTests(unittest.TestCase):
 
     def test_empty_session_list_says_so(self):
         self.assertIn("Nenhuma sessão", format_session_comparison([]))
+
+
+class FlowRuleTests(unittest.TestCase):
+    def flow_frame(self, at, colors, closes, session="s"):
+        item = frame(at, "NO_TRADE", "BUY", 0, closes, session=session)
+        item["price_ladder"]["colors"] = list(colors)
+        return item
+
+    def test_streak_of_same_colour_is_counted(self):
+        # Duas verdes seguidas e uma vermelha: fluxo de alta com 2 velas.
+        frames = [
+            self.flow_frame(
+                "2026-11-11T18:00:00+00:00",
+                ["green", "green", "red", "red", "red"],
+                [100.0, 100.0, 100.0, 140.0, 140.0, 140.0, 140.0],
+            ),
+            self.flow_frame(
+                "2026-11-11T18:03:00+00:00",
+                ["green", "green", "red", "red", "red"],
+                [100.0, 140.0, 140.0, 140.0, 140.0, 140.0, 140.0],
+            ),
+        ]
+        flow = compute_flow_rule(frames, horizon_bars=3)
+        self.assertEqual(flow["mode"], "cores")
+        self.assertEqual(flow["by_streak_direction"][2]["BUY"]["total"], 1)
+
+    def test_white_candle_counts_as_bearish(self):
+        frames = [
+            self.flow_frame(
+                "2026-11-11T18:00:00+00:00",
+                ["white", "white", "white", "green", "green"],
+                [100.0] * 7,
+            ),
+            self.flow_frame(
+                "2026-11-11T18:03:00+00:00",
+                ["white", "white", "white", "green", "green"],
+                [180.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0],
+            ),
+        ]
+        flow = compute_flow_rule(frames, horizon_bars=3)
+        self.assertEqual(flow["by_streak_direction"][3]["SELL"]["favorável"], 1)
+
+    def closes_frames(self):
+        # Quadro antigo, sem cor gravada: a leitura cai para os fechamentos.
+        return [
+            frame("2026-11-11T18:00:00+00:00", "NO_TRADE", "BUY", 0, [100.0] * 7),
+            frame("2026-11-11T18:03:00+00:00", "NO_TRADE", "BUY", 0,
+                  [100.0, 120.0, 130.0, 140.0, 150.0, 160.0, 180.0]),
+            frame("2026-11-11T18:06:00+00:00", "NO_TRADE", "BUY", 0, [140.0] * 7),
+        ]
+
+    def test_frames_without_colours_fall_back_to_closes(self):
+        flow = compute_flow_rule(self.closes_frames(), horizon_bars=3)
+        self.assertEqual(flow["mode"], "fechamentos")
+        self.assertEqual(flow["by_streak_direction"][4]["BUY"]["total"], 1)
+
+    def test_flow_block_is_rendered(self):
+        text = format_flow_rule(compute_flow_rule(self.closes_frames(), horizon_bars=3))
+        self.assertIn("REGRA DE FLUXO", text)
+        self.assertIn("Regra de 2+ velas seguidas", text)
+        text.encode("cp1252")
 
 
 class FormatTests(unittest.TestCase):

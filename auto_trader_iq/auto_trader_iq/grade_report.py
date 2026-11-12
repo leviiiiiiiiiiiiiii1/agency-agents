@@ -714,6 +714,149 @@ def compute_session_comparison(
     return rows
 
 
+# Calibração de cor informada pelo usuário: vela branca é de BAIXA neste gráfico.
+COLOR_DIRECTION = {"green": "BUY", "red": "SELL", "white": "SELL"}
+
+FLOW_WINDOW = 5
+
+
+def _flow_directions(ladder: Mapping[str, Any], window: int) -> tuple[str, list[str | None]]:
+    """Direção de cada uma das últimas velas: por cor quando existe, por fechamento
+    quando o quadro é antigo e só guardou a escada de fechamentos."""
+    colors = list(ladder.get("colors") or [])[:window]
+    by_color = [COLOR_DIRECTION.get(str(color)) for color in colors]
+    if len(by_color) >= window and all(direction for direction in by_color):
+        return "cores", by_color
+    closes = list(ladder.get("closes_px") or [])[:window]
+    steps: list[str | None] = []
+    for index in range(min(window - 1, len(closes) - 1)):
+        newer, older = closes[index], closes[index + 1]
+        if newer is None or older is None:
+            steps.append(None)
+        elif float(newer) < float(older):
+            steps.append("BUY")
+        elif float(newer) > float(older):
+            steps.append("SELL")
+        else:
+            steps.append(None)
+    return "fechamentos", steps
+
+
+def compute_flow_rule(
+    frames: Sequence[Mapping[str, Any]],
+    *,
+    bar_seconds: float = 60.0,
+    horizon_bars: int = 3,
+    min_move_units: float = 0.5,
+    window: int = FLOW_WINDOW,
+) -> dict[str, Any]:
+    """A aposta que o usuário propôs: entrar na direção das últimas velas da mesma
+    cor, quando há pelo menos duas seguidas. Mede a regra, não a implementa."""
+    timeline = sorted(
+        (frame for frame in frames if frame.get("price_ladder")),
+        key=lambda item: str(item.get("occurred_at_utc")),
+    )
+    # Modo único para o relatório: o que a maioria dos quadros permite ler. Quadros
+    # antigos não têm cor gravada; misturar os dois modos na mesma tabela mentiria.
+    mode_counts: dict[str, int] = {}
+    for frame in timeline:
+        found = _flow_directions(frame.get("price_ladder") or {}, window)[0]
+        mode_counts[found] = mode_counts.get(found, 0) + 1
+    mode = max(mode_counts, key=lambda key: mode_counts[key]) if mode_counts else "fechamentos"
+    by_streak: dict[int, list[dict[str, Any]]] = {}
+    for frame in timeline:
+        ladder = frame.get("price_ladder") or {}
+        found_mode, directions = _flow_directions(ladder, window)
+        if found_mode != mode or not directions or directions[0] is None:
+            continue
+        direction = directions[0]
+        streak = 0
+        for item in directions:
+            if item != direction:
+                break
+            streak += 1
+        measured = _measure(
+            timeline, frame, direction, 0, bar_seconds, horizon_bars, min_move_units
+        )
+        if measured is None:
+            continue
+        by_streak.setdefault(streak, []).append({**measured, "direction": direction})
+    return {
+        "mode": mode,
+        "window": window,
+        "by_streak": {
+            streak: _summarize_items(items) for streak, items in sorted(by_streak.items())
+        },
+        "by_streak_direction": {
+            streak: {
+                direction: _summarize_items(
+                    [item for item in items if item["direction"] == direction]
+                )
+                for direction in ("BUY", "SELL")
+                if any(item["direction"] == direction for item in items)
+            }
+            for streak, items in sorted(by_streak.items())
+        },
+    }
+
+
+def format_flow_rule(flow: Mapping[str, Any]) -> str:
+    mode = flow.get("mode")
+    window = flow.get("window") or FLOW_WINDOW
+    source = (
+        "cores (verde=alta · vermelha/branca=baixa)"
+        if mode == "cores"
+        else "fechamentos (sem cor gravada nos quadros antigos)"
+    )
+    lines = [
+        "",
+        f"    REGRA DE FLUXO - últimas {window} velas, lidas por {source}",
+        "    (entrar na direção das velas seguidas; nada muda no app, isto é medição)",
+        "    velas seguidas    n   favorável   neutra   adversa   mediano",
+    ]
+    streaks = flow.get("by_streak") or {}
+    if not streaks:
+        lines.append("    Nenhum quadro pôde ser lido com essa janela.")
+        return "\n".join(lines)
+    for streak, bucket in streaks.items():
+        total = bucket["total"] or 1
+        lines.append(
+            f"    {streak:>2} seguidas     {bucket['total']:>4}   "
+            f"{bucket['favorável']:>4} ({bucket['favorável'] / total:>4.0%})   "
+            f"{bucket['neutra']:>4}   {bucket['adversa']:>4}   "
+            f"{bucket['median_move_units']:>7}"
+        )
+    for minimum in (2, 3):
+        kept = [
+            bucket
+            for streak, bucket in streaks.items()
+            if streak >= minimum
+        ]
+        if not kept:
+            continue
+        total = sum(bucket["total"] for bucket in kept)
+        favorable = sum(bucket["favorável"] for bucket in kept)
+        if not total:
+            continue
+        lines.append(
+            f"    Regra de {minimum}+ velas seguidas: {favorable}/{total}"
+            f" ({favorable / total:.0%}) favorável"
+        )
+    splits = flow.get("by_streak_direction") or {}
+    if splits:
+        lines.append("")
+        lines.append("    Mesma regra separada por direção:")
+        lines.append("    velas seguidas  direção    n   favorável")
+        for streak, directions in splits.items():
+            for direction, bucket in directions.items():
+                total = bucket["total"] or 1
+                lines.append(
+                    f"    {streak:>2} seguidas     {direction:<7} {bucket['total']:>4}   "
+                    f"{bucket['favorável']:>4} ({bucket['favorável'] / total:>4.0%})"
+                )
+    return "\n".join(lines)
+
+
 def format_session_comparison(rows: Sequence[Mapping[str, Any]]) -> str:
     lines = [
         "",
@@ -1608,6 +1751,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         for horizon in args.horizon_bars
     ]
+    flow_by_horizon = [
+        compute_flow_rule(
+            frames,
+            bar_seconds=args.bar_seconds,
+            horizon_bars=horizon,
+            min_move_units=args.min_move,
+        )
+        for horizon in args.horizon_bars
+    ]
     sweeps: list[tuple[str, list[dict[str, Any]]]] = []
     for spec in args.sweep:
         try:
@@ -1627,6 +1779,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "outcomes": outcomes_by_horizon,
                     "baseline": baseline_by_horizon,
                     "sessions": sessions_by_horizon,
+                    "flow": flow_by_horizon,
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -1634,12 +1787,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     else:
         print(format_report(summary, sweeps))
-        for outcomes, baseline, sessions in zip(
-            outcomes_by_horizon, baseline_by_horizon, sessions_by_horizon
+        for outcomes, baseline, sessions, flow in zip(
+            outcomes_by_horizon, baseline_by_horizon, sessions_by_horizon, flow_by_horizon
         ):
             print(format_outcomes(outcomes))
             print(format_baseline(baseline))
             print(format_session_comparison(sessions))
+            print(format_flow_rule(flow))
     return 0
 
 

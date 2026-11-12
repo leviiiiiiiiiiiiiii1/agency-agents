@@ -538,12 +538,14 @@ def price_ladder(candles, bars, max_age: int = LADDER_MAX_AGE) -> dict[str, obje
     run = longest_grid_run(bars)
     anchor = run[1] if run else len(bars) - 1
     closes: list[float | None] = []
+    colors: list[str | None] = []
     for offset in range(max_age + 1):
         index = anchor - offset
         if index < 0:
             break
         bar_x = float(bars[index].center_x)
         candle = min(candles, key=lambda item: abs(float(item.center_x) - bar_x))
+        colors.append(str(bars[index].color) or None)
         if abs(float(candle.center_x) - bar_x) > tolerance:
             closes.append(None)
         else:
@@ -557,6 +559,9 @@ def price_ladder(candles, bars, max_age: int = LADDER_MAX_AGE) -> dict[str, obje
     ]
     return {
         "closes_px": closes,
+        # Cor de cada vela na mesma ordem da escada: permite medir sequência de
+        # velas verdes/vermelhas. Cor não identifica ativo nem preço.
+        "colors": colors,
         "median_range_px": round(median(ranges), 2) if ranges else None,
     }
 
