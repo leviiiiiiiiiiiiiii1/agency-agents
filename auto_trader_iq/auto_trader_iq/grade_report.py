@@ -415,6 +415,21 @@ def compute_outcomes(
     }
 
 
+def _flip(measured: Mapping[str, Any]) -> dict[str, Any]:
+    """Mesma medição vista pela aposta contrária."""
+    flipped = {
+        FAVORABLE: ADVERSE,
+        ADVERSE: FAVORABLE,
+        NEUTRAL: NEUTRAL,
+    }[measured["outcome"]]
+    return {
+        "outcome": flipped,
+        "move_units": -measured["move_units"] if measured["move_units"] else 0.0,
+        "bars_elapsed": measured["bars_elapsed"],
+        "trailing_units": measured["trailing_units"],
+    }
+
+
 def compute_baseline(
     frames: Sequence[Mapping[str, Any]],
     *,
@@ -456,6 +471,50 @@ def compute_baseline(
             **counts,
             "median_move_units": round(median(moves), 3) if moves else None,
         }
+
+    # Mesma ideia, agora com a única condição que separou algo nos sinais:
+    # apostar a favor do movimento anterior, em TODO quadro, sem classificador.
+    situations: dict[str, list[dict[str, Any]]] = {}
+
+    def _add(situation: str, measured: Mapping[str, Any]) -> None:
+        situations.setdefault(situation, []).append(dict(measured))
+
+    for frame in timeline:
+        measured = _measure(
+            timeline,
+            frame,
+            "BUY",
+            0,
+            bar_seconds,
+            horizon_bars,
+            min_move_units,
+        )
+        if measured is None:
+            continue
+        trailing = measured["trailing_units"]
+        if trailing is None:
+            _add("sem histórico no quadro", measured)
+            continue
+        if trailing == 0:
+            _add("movimento anterior parado", measured)
+            continue
+        with_move = measured if trailing > 0 else _flip(measured)
+        _add("seguindo o movimento anterior", with_move)
+        _add("contra o movimento anterior", _flip(with_move))
+
+    by_situation: dict[str, Any] = {}
+    for situation, items in situations.items():
+        counts = {FAVORABLE: 0, NEUTRAL: 0, ADVERSE: 0}
+        moves = []
+        for item in items:
+            counts[item["outcome"]] += 1
+            moves.append(item["move_units"])
+        by_situation[situation] = {
+            "total": len(items),
+            **counts,
+            "median_move_units": round(median(moves), 3) if moves else None,
+        }
+    baseline["by_situation"] = by_situation
     return baseline
 
 
@@ -487,6 +546,29 @@ def format_baseline(baseline: Mapping[str, Any]) -> str:
     lines.append(
         "    Quadros vizinhos leem a mesma vela: o n efetivo é menor que o n impresso."
     )
+    situations = baseline.get("by_situation") or {}
+    if situations:
+        lines.append("")
+        lines.append(
+            "    Mesma linha de base, seguindo (ou contrariando) o movimento anterior:"
+        )
+        lines.append(
+            "    situação                        n   favorável   neutra   adversa   mediano"
+        )
+        for situation, bucket in sorted(
+            situations.items(), key=lambda pair: -pair[1]["total"]
+        ):
+            total = bucket["total"] or 1
+            lines.append(
+                f"    {situation:<30} {total:>4}   "
+                f"{bucket[FAVORABLE]:>4} ({bucket[FAVORABLE] / total:>4.0%})   "
+                f"{bucket[NEUTRAL]:>4}   {bucket[ADVERSE]:>4}   "
+                f"{bucket['median_move_units']:>7}"
+            )
+        lines.append(
+            "    Se seguir o movimento rende aqui o mesmo que nos sinais, a classe não"
+        )
+        lines.append("    escolheu o momento: o momento é o próprio movimento.")
     return "\n".join(lines)
 
 

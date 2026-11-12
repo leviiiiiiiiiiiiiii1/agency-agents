@@ -260,6 +260,31 @@ class BaselineTests(unittest.TestCase):
         self.assertEqual(baseline["SELL"][FAVORABLE], 1)
         self.assertEqual(baseline["BUY"][ADVERSE], 1)
 
+    def test_baseline_following_the_prior_move(self):
+        # Antes da entrada o preço subiu (closes[6]=180 -> closes[3]=140) e depois
+        # continuou subindo (closes[0]=100): seguir o movimento acerta.
+        frames = [
+            frame("2026-11-11T18:00:00+00:00", "NO_TRADE", "BUY", 0, [100.0] * 7),
+            frame("2026-11-11T18:03:00+00:00", "NO_TRADE", "BUY", 0,
+                  [100.0, 120.0, 130.0, 140.0, 150.0, 160.0, 180.0]),
+        ]
+        baseline = compute_baseline(frames, horizon_bars=3)
+        following = baseline["by_situation"]["seguindo o movimento anterior"]
+        against = baseline["by_situation"]["contra o movimento anterior"]
+        self.assertEqual(following[FAVORABLE], 1)
+        self.assertEqual(against[ADVERSE], 1)
+
+    def test_baseline_situation_block_is_rendered(self):
+        frames = [
+            frame("2026-11-11T18:00:00+00:00", "NO_TRADE", "BUY", 0, [100.0] * 7),
+            frame("2026-11-11T18:03:00+00:00", "NO_TRADE", "BUY", 0,
+                  [100.0, 120.0, 130.0, 140.0, 150.0, 160.0, 180.0]),
+        ]
+        text = format_baseline(compute_baseline(frames, horizon_bars=3))
+        self.assertIn("seguindo (ou contrariando) o movimento anterior", text)
+        self.assertIn("seguindo o movimento anterior", text)
+        text.encode("cp1252")
+
     def test_baseline_text_is_rendered_and_printable(self):
         frames = [
             frame("2026-11-11T18:00:00+00:00", "A", "BUY", 0, [100.0] * 5),
