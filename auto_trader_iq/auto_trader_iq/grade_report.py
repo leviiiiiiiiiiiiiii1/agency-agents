@@ -415,6 +415,19 @@ def compute_outcomes(
     }
 
 
+def _summarize_items(items: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    counts = {FAVORABLE: 0, NEUTRAL: 0, ADVERSE: 0}
+    moves: list[float] = []
+    for item in items:
+        counts[item["outcome"]] += 1
+        moves.append(item["move_units"])
+    return {
+        "total": len(items),
+        **counts,
+        "median_move_units": round(median(moves), 3) if moves else None,
+    }
+
+
 def _flip(measured: Mapping[str, Any]) -> dict[str, Any]:
     """Mesma medição vista pela aposta contrária."""
     flipped = {
@@ -513,28 +526,107 @@ def compute_baseline(
         _add_directed("seguindo o movimento anterior", ahead, with_move)
         _add_directed("contra o movimento anterior", behind, opposite)
 
-    def _summarize(items: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-        counts = {FAVORABLE: 0, NEUTRAL: 0, ADVERSE: 0}
-        moves = []
-        for item in items:
-            counts[item["outcome"]] += 1
-            moves.append(item["move_units"])
-        return {
-            "total": len(items),
-            **counts,
-            "median_move_units": round(median(moves), 3) if moves else None,
-        }
-
     baseline["by_situation"] = {
-        situation: _summarize(items) for situation, items in situations.items()
+        situation: _summarize_items(items) for situation, items in situations.items()
     }
     baseline["by_situation_direction"] = {
         situation: {
-            direction: _summarize(items) for direction, items in directions.items()
+            direction: _summarize_items(items) for direction, items in directions.items()
         }
         for situation, directions in situations_by_direction.items()
     }
     return baseline
+
+
+def compute_session_comparison(
+    frames: Sequence[Mapping[str, Any]],
+    *,
+    bar_seconds: float = 60.0,
+    horizon_bars: int = 3,
+    min_move_units: float = 0.5,
+) -> list[dict[str, Any]]:
+    """Sinais e linha de base medidos no MESMO período.
+
+    Comparar sinal de uma hora de queda com base de um dia inteiro mistura
+    regimes. Aqui cada sessão traz as três contagens feitas na mesma janela.
+    """
+    timeline = sorted(
+        (frame for frame in frames if frame.get("price_ladder")),
+        key=lambda item: str(item.get("occurred_at_utc")),
+    )
+    sessions: dict[str, dict[str, Any]] = {}
+    for frame in timeline:
+        session = str(frame.get("session_id") or "?")
+        slot = sessions.setdefault(
+            session,
+            {"signals": [], "following": [], "against": [], "started_at_utc": None},
+        )
+        if slot["started_at_utc"] is None:
+            slot["started_at_utc"] = frame.get("occurred_at_utc")
+        features = frame.get("features") or {}
+        code = frame.get("code")
+        age = features.get("age_bars")
+        direction = features.get("direction")
+        if code in ("A", "B", "C") and isinstance(age, int) and direction in ("BUY", "SELL"):
+            measured = _measure(
+                timeline, frame, direction, age, bar_seconds, horizon_bars, min_move_units
+            )
+            if measured is not None:
+                slot["signals"].append(measured)
+        measured = _measure(
+            timeline, frame, "BUY", 0, bar_seconds, horizon_bars, min_move_units
+        )
+        if measured is None:
+            continue
+        trailing = measured["trailing_units"]
+        if trailing is None or trailing == 0:
+            continue
+        with_move = measured if trailing > 0 else _flip(measured)
+        slot["following"].append(with_move)
+        slot["against"].append(_flip(with_move))
+    rows = []
+    for session, slot in sorted(sessions.items(), key=lambda pair: str(pair[1]["started_at_utc"])):
+        if not slot["signals"]:
+            continue
+        rows.append(
+            {
+                "session": session,
+                "started_at_utc": slot["started_at_utc"],
+                "signals": _summarize_items(slot["signals"]),
+                "following": _summarize_items(slot["following"]),
+                "against": _summarize_items(slot["against"]),
+            }
+        )
+    return rows
+
+
+def format_session_comparison(rows: Sequence[Mapping[str, Any]]) -> str:
+    lines = [
+        "",
+        "    POR SESSÃO - sinais e linha de base na MESMA janela de mercado",
+        "    (se o sinal bate a base aqui dentro, o ganho não é o regime da hora)",
+        "    início            sinais n/fav     seguir n/fav     contra n/fav",
+    ]
+    if not rows:
+        lines.append("    Nenhuma sessão com sinal acompanhado até o horizonte.")
+        return "\n".join(lines)
+    for row in rows:
+        signals = row["signals"]
+        following = row["following"]
+        against = row["against"]
+        signals_total = signals["total"] or 1
+        following_total = following["total"] or 1
+        against_total = against["total"] or 1
+        started = str(row.get("started_at_utc") or "")[:16].replace("T", " ")
+        lines.append(
+            f"    {started:<17} {signals['total']:>4}/{signals[FAVORABLE]:<3}"
+            f" ({signals[FAVORABLE] / signals_total:>4.0%})  "
+            f"{following['total']:>4}/{following[FAVORABLE]:<3}"
+            f" ({following[FAVORABLE] / following_total:>4.0%})  "
+            f"{against['total']:>4}/{against[FAVORABLE]:<3}"
+            f" ({against[FAVORABLE] / against_total:>4.0%})"
+        )
+    return "\n".join(lines)
 
 
 def format_baseline(baseline: Mapping[str, Any]) -> str:
@@ -1295,6 +1387,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         for horizon in args.horizon_bars
     ]
+    sessions_by_horizon = [
+        compute_session_comparison(
+            frames,
+            bar_seconds=args.bar_seconds,
+            horizon_bars=horizon,
+            min_move_units=args.min_move,
+        )
+        for horizon in args.horizon_bars
+    ]
     sweeps: list[tuple[str, list[dict[str, Any]]]] = []
     for spec in args.sweep:
         try:
@@ -1313,6 +1414,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "accuracy_available": False,
                     "outcomes": outcomes_by_horizon,
                     "baseline": baseline_by_horizon,
+                    "sessions": sessions_by_horizon,
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -1320,9 +1422,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     else:
         print(format_report(summary, sweeps))
-        for outcomes, baseline in zip(outcomes_by_horizon, baseline_by_horizon):
+        for outcomes, baseline, sessions in zip(
+            outcomes_by_horizon, baseline_by_horizon, sessions_by_horizon
+        ):
             print(format_outcomes(outcomes))
             print(format_baseline(baseline))
+            print(format_session_comparison(sessions))
     return 0
 
 
