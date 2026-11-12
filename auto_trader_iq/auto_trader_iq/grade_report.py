@@ -1330,21 +1330,36 @@ def _flow_edge_verdict(rows: Sequence[Mapping[str, Any]]) -> list[str]:
                 "    O intervalo da vantagem ainda cruza zero: este dado não "
                 "distingue a regra de não ter regra nenhuma."
             )
-    if edge["blocks"] > 1 and edge["z_without_best"] < 1.0:
+    # Os dois critérios de adoção, ditos em voz alta para não virarem conversa
+    # depois: z de 1.96 sobre a base do próprio bloco e sobrevivência à remoção
+    # da melhor célula.
+    robust = edge["z_without_best"] >= 1.0
+    if edge["blocks"] > 1:
         lines.append(
-            f"    Sem a melhor célula ({edge['best_label']},"
-            f" {edge['best_margin']:+.0%}): z = {edge['z_without_best']:.02f}"
-            " - uma hora sustenta o número."
+            f"    Robustez: sem a melhor célula ({edge['best_label']},"
+            f" {edge['best_margin']:+.0%}) o z fica em {edge['z_without_best']:.2f}"
+            f" - {'passa' if robust else 'falha'} o critério de 1.00."
         )
+    if edge["z"] >= 1.96 and edge["deviation"] > 0 and robust:
+        lines.append(
+            "    Regra de fluxo: vantagem própria além da composição de blocos e"
+            " fora de uma hora só - candidata a veredito, sujeita a aprovação."
+        )
+        return lines
     if edge["z"] >= 1.96 and edge["deviation"] > 0:
         lines.append(
-            "    Regra de fluxo: vantagem própria além da composição de blocos -"
-            " candidata a veredito, sujeita a aprovação."
+            "    Regra de fluxo: passa o z mas não a robustez - o número é de uma"
+            " hora. Não adotar."
         )
-    else:
+        return lines
+    lines.append(
+        "    Regra de fluxo: sem evidência de vantagem própria - o que aparece"
+        " no agregado é compatível com composição de blocos. Não adotar."
+    )
+    if edge["deviation"] > 0 and edge["z"] >= 1.0:
         lines.append(
-            "    Regra de fluxo: sem evidência de vantagem própria - o que aparece"
-            " no agregado é compatível com composição de blocos. Não adotar."
+            f"    Falta {1.96 - edge['z']:.2f} de z para o critério de adoção, e o"
+            " critério é o de antes, não um novo."
         )
     return lines
 

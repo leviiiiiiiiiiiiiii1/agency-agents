@@ -506,7 +506,7 @@ class SessionComparisonTests(unittest.TestCase):
         ]
         verdict = _flow_edge_verdict(rows)
         # Duas horas neutras e uma boa: o número é dessa hora, e o relatório diz.
-        self.assertTrue(any("uma hora sustenta o número" in line for line in verdict))
+        self.assertTrue(any("falha o critério de 1.00" in line for line in verdict))
         self.assertTrue(any("12:00 BUY" in line for line in verdict))
 
     def test_flow_verdict_ignores_small_blocks(self):
