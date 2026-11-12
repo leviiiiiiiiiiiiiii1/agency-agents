@@ -79,8 +79,9 @@ class ComputeOutcomeTests(unittest.TestCase):
         ]
         result = compute_outcomes(frames, bar_seconds=60, horizon_bars=3)
         self.assertEqual(result["evaluated"], 0)
-        # nenhum dos dois quadros tem um posterior que alcance o horizonte
-        self.assertEqual(result["skipped"], 2)
+        # Os dois quadros são do MESMO candle: o segundo não é uma aposta nova.
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(result["repeated_frames"], 1)
 
     def test_ladder_too_shallow_is_skipped(self):
         frames = [

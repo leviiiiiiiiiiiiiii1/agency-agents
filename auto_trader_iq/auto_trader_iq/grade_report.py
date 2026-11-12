@@ -282,6 +282,8 @@ def compute_outcomes(
     graded_total = sum(1 for frame in frames if frame.get("code") in ("A", "B", "C"))
     results: list[dict[str, Any]] = []
     skipped = 0
+    repeated = 0
+    seen_candles: set[tuple[Any, int]] = set()
     for frame in signals:
         features = frame.get("features") or {}
         direction = features.get("direction")
@@ -289,6 +291,12 @@ def compute_outcomes(
         if direction not in ("BUY", "SELL") or not isinstance(age, int):
             skipped += 1
             continue
+        candle = _entry_candle(frame, bar_seconds)
+        if candle is not None:
+            if candle in seen_candles:
+                repeated += 1
+                continue
+            seen_candles.add(candle)
         measured = _measure(
             timeline,
             frame,
@@ -477,6 +485,7 @@ def compute_outcomes(
             sorted(reasons_summary.items(), key=lambda item: (-item[1]["total"], item[0]))
         ),
         "skipped": skipped,
+        "repeated_frames": repeated,
         "signals_with_ladder": len(signals),
         "signals_graded": graded_total,
         "frames_with_ladder": len(timeline),
@@ -667,6 +676,7 @@ def compute_session_comparison(
     )
     sessions: dict[str, dict[str, Any]] = {}
     bets = set(id(frame) for frame in _one_per_bar(timeline, bar_seconds))
+    seen_signal_candles: set[tuple[Any, int]] = set()
     for frame in timeline:
         session = str(frame.get("session_id") or "?")
         slot = sessions.setdefault(
@@ -686,7 +696,17 @@ def compute_session_comparison(
         code = frame.get("code")
         age = features.get("age_bars")
         direction = features.get("direction")
-        if code in ("A", "B", "C") and isinstance(age, int) and direction in ("BUY", "SELL"):
+        candle = _entry_candle(frame, bar_seconds)
+        if candle is not None and candle in seen_signal_candles:
+            candle = None
+        elif code in ("A", "B", "C") and candle is not None:
+            seen_signal_candles.add(candle)
+        if (
+            code in ("A", "B", "C")
+            and isinstance(age, int)
+            and direction in ("BUY", "SELL")
+            and candle is not None
+        ):
             measured = _measure(
                 timeline, frame, direction, age, bar_seconds, horizon_bars, min_move_units
             )
@@ -817,6 +837,23 @@ def _flow_directions(ladder: Mapping[str, Any], window: int) -> tuple[str, list[
         else:
             steps.append(None)
     return "fechamentos", steps
+
+
+def _entry_candle(
+    frame: Mapping[str, Any], bar_seconds: float
+) -> tuple[Any, int] | None:
+    """Qual vela o sinal está apostando.
+
+    O mesmo candle aparece em vários quadros (o app reclassifica enquanto ele
+    forma). Contar cada quadro como um sinal multiplica a amostra pelo número
+    de quadros por vela e faz a mesma aposta votar várias vezes.
+    """
+    when = _parse_time(frame.get("occurred_at_utc"))
+    age = (frame.get("features") or {}).get("age_bars")
+    if when is None or not isinstance(age, int):
+        return None
+    window = max(1.0, float(bar_seconds))
+    return (frame.get("session_id"), int(when.timestamp() // window) - age)
 
 
 def _one_per_bar(
@@ -1168,8 +1205,19 @@ def format_baseline(baseline: Mapping[str, Any]) -> str:
         f"{baseline.get('frames_with_ladder', 0)} · entradas contadas (1 por vela): "
         f"{baseline.get('bets', 0)} · entrada na vela mais recente"
     )
+    bets = int(baseline.get("bets") or 0)
+    if bets:
+        margin = 1.96 * math.sqrt(0.25 / bets) * 100
+        lines.append(
+            f"    Amostra desta rodada: {bets} entradas independentes, "
+            f"margem de +/-{margin:.0f}pp no pior caso."
+        )
+        lines.append(
+            "    Para decidir 5pp perto de 55% são necessárias ~380 apostas;"
+            " 10pp, ~95."
+        )
     lines.append(
-        "    Quadros vizinhos leem a mesma vela: o n efetivo é menor que o n impresso."
+        "    Uma entrada por vela: quadros vizinhos do mesmo candle não viram apostas."
     )
     situations = baseline.get("by_situation") or {}
     if situations:
@@ -1517,7 +1565,9 @@ def format_outcomes(outcomes: Mapping[str, Any]) -> str:
     else:
         lines.append(
             f"    sinais acompanhados: {outcomes['evaluated']} · "
-            f"descartados: {outcomes['skipped']}"
+            f"descartados: {outcomes['skipped']} · "
+            f"repetidos no mesmo candle (contados uma vez): "
+            f"{outcomes.get('repeated_frames', 0)}"
         )
         lines.append("")
         lines.append(
@@ -1868,8 +1918,11 @@ def format_report(summary: Mapping[str, Any], sweeps: Sequence[tuple[str, Sequen
     lines += [
         "",
         "LIMITES DESTE RELATÓRIO",
-        "    · Sem desfecho vinculado aos quadros: nenhuma taxa de acerto pode ser",
-        "      calculada, e nenhuma coluna abaixo deve ser lida como probabilidade.",
+        "    · 'acerto' (seção de desfecho) é fechamento a favor na vela de",
+        "      expiração, sem custo e sem payout: não é resultado financeiro.",
+        "    · Um quadro não é uma aposta: o mesmo candle aparece em vários quadros.",
+        "      Todo n de desfecho conta uma vez por candle; os 5.000 quadros não são",
+        "      5.000 entradas.",
         "    · Percentis descrevem a amostra observada, não o mercado.",
         "    · Amostra pequena (< 200 quadros com candidato) não sustenta mudança de",
         "      limiar; use os números como ponto de partida, não como conclusão.",
