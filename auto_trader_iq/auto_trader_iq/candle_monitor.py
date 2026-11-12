@@ -518,7 +518,10 @@ def resolve_age_reference(
     return str(value), False, None
 
 
-def price_ladder(candles, bars, max_age: int = 8) -> dict[str, object] | None:
+LADDER_MAX_AGE = 12
+
+
+def price_ladder(candles, bars, max_age: int = LADDER_MAX_AGE) -> dict[str, object] | None:
     """Fechamentos das últimas velas por idade, em pixels.
 
     O índice 0 é a vela mais recente; o índice N é N velas atrás. Como tudo está

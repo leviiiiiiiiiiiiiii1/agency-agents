@@ -276,3 +276,13 @@ class PriceLadderTests(unittest.TestCase):
     def test_empty_inputs_return_none(self):
         self.assertIsNone(price_ladder([], self.bars([0, 40])))
         self.assertIsNone(price_ladder(self.candles([1.0]), []))
+
+    def test_default_depth_reaches_twelve_bars(self):
+        # Horizonte de 3 velas consome entrada + passado (6 idades); com 8 sobrava
+        # pouco e um quarto dos sinais era descartado por falta de histórico.
+        closes = [float(index) for index in range(15)]
+        ladder = price_ladder(
+            self.candles(closes), self.bars([index * 40 for index in range(15)])
+        )
+        self.assertEqual(len(ladder["closes_px"]), 13)
+        self.assertEqual(ladder["closes_px"][12], closes[2])
