@@ -347,6 +347,16 @@ def compute_outcomes(
         situation: _bucket(items)
         for situation, items in sorted(aligned.items(), key=lambda pair: -len(pair[1]))
     }
+    # "A favor do movimento" num período de queda é quase todo SELL: sem separar
+    # por direção, o alinhamento só repete o viés de direção já medido.
+    by_alignment_direction: dict[str, dict[str, dict[str, Any]]] = {}
+    for situation, items in sorted(aligned.items(), key=lambda pair: -len(pair[1])):
+        per_direction: dict[str, list[dict[str, Any]]] = {}
+        for item in items:
+            per_direction.setdefault(item["direction"], []).append(item)
+        by_alignment_direction[situation] = {
+            direction: _bucket(group) for direction, group in sorted(per_direction.items())
+        }
 
     by_reason: dict[str, dict[str, Any]] = {}
     for item in results:
@@ -390,6 +400,7 @@ def compute_outcomes(
         "by_direction": by_reason_direction,
         "by_grade_direction": by_grade_direction,
         "by_alignment": by_alignment,
+        "by_alignment_direction": by_alignment_direction,
         "by_reason": dict(
             sorted(reasons_summary.items(), key=lambda item: (-item[1]["total"], item[0]))
         ),
@@ -825,6 +836,25 @@ def format_outcomes(outcomes: Mapping[str, Any]) -> str:
                     f"{bucket['neutra']:>4}   {bucket['adversa']:>4}   "
                     f"{bucket['median_move_units']:>7}"
                 )
+            split = outcomes.get("by_alignment_direction") or {}
+            if split:
+                lines.append("")
+                lines.append(
+                    "    Mesmas situações separadas por direção (sem isso o"
+                    " alinhamento só repete o viés):"
+                )
+                lines.append(
+                    "    situação                        direção    n   favorável   neutra   adversa   mediano"
+                )
+                for situation, directions in split.items():
+                    for direction, bucket in directions.items():
+                        total = bucket["total"] or 1
+                        lines.append(
+                            f"    {situation:<30} {direction:<7} {bucket['total']:>4}   "
+                            f"{bucket['favorável']:>4} ({bucket['favorável'] / total:>4.0%})   "
+                            f"{bucket['neutra']:>4}   {bucket['adversa']:>4}   "
+                            f"{bucket['median_move_units']:>7}"
+                        )
             lines.append(
                 "    Se quase todo sinal está a favor do que já andou, o app segue o"
                 " movimento"

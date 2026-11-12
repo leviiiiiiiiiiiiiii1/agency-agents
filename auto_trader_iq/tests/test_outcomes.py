@@ -220,11 +220,19 @@ class AlignmentTests(unittest.TestCase):
         result = self.probe("BUY", "A", [140.0, 140.0, 140.0, 100.0])
         self.assertEqual(result["by_alignment"]["sem histórico no quadro"]["adversa"], 1)
 
+    def test_alignment_keeps_directions_apart(self):
+        # Um BUY a favor do movimento tem que aparecer como BUY, não somado ao SELL.
+        result = self.probe("BUY", "A", [140.0, 140.0, 140.0, 100.0, 100.0, 100.0, 180.0])
+        split = result["by_alignment_direction"]["a favor do movimento anterior"]
+        self.assertEqual(split["BUY"]["adversa"], 1)
+        self.assertNotIn("SELL", split)
+
     def test_alignment_block_is_rendered(self):
         result = self.probe("BUY", "A", [140.0, 140.0, 140.0, 100.0, 100.0, 100.0, 180.0])
         text = format_outcomes(result)
         self.assertIn("SINAL SEGUE OU CONTRARIA O MOVIMENTO ANTERIOR", text)
         self.assertIn("a favor do movimento anterior", text)
+        self.assertIn("separadas por direção", text)
         text.encode("cp1252")
 
 
