@@ -2,6 +2,8 @@ import unittest
 
 from auto_trader_iq.grade_report import (
     ADVERSE,
+    _breakeven,
+    _expected_value,
     _one_per_bar,
     FAVORABLE,
     NEUTRAL,
@@ -582,6 +584,13 @@ class FlowRuleTests(unittest.TestCase):
         total = sum(bucket["total"] for bucket in flow["by_streak"].values())
         self.assertLessEqual(total, 2)
 
+    def test_breakeven_follows_the_informed_payout(self):
+        # Payout informado pelo usuário: 85% a 90% no que ele opera.
+        self.assertAlmostEqual(_breakeven(0.85), 0.5405, places=4)
+        self.assertAlmostEqual(_breakeven(0.90), 0.5263, places=4)
+        self.assertAlmostEqual(_expected_value(_breakeven(0.85), 0.85), 0.0, places=6)
+        self.assertAlmostEqual(_expected_value(0.60, 0.85), 0.11, places=6)
+
     def test_flow_block_is_rendered(self):
         text = format_flow_rule(compute_flow_rule(self.closes_frames(), horizon_bars=3))
         self.assertIn("REGRA DE FLUXO", text)
@@ -601,7 +610,8 @@ class FlowRuleTests(unittest.TestCase):
         )
         text = format_flow_rule(flow)
         self.assertIn("LIQUIDAÇÃO", text)
-        self.assertIn("1/(1+payout)", text)
+        self.assertIn("equilíbrio: 54.1%", text)
+        self.assertIn("EV 85%", text)
 
 
 class FormatTests(unittest.TestCase):
@@ -614,8 +624,8 @@ class FormatTests(unittest.TestCase):
 
     def test_report_states_that_acerto_is_not_profit(self):
         text = format_outcomes(compute_outcomes([]))
-        self.assertIn("sem resultado financeiro", text)
-        self.assertIn("equilíbrio é 54%", text)
+        self.assertIn("sem payout", text)
+        self.assertIn("54.1%", text)
         self.assertIn("Nenhum sinal", text)
 
     def test_table_lists_each_class(self):

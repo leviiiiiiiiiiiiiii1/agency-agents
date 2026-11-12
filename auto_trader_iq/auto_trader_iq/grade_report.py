@@ -816,6 +816,21 @@ COLOR_DIRECTION = {"green": "BUY", "red": "SELL", "white": "SELL"}
 
 FLOW_WINDOW = 5
 
+# Payout informado pelo usuário: ele opera entre 85% e 90%. Abaixo de 1/(1+p)
+# a aposta perde dinheiro mesmo acertando mais da metade das vezes.
+PAYOUT_MIN = 0.85
+PAYOUT_MAX = 0.90
+
+
+def _breakeven(payout: float) -> float:
+    """Acerto mínimo para empatar com esse payout (empate conta como perda)."""
+    return 1.0 / (1.0 + payout)
+
+
+def _expected_value(rate: float, payout: float) -> float:
+    """Lucro esperado por unidade apostada: acerta e recebe o payout, erra e perde 1."""
+    return rate * (1.0 + payout) - 1.0
+
 
 def _flow_directions(ladder: Mapping[str, Any], window: int) -> tuple[str, list[str | None]]:
     """Direção de cada uma das últimas velas: por cor quando existe, por fechamento
@@ -1008,10 +1023,13 @@ def format_flow_rule(flow: Mapping[str, Any]) -> str:
             "    LIQUIDAÇÃO NA VELA DE EXPIRAÇÃO - fechou a favor, sem limiar de movimento"
         )
         lines.append(
-            "    (acerto precisa passar de 1/(1+payout): 54% com 85%, 56% com 80%, 53% com 90%)"
+            f"    (equilíbrio: {_breakeven(PAYOUT_MIN):.1%} com payout {PAYOUT_MIN:.0%}"
+            f" · {_breakeven(PAYOUT_MAX):.1%} com {PAYOUT_MAX:.0%};"
+            " empate conta como perda)"
         )
         lines.append(
             "    aposta 2+ velas    n   acerta   empata    erra   acerto   margem 95%"
+            "   EV 85%   EV 90%"
         )
         for label in ("todas", "BUY", "SELL"):
             bucket = settlement.get(label) or {}
@@ -1020,11 +1038,21 @@ def format_flow_rule(flow: Mapping[str, Any]) -> str:
                 continue
             rate = bucket["acerta"] / total
             margin = 1.96 * math.sqrt(rate * (1 - rate) / total)
+            low = rate - margin
+            high = rate + margin
             lines.append(
                 f"    {label:<14} {total:>5}   {bucket['acerta']:>6}   "
                 f"{bucket['empata']:>7}   {bucket['erra']:>6}   "
                 f"{rate:>6.0%}   +/-{margin * 100:>3.0f}pp"
+                f"   {_expected_value(rate, PAYOUT_MIN):>+6.0%}"
+                f"   {_expected_value(rate, PAYOUT_MAX):>+6.0%}"
             )
+            if label == "todas":
+                lines.append(
+                    f"    {'':<14} com a margem desta rodada, o resultado a 85% vai de"
+                    f" {_expected_value(low, PAYOUT_MIN):+.0%}"
+                    f" a {_expected_value(high, PAYOUT_MIN):+.0%} por aposta"
+                )
     return "\n".join(lines)
 
 
@@ -1731,10 +1759,10 @@ def format_outcomes(outcomes: Mapping[str, Any]) -> str:
                 )
     lines += [
         "",
-        "    'acerto' é só fechamento a favor na vela de expiração: sem custo, sem",
-        "    spread, sem payout e sem resultado financeiro. Com payout de 85% o",
-        "    equilíbrio é 54%. 'favorável' mede deslocamento relativo à faixa mediana",
-        "    e serve para comparar classes entre si na mesma amostra.",
+        "    'acerto' é fechamento a favor na vela de expiração: sem custo, sem",
+        "    spread e sem payout. O equilíbrio com payout de 85% é 54.1% e com 90%",
+        "    é 52.6%, contando empate como perda. 'favorável' mede deslocamento",
+        "    relativo à faixa mediana e serve para comparar classes entre si.",
         "    A conversão de tempo em velas assume o período informado em --bar-seconds;",
         "    se o gráfico não for de 1 minuto, o horizonte medido estará errado.",
     ]
