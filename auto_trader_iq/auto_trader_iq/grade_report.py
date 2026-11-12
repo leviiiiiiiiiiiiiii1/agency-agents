@@ -1240,14 +1240,25 @@ def _flow_stratified_edge(
         if rest_variance > 0
         else 0.0
     )
+    bets = sum(cell["total"] for cell in cells)
+    # Quantas apostas elegíveis faltam para o z passar de 1.96 mantendo o
+    # desvio por aposta observado. Sem isso o usuário não sabe se capturar
+    # mais dez minutos ou mais dez horas.
+    needed = None
+    if deviation > 0 and bets:
+        margin = deviation / bets
+        per_bet_variance = variance / bets
+        needed = (1.96**2) * per_bet_variance / (margin**2)
     return {
         "blocks": len(cells),
+        "bets": bets,
         "deviation": deviation,
         "variance": variance,
         "z": deviation / math.sqrt(variance),
         "z_without_best": rest_z,
         "best_label": best["label"],
         "best_margin": best["margin"],
+        "bets_needed": needed,
     }
 
 
@@ -1287,6 +1298,14 @@ def _flow_edge_verdict(rows: Sequence[Mapping[str, Any]]) -> list[str]:
         f"    Vantagem estratificada: {edge['deviation']:+.1f} acerto(s) acima do"
         f" esperado em {int(edge['blocks'])} bloco(s) · z = {edge['z']:.2f}"
     )
+    needed = edge.get("bets_needed")
+    bets = int(edge.get("bets") or 0)
+    if needed and bets and edge["z"] < 1.96:
+        margin = edge["deviation"] / bets
+        lines.append(
+            f"    Ritmo atual: {margin * 100:+.1f}pp por aposta em {bets} apostas"
+            f" elegíveis; z = 1.96 exigiria ~{needed:.0f}."
+        )
     if edge["blocks"] > 1 and edge["z_without_best"] < 1.0:
         lines.append(
             f"    Sem a melhor célula ({edge['best_label']},"
