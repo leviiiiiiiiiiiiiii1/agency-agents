@@ -358,6 +358,33 @@ def compute_outcomes(
             direction: _bucket(group) for direction, group in sorted(per_direction.items())
         }
 
+    # Simulação: o que sobraria se o app se abstivesse em cada condição. Nada
+    # muda no app — é a conta que precisa existir antes de qualquer regra nova.
+    veto_rules = {
+        "contra o movimento anterior": {"contra o movimento anterior"},
+        "contra o movimento ou sem histórico": {
+            "contra o movimento anterior",
+            "sem histórico no quadro",
+        },
+    }
+    vetoes: list[dict[str, Any]] = []
+    for name, excluded in veto_rules.items():
+        kept = [
+            item
+            for item in results
+            if _situation(item.get("trailing_units"), str(item["direction"])) not in excluded
+        ]
+        removed = [item for item in results if item not in kept]
+        if not results:
+            continue
+        vetoes.append(
+            {
+                "rule": name,
+                "removed": _bucket(removed),
+                "kept": _bucket(kept),
+            }
+        )
+
     by_reason: dict[str, dict[str, Any]] = {}
     for item in results:
         for reason in item["reasons"]:
@@ -400,6 +427,7 @@ def compute_outcomes(
         "by_direction": by_reason_direction,
         "by_grade_direction": by_grade_direction,
         "by_alignment": by_alignment,
+        "vetoes": vetoes,
         "by_alignment_direction": by_alignment_direction,
         "by_reason": dict(
             sorted(reasons_summary.items(), key=lambda item: (-item[1]["total"], item[0]))
@@ -413,6 +441,15 @@ def compute_outcomes(
         "min_move_units": min_move_units,
         "by_grade": summary,
     }
+
+
+def _situation(trailing: float | None, direction: str) -> str:
+    if trailing is None:
+        return "sem histórico no quadro"
+    if trailing == 0:
+        return "movimento anterior parado"
+    aligned = (trailing > 0 and direction == "BUY") or (trailing < 0 and direction == "SELL")
+    return "a favor do movimento anterior" if aligned else "contra o movimento anterior"
 
 
 def _summarize_items(items: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -572,7 +609,13 @@ def compute_session_comparison(
                 timeline, frame, direction, age, bar_seconds, horizon_bars, min_move_units
             )
             if measured is not None:
-                slot["signals"].append({**measured, "direction": direction})
+                slot["signals"].append(
+                    {
+                        **measured,
+                        "direction": direction,
+                        "situation": _situation(measured["trailing_units"], direction),
+                    }
+                )
         measured = _measure(
             timeline, frame, "BUY", 0, bar_seconds, horizon_bars, min_move_units
         )
@@ -589,8 +632,12 @@ def compute_session_comparison(
         if not slot["signals"]:
             continue
         by_direction: dict[str, list[Mapping[str, Any]]] = {}
+        by_situation: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
         for item in slot["signals"]:
             by_direction.setdefault(str(item["direction"]), []).append(item)
+            by_situation.setdefault(
+                (str(item["situation"]), str(item["direction"])), []
+            ).append(item)
         rows.append(
             {
                 "session": session,
@@ -600,6 +647,16 @@ def compute_session_comparison(
                     direction: _summarize_items(items)
                     for direction, items in sorted(by_direction.items())
                 },
+                "signals_by_situation": [
+                    {
+                        "situation": situation,
+                        "direction": direction,
+                        **_summarize_items(items),
+                    }
+                    for (situation, direction), items in sorted(
+                        by_situation.items(), key=lambda pair: -len(pair[1])
+                    )
+                ],
                 "following": _summarize_items(slot["following"]),
                 "against": _summarize_items(slot["against"]),
             }
@@ -635,25 +692,20 @@ def format_session_comparison(rows: Sequence[Mapping[str, Any]]) -> str:
         )
     lines.append("")
     lines.append(
-        "    Sinais de cada sessão separados por direção (para ver se o app brigou"
+        "    Sinais de cada sessão por situação e direção (para ver se o app brigou"
         " com o movimento):"
     )
-    lines.append("    início            BUY n/fav          SELL n/fav")
     for row in rows:
-        split = row.get("signals_by_direction") or {}
         started = str(row.get("started_at_utc") or "")[:16].replace("T", " ")
-        cells = []
-        for direction in ("BUY", "SELL"):
-            bucket = split.get(direction)
-            if not bucket:
-                cells.append(f"{'—':>15}")
-                continue
-            total = bucket["total"] or 1
-            cells.append(
-                f"{bucket['total']:>4}/{bucket[FAVORABLE]:<3}"
-                f" ({bucket[FAVORABLE] / total:>4.0%})"
+        parts = []
+        for entry in row.get("signals_by_situation") or []:
+            total = entry["total"] or 1
+            parts.append(
+                f"{entry['direction']} {entry['situation'].replace(' anterior', '')}"
+                f" {entry['total']}/{entry[FAVORABLE]} ({entry[FAVORABLE] / total:.0%})"
             )
-        lines.append(f"    {started:<17} {cells[0]:<17} {cells[1]}")
+        detail = " · ".join(parts) if parts else "(sem sinal)"
+        lines.append(f"    {started:<17} {detail}")
     return "\n".join(lines)
 
 
@@ -1100,6 +1152,31 @@ def format_outcomes(outcomes: Mapping[str, Any]) -> str:
                 " movimento"
             )
             lines.append("    em vez de escolher ponto de virada.")
+
+        vetoes = outcomes.get("vetoes") or []
+        if vetoes:
+            lines.append("")
+            lines.append(
+                "    SIMULAÇÃO DE ABSTENÇÃO (nada muda no app; só a conta do que"
+                " sobraria):"
+            )
+            for veto in vetoes:
+                removed = veto["removed"]
+                kept = veto["kept"]
+                removed_total = removed["total"] or 1
+                kept_total = kept["total"] or 1
+                lines.append(
+                    f"      vetar {veto['rule']}: descarta {removed['total']:>3}"
+                    f" ({removed['favorável'] / removed_total:>4.0%} favorável) ·"
+                    f" sobra {kept['total']:>3}"
+                    f" ({kept['favorável'] / kept_total:>4.0%} favorável,"
+                    f" mediana {kept['median_move_units']})"
+                )
+            lines.append(
+                "    Vetar só melhora o retrato se o que sobra bater a base da mesma"
+                " sessão;"
+            )
+            lines.append("    descartar sinal ruim não cria vantagem, só reduz ruído.")
 
         reasons = outcomes.get("by_reason") or {}
         if reasons:

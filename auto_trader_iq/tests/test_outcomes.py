@@ -238,6 +238,36 @@ class AlignmentTests(unittest.TestCase):
         text.encode("cp1252")
 
 
+class VetoSimulationTests(unittest.TestCase):
+    def test_veto_reports_what_is_discarded_and_what_remains(self):
+        # Um sinal contra o movimento e um a favor; vetar o primeiro deixa o segundo.
+        against = frame("2026-11-11T18:00:00+00:00", "A", "BUY", 0, [100.0] * 7)
+        with_it = frame("2026-11-11T18:10:00+00:00", "A", "BUY", 0, [100.0] * 7)
+        frames = [
+            against,
+            frame("2026-11-11T18:03:00+00:00", "NO_TRADE", "BUY", 0,
+                  [140.0, 140.0, 140.0, 100.0, 100.0, 100.0, 60.0]),
+            with_it,
+            frame("2026-11-11T18:13:00+00:00", "NO_TRADE", "BUY", 0,
+                  [100.0, 110.0, 120.0, 130.0, 140.0, 150.0, 180.0]),
+        ]
+        result = compute_outcomes(frames, horizon_bars=3)
+        veto = next(v for v in result["vetoes"] if v["rule"] == "contra o movimento anterior")
+        self.assertEqual(veto["removed"]["total"], 1)
+        self.assertEqual(veto["kept"]["total"], 1)
+        self.assertEqual(veto["kept"]["favorável"], 1)
+
+    def test_veto_block_is_rendered(self):
+        frames = [
+            frame("2026-11-11T18:00:00+00:00", "A", "BUY", 0, [100.0] * 7),
+            frame("2026-11-11T18:03:00+00:00", "NO_TRADE", "BUY", 0,
+                  [100.0, 110.0, 120.0, 130.0, 140.0, 150.0, 180.0]),
+        ]
+        text = format_outcomes(compute_outcomes(frames, horizon_bars=3))
+        self.assertIn("SIMULAÇÃO DE ABSTENÇÃO", text)
+        text.encode("cp1252")
+
+
 class BaselineTests(unittest.TestCase):
     def test_baseline_has_no_classifier_and_uses_every_frame(self):
         # Nenhum quadro é sinal: a linha de base não depende de A/B/C.
@@ -342,6 +372,9 @@ class SessionComparisonTests(unittest.TestCase):
         split = rows[0]["signals_by_direction"]
         self.assertEqual(split["BUY"]["total"], 1)
         self.assertEqual(split["SELL"]["total"], 1)
+        situations = rows[0]["signals_by_situation"]
+        self.assertEqual({entry["direction"] for entry in situations}, {"BUY", "SELL"})
+        self.assertTrue(all(entry["situation"] for entry in situations))
 
     def test_session_table_is_rendered(self):
         frames = [
@@ -351,7 +384,7 @@ class SessionComparisonTests(unittest.TestCase):
         ]
         text = format_session_comparison(compute_session_comparison(frames, horizon_bars=3))
         self.assertIn("POR SESSÃO", text)
-        self.assertIn("separados por direção", text)
+        self.assertIn("por situação e direção", text)
         text.encode("cp1252")
 
     def test_empty_session_list_says_so(self):
