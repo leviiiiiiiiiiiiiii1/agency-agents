@@ -329,6 +329,20 @@ class SessionComparisonTests(unittest.TestCase):
         self.assertEqual(rows[0]["signals"]["total"], 1)
         self.assertEqual(rows[0]["following"]["total"], 1)
 
+    def test_session_signals_keep_the_direction(self):
+        frames = [
+            frame("2026-11-11T18:00:00+00:00", "A", "BUY", 0, [100.0] * 7, session="a"),
+            frame("2026-11-11T18:03:00+00:00", "NO_TRADE", "BUY", 0,
+                  [140.0, 140.0, 140.0, 100.0, 100.0, 100.0, 180.0], session="a"),
+            frame("2026-11-11T18:10:00+00:00", "C", "SELL", 0, [100.0] * 7, session="a"),
+            frame("2026-11-11T18:13:00+00:00", "NO_TRADE", "SELL", 0,
+                  [140.0, 140.0, 140.0, 100.0, 100.0, 100.0, 180.0], session="a"),
+        ]
+        rows = compute_session_comparison(frames, horizon_bars=3)
+        split = rows[0]["signals_by_direction"]
+        self.assertEqual(split["BUY"]["total"], 1)
+        self.assertEqual(split["SELL"]["total"], 1)
+
     def test_session_table_is_rendered(self):
         frames = [
             frame("2026-11-11T18:00:00+00:00", "A", "BUY", 0, [100.0] * 7, session="queda"),
@@ -337,6 +351,7 @@ class SessionComparisonTests(unittest.TestCase):
         ]
         text = format_session_comparison(compute_session_comparison(frames, horizon_bars=3))
         self.assertIn("POR SESSÃO", text)
+        self.assertIn("separados por direção", text)
         text.encode("cp1252")
 
     def test_empty_session_list_says_so(self):

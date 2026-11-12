@@ -572,7 +572,7 @@ def compute_session_comparison(
                 timeline, frame, direction, age, bar_seconds, horizon_bars, min_move_units
             )
             if measured is not None:
-                slot["signals"].append(measured)
+                slot["signals"].append({**measured, "direction": direction})
         measured = _measure(
             timeline, frame, "BUY", 0, bar_seconds, horizon_bars, min_move_units
         )
@@ -588,11 +588,18 @@ def compute_session_comparison(
     for session, slot in sorted(sessions.items(), key=lambda pair: str(pair[1]["started_at_utc"])):
         if not slot["signals"]:
             continue
+        by_direction: dict[str, list[Mapping[str, Any]]] = {}
+        for item in slot["signals"]:
+            by_direction.setdefault(str(item["direction"]), []).append(item)
         rows.append(
             {
                 "session": session,
                 "started_at_utc": slot["started_at_utc"],
                 "signals": _summarize_items(slot["signals"]),
+                "signals_by_direction": {
+                    direction: _summarize_items(items)
+                    for direction, items in sorted(by_direction.items())
+                },
                 "following": _summarize_items(slot["following"]),
                 "against": _summarize_items(slot["against"]),
             }
@@ -626,6 +633,27 @@ def format_session_comparison(rows: Sequence[Mapping[str, Any]]) -> str:
             f"{against['total']:>4}/{against[FAVORABLE]:<3}"
             f" ({against[FAVORABLE] / against_total:>4.0%})"
         )
+    lines.append("")
+    lines.append(
+        "    Sinais de cada sessão separados por direção (para ver se o app brigou"
+        " com o movimento):"
+    )
+    lines.append("    início            BUY n/fav          SELL n/fav")
+    for row in rows:
+        split = row.get("signals_by_direction") or {}
+        started = str(row.get("started_at_utc") or "")[:16].replace("T", " ")
+        cells = []
+        for direction in ("BUY", "SELL"):
+            bucket = split.get(direction)
+            if not bucket:
+                cells.append(f"{'—':>15}")
+                continue
+            total = bucket["total"] or 1
+            cells.append(
+                f"{bucket['total']:>4}/{bucket[FAVORABLE]:<3}"
+                f" ({bucket[FAVORABLE] / total:>4.0%})"
+            )
+        lines.append(f"    {started:<17} {cells[0]:<17} {cells[1]}")
     return "\n".join(lines)
 
 
