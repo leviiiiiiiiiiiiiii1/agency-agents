@@ -1244,6 +1244,11 @@ def format_baseline(baseline: Mapping[str, Any]) -> str:
             "    Para decidir 5pp perto de 55% são necessárias ~380 apostas;"
             " 10pp, ~95."
         )
+        # Uma vela de 1 minuto por entrada: o relógio de captura é o mesmo número.
+        lines.append(
+            f"    Faltam {max(0, 95 - bets)} entradas (~minutos de gráfico)"
+            f" para +/-10pp e {max(0, 380 - bets)} para +/-5pp."
+        )
     lines.append(
         "    Uma entrada por vela: quadros vizinhos do mesmo candle não viram apostas."
     )
