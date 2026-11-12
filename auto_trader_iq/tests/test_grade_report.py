@@ -102,23 +102,30 @@ class DiagnosisTests(unittest.TestCase):
     def test_reasons_are_ranked(self):
         result = summarize(
             [
-                frame("C", reasons=("mercado lateralizado",)),
-                frame("C", reasons=("mercado lateralizado",)),
+                frame("NO_TRADE", reasons=("mercado lateralizado",)),
+                frame("NO_TRADE", reasons=("mercado lateralizado",)),
                 frame("B", reasons=("rótulo com 1 vela(s) de idade",)),
             ]
         )
         self.assertEqual(result["top_reasons"][0]["reason"], "mercado lateralizado")
         self.assertEqual(result["top_reasons"][0]["count"], 2)
 
-    def test_reasons_of_good_grades_are_not_counted_as_blocks(self):
+    def test_blocked_and_risky_frames_are_counted_apart(self):
+        # C é sinal emitido com risco anotado; só quadro sem sinal é bloqueio.
         result = summarize(
             [
-                frame("A", reasons=("corpo 1.07× a mediana",)),
+                frame("NO_TRADE", reasons=("mercado lateralizado",)),
                 frame("C", reasons=("preço a 3% da faixa até o nível contrário",)),
+                frame("A", reasons=("corpo 1.07× a mediana",)),
             ]
         )
-        counted = [item["reason"] for item in result["top_reasons"]]
-        self.assertEqual(counted, ["preço a 3% da faixa até o nível contrário"])
+        self.assertEqual(
+            [item["reason"] for item in result["top_reasons"]], ["mercado lateralizado"]
+        )
+        self.assertEqual(
+            [item["reason"] for item in result["top_risk_reasons"]],
+            ["preço a 3% da faixa até o nível contrário"],
+        )
 
     def test_label_visibility_is_separated(self):
         result = summarize(
@@ -149,7 +156,7 @@ class DiagnosisTests(unittest.TestCase):
             summarize([frame("C", reasons=("mercado lateralizado",), regime="lateral")])
         )
         self.assertIn("Regime de contexto", text)
-        self.assertIn("Motivos de bloqueio", text)
+        self.assertIn("Motivos de risco nas classes com sinal (C)", text)
         self.assertIn("mercado lateralizado", text)
 
 

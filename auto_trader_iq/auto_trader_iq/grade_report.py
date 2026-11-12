@@ -305,6 +305,7 @@ def compute_outcomes(
                 "grade": frame.get("code"),
                 "direction": direction,
                 "reasons": list(frame.get("reasons") or []),
+                "context_opposed": _context_opposed(features),
                 **measured,
             }
         )
@@ -358,25 +359,52 @@ def compute_outcomes(
             direction: _bucket(group) for direction, group in sorted(per_direction.items())
         }
 
+    by_context: dict[str, list[dict[str, Any]]] = {}
+    for item in results:
+        state = item.get("context_opposed")
+        key = (
+            "sem contexto no quadro"
+            if state is None
+            else "contra o contexto"
+            if state
+            else "a favor do contexto"
+        )
+        by_context.setdefault(key, []).append(item)
+    context_summary = {
+        key: _bucket(items)
+        for key, items in sorted(by_context.items(), key=lambda pair: -len(pair[1]))
+    }
+
     # Simulação: o que sobraria se o app se abstivesse em cada condição. Nada
     # muda no app — é a conta que precisa existir antes de qualquer regra nova.
-    veto_rules = {
-        "contra o movimento anterior": {"contra o movimento anterior"},
-        "contra o movimento ou sem histórico": {
-            "contra o movimento anterior",
-            "sem histórico no quadro",
-        },
-    }
+    def _against_move(item: Mapping[str, Any]) -> bool:
+        return _situation(item.get("trailing_units"), str(item["direction"])) == (
+            "contra o movimento anterior"
+        )
+
+    def _unknown_move(item: Mapping[str, Any]) -> bool:
+        return _situation(item.get("trailing_units"), str(item["direction"])) == (
+            "sem histórico no quadro"
+        )
+
+    def _against_context(item: Mapping[str, Any]) -> bool:
+        return item.get("context_opposed") is True
+
+    veto_rules: list[tuple[str, Any]] = [
+        ("contra o movimento anterior", _against_move),
+        ("contra o movimento ou sem histórico", lambda item: _against_move(item) or _unknown_move(item)),
+        ("contra o contexto", _against_context),
+        (
+            "contra o movimento anterior ou contra o contexto",
+            lambda item: _against_move(item) or _against_context(item),
+        ),
+    ]
     vetoes: list[dict[str, Any]] = []
-    for name, excluded in veto_rules.items():
-        kept = [
-            item
-            for item in results
-            if _situation(item.get("trailing_units"), str(item["direction"])) not in excluded
-        ]
-        removed = [item for item in results if item not in kept]
+    for name, rule in veto_rules:
         if not results:
-            continue
+            break
+        kept = [item for item in results if not rule(item)]
+        removed = [item for item in results if rule(item)]
         vetoes.append(
             {
                 "rule": name,
@@ -427,6 +455,7 @@ def compute_outcomes(
         "by_direction": by_reason_direction,
         "by_grade_direction": by_grade_direction,
         "by_alignment": by_alignment,
+        "by_context": context_summary,
         "vetoes": vetoes,
         "by_alignment_direction": by_alignment_direction,
         "by_reason": dict(
@@ -441,6 +470,14 @@ def compute_outcomes(
         "min_move_units": min_move_units,
         "by_grade": summary,
     }
+
+
+def _context_opposed(features: Mapping[str, Any]) -> bool | None:
+    context = features.get("context_direction")
+    direction = features.get("direction")
+    if context not in ("BUY", "SELL") or direction not in ("BUY", "SELL"):
+        return None
+    return context != direction
 
 
 def _situation(trailing: float | None, direction: str) -> str:
@@ -835,19 +872,24 @@ def summarize(
         key = str(frame.get("context_regime") or "desconhecido")
         regimes[key] = regimes.get(key, 0) + 1
 
+    # Bloqueio é quadro sem sinal; C é sinal emitido com risco anotado. Somar os
+    # dois fazia o funil parecer maior do que é e escondia o nome do bloqueio.
     reason_counts: dict[str, int] = {}
+    risk_counts: dict[str, int] = {}
     for frame in frames:
-        # Motivos de A/B descrevem o que está bom; somá-los aqui os faria parecer
-        # bloqueio.
-        if str(frame.get("code")) in ("A", "B"):
+        code = str(frame.get("code"))
+        target = risk_counts if code == "C" else reason_counts
+        # Motivos de A/B descrevem o que está bom; não entram em nenhuma das listas.
+        if code in ("A", "B"):
             continue
         seen = set()
         for reason in frame.get("reasons") or []:
             if reason in seen:
                 continue
             seen.add(reason)
-            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+            target[reason] = target.get(reason, 0) + 1
     top_reasons = sorted(reason_counts.items(), key=lambda item: (-item[1], item[0]))[:6]
+    top_risk_reasons = sorted(risk_counts.items(), key=lambda item: (-item[1], item[0]))[:6]
 
     raw_labels = sum(1 for frame in frames if (frame.get("raw_candidate_count") or 0) > 0)
     recent_labels = sum(
@@ -963,6 +1005,9 @@ def summarize(
         "frames_with_recent_label": recent_labels,
         "context_regimes": regimes,
         "top_reasons": [{"reason": reason, "count": count} for reason, count in top_reasons],
+        "top_risk_reasons": [
+            {"reason": reason, "count": count} for reason, count in top_risk_reasons
+        ],
         "frames_with_features": len(with_features),
         "palette_calibrated_frames": sum(1 for frame in frames if frame.get("palette_calibrated")),
         "sessions": len({frame.get("session_id") for frame in frames if frame.get("session_id")}),
@@ -1153,6 +1198,25 @@ def format_outcomes(outcomes: Mapping[str, Any]) -> str:
             )
             lines.append("    em vez de escolher ponto de virada.")
 
+        context = outcomes.get("by_context") or {}
+        if context:
+            lines.append("")
+            lines.append(
+                "    SINAL A FAVOR OU CONTRA O CONTEXTO LIDO DO GRÁFICO"
+                " (só quando o quadro tem contexto):"
+            )
+            lines.append(
+                "    situação                        n   favorável   neutra   adversa   mediano"
+            )
+            for situation, bucket in context.items():
+                total = bucket["total"] or 1
+                lines.append(
+                    f"    {situation:<30} {bucket['total']:>4}   "
+                    f"{bucket['favorável']:>4} ({bucket['favorável'] / total:>4.0%})   "
+                    f"{bucket['neutra']:>4}   {bucket['adversa']:>4}   "
+                    f"{bucket['median_move_units']:>7}"
+                )
+
         vetoes = outcomes.get("vetoes") or []
         if vetoes:
             lines.append("")
@@ -1255,8 +1319,17 @@ def format_report(summary: Mapping[str, Any], sweeps: Sequence[tuple[str, Sequen
             "    " + " · ".join(f"{name}={count}" for name, count in ordered)
         )
 
+    if summary.get("top_risk_reasons"):
+        lines += ["", "Motivos de risco nas classes com sinal (C):"]
+        for entry in summary["top_risk_reasons"]:
+            lines.append(f"    {entry['count']:>5}  {entry['reason']}")
+        lines.append(
+            "    Estes quadros viraram sinal, não bloqueio; o desfecho deles está"
+        )
+        lines.append("    em 'Por motivo registrado' abaixo.")
+
     if summary["top_reasons"]:
-        lines += ["", "Motivos de bloqueio mais frequentes:"]
+        lines += ["", "Motivos de bloqueio mais frequentes (quadros sem sinal):"]
         for item in summary["top_reasons"]:
             lines.append(f"    {item['count']:>5}  {item['reason']}")
 

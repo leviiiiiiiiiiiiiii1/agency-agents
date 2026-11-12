@@ -238,6 +238,30 @@ class AlignmentTests(unittest.TestCase):
         text.encode("cp1252")
 
 
+class ContextTests(unittest.TestCase):
+    def signal(self, direction, context):
+        signal = frame("2026-11-11T18:00:00+00:00", "C", direction, 0, [100.0] * 7)
+        signal["features"]["context_direction"] = context
+        return [
+            signal,
+            frame("2026-11-11T18:03:00+00:00", "NO_TRADE", direction, 0, [140.0] * 7),
+        ]
+
+    def test_opposed_context_is_its_own_bucket(self):
+        result = compute_outcomes(self.signal("SELL", "BUY"))
+        self.assertEqual(result["by_context"]["contra o contexto"]["total"], 1)
+
+    def test_missing_context_is_not_counted_as_opposed(self):
+        result = compute_outcomes(self.signal("SELL", None))
+        self.assertEqual(result["by_context"]["sem contexto no quadro"]["total"], 1)
+
+    def test_veto_by_context_removes_the_opposed_signal(self):
+        result = compute_outcomes(self.signal("SELL", "BUY"))
+        veto = next(v for v in result["vetoes"] if v["rule"] == "contra o contexto")
+        self.assertEqual(veto["removed"]["total"], 1)
+        self.assertEqual(veto["kept"]["total"], 0)
+
+
 class VetoSimulationTests(unittest.TestCase):
     def test_veto_reports_what_is_discarded_and_what_remains(self):
         # Um sinal contra o movimento e um a favor; vetar o primeiro deixa o segundo.
