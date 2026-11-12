@@ -429,6 +429,16 @@ class SessionComparisonTests(unittest.TestCase):
         self.assertEqual({entry["direction"] for entry in situations}, {"BUY", "SELL"})
         self.assertTrue(all(entry["situation"] for entry in situations))
 
+    def test_session_table_carries_the_flow_rule(self):
+        frames = [
+            frame("2026-11-11T18:00:00+00:00", "NO_TRADE", "BUY", 0,
+                  [100.0, 120.0, 130.0, 140.0, 150.0, 160.0, 180.0], session="a"),
+            frame("2026-11-11T18:03:00+00:00", "NO_TRADE", "BUY", 0, [140.0] * 7,
+                  session="a"),
+        ]
+        rows = compute_session_comparison(frames, horizon_bars=3)
+        self.assertEqual(rows[0]["flow"]["total"], 1)
+
     def test_session_table_is_rendered(self):
         frames = [
             frame("2026-11-11T18:00:00+00:00", "A", "BUY", 0, [100.0] * 7, session="queda"),

@@ -646,7 +646,13 @@ def compute_session_comparison(
         session = str(frame.get("session_id") or "?")
         slot = sessions.setdefault(
             session,
-            {"signals": [], "following": [], "against": [], "started_at_utc": None},
+            {
+                "signals": [],
+                "following": [],
+                "against": [],
+                "flow": [],
+                "started_at_utc": None,
+            },
         )
         if slot["started_at_utc"] is None:
             slot["started_at_utc"] = frame.get("occurred_at_utc")
@@ -666,6 +672,27 @@ def compute_session_comparison(
                         "situation": _situation(measured["trailing_units"], direction),
                     }
                 )
+        # Fluxo é independente do movimento anterior: entra antes dos descartes.
+        _, flow_directions = _flow_directions(frame.get("price_ladder") or {}, FLOW_WINDOW)
+        if flow_directions and flow_directions[0] is not None:
+            streak = 0
+            for item in flow_directions:
+                if item != flow_directions[0]:
+                    break
+                streak += 1
+            if streak >= 2:
+                flow_measured = _measure(
+                    timeline,
+                    frame,
+                    flow_directions[0],
+                    0,
+                    bar_seconds,
+                    horizon_bars,
+                    min_move_units,
+                )
+                if flow_measured is not None:
+                    slot["flow"].append(flow_measured)
+
         measured = _measure(
             timeline, frame, "BUY", 0, bar_seconds, horizon_bars, min_move_units
         )
@@ -679,7 +706,8 @@ def compute_session_comparison(
         slot["against"].append(_flip(with_move))
     rows = []
     for session, slot in sorted(sessions.items(), key=lambda pair: str(pair[1]["started_at_utc"])):
-        if not slot["signals"]:
+        # Sessão sem sinal ainda interessa: mostra o que a regra de fluxo faria ali.
+        if not slot["signals"] and not slot["flow"]:
             continue
         by_direction: dict[str, list[Mapping[str, Any]]] = {}
         by_situation: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
@@ -709,6 +737,7 @@ def compute_session_comparison(
                 ],
                 "following": _summarize_items(slot["following"]),
                 "against": _summarize_items(slot["against"]),
+                "flow": _summarize_items(slot["flow"]),
             }
         )
     return rows
@@ -862,7 +891,7 @@ def format_session_comparison(rows: Sequence[Mapping[str, Any]]) -> str:
         "",
         "    POR SESSÃO - sinais e linha de base na MESMA janela de mercado",
         "    (se o sinal bate a base aqui dentro, o ganho não é o regime da hora)",
-        "    início            sinais n/fav     seguir n/fav     contra n/fav",
+        "    início            sinais n/fav     seguir n/fav     fluxo2+ n/fav",
     ]
     if not rows:
         lines.append("    Nenhuma sessão com sinal acompanhado até o horizonte.")
@@ -870,18 +899,19 @@ def format_session_comparison(rows: Sequence[Mapping[str, Any]]) -> str:
     for row in rows:
         signals = row["signals"]
         following = row["following"]
-        against = row["against"]
+        following = row["following"]
+        flow = row.get("flow") or {"total": 0, FAVORABLE: 0}
         signals_total = signals["total"] or 1
         following_total = following["total"] or 1
-        against_total = against["total"] or 1
+        flow_total = flow["total"] or 1
         started = str(row.get("started_at_utc") or "")[:16].replace("T", " ")
         lines.append(
             f"    {started:<17} {signals['total']:>4}/{signals[FAVORABLE]:<3}"
             f" ({signals[FAVORABLE] / signals_total:>4.0%})  "
             f"{following['total']:>4}/{following[FAVORABLE]:<3}"
             f" ({following[FAVORABLE] / following_total:>4.0%})  "
-            f"{against['total']:>4}/{against[FAVORABLE]:<3}"
-            f" ({against[FAVORABLE] / against_total:>4.0%})"
+            f"{flow['total']:>4}/{flow[FAVORABLE]:<3}"
+            f" ({flow[FAVORABLE] / flow_total:>4.0%})"
         )
     lines.append("")
     lines.append(
