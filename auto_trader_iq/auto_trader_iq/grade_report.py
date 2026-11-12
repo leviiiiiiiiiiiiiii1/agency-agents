@@ -177,6 +177,67 @@ def _parse_time(value: Any) -> Any:
         return None
 
 
+def _measure(
+    timeline: Sequence[Mapping[str, Any]],
+    start: Mapping[str, Any],
+    direction: str,
+    age: int,
+    bar_seconds: float,
+    horizon_bars: int,
+    min_move_units: float,
+) -> dict[str, Any] | None:
+    """Localiza o quadro de referência e mede o deslocamento do preço.
+
+    y menor = preço maior; o sinal de SELL é invertido para que "favorável"
+    signifique sempre "andou a favor da aposta".
+    """
+    started = _parse_time(start.get("occurred_at_utc"))
+    if started is None:
+        return None
+    target = None
+    # O quadro de referência pode ser qualquer um com escada: exigir que ele
+    # também esteja classificado descartava quase todos os sinais.
+    for later in timeline:
+        if later.get("session_id") != start.get("session_id"):
+            continue
+        if str(later.get("occurred_at_utc")) <= str(start.get("occurred_at_utc")):
+            continue
+        when = _parse_time(later.get("occurred_at_utc"))
+        if when is None:
+            continue
+        elapsed = (when - started).total_seconds()
+        if elapsed >= bar_seconds * horizon_bars * 0.8:
+            target = (later, elapsed)
+            break
+    if target is None:
+        return None
+    later, elapsed = target
+    bars_elapsed = max(1, round(elapsed / bar_seconds))
+    ladder = later.get("price_ladder") or {}
+    closes = ladder.get("closes_px") or []
+    typical_range = ladder.get("median_range_px")
+    entry_index = age + bars_elapsed
+    if not typical_range or typical_range <= 0 or entry_index >= len(closes):
+        return None
+    entry_now = closes[entry_index]
+    current = closes[0]
+    if entry_now is None or current is None:
+        return None
+    move = (float(entry_now) - float(current)) / float(typical_range)
+    if direction == "SELL":
+        move = -move
+    move = round(move, 3)
+    if move == 0:
+        move = 0.0  # evita imprimir -0.0 quando o preço não andou
+    if move >= min_move_units:
+        outcome = FAVORABLE
+    elif move <= -min_move_units:
+        outcome = ADVERSE
+    else:
+        outcome = NEUTRAL
+    return {"outcome": outcome, "move_units": move, "bars_elapsed": bars_elapsed}
+
+
 def compute_outcomes(
     frames: Sequence[Mapping[str, Any]],
     *,
@@ -209,60 +270,27 @@ def compute_outcomes(
         features = frame.get("features") or {}
         direction = features.get("direction")
         age = features.get("age_bars")
-        started = _parse_time(frame.get("occurred_at_utc"))
-        if direction not in ("BUY", "SELL") or not isinstance(age, int) or started is None:
+        if direction not in ("BUY", "SELL") or not isinstance(age, int):
             skipped += 1
             continue
-        target = None
-        # O quadro de referência pode ser qualquer um com escada: exigir que ele
-        # também esteja classificado descartava quase todos os sinais.
-        for later in timeline:
-            if later.get("session_id") != frame.get("session_id"):
-                continue
-            if str(later.get("occurred_at_utc")) <= str(frame.get("occurred_at_utc")):
-                continue
-            when = _parse_time(later.get("occurred_at_utc"))
-            if when is None:
-                continue
-            elapsed = (when - started).total_seconds()
-            if elapsed >= bar_seconds * horizon_bars * 0.8:
-                target = (later, elapsed)
-                break
-        if target is None:
+        measured = _measure(
+            timeline,
+            frame,
+            direction,
+            age,
+            bar_seconds,
+            horizon_bars,
+            min_move_units,
+        )
+        if measured is None:
             skipped += 1
             continue
-        later, elapsed = target
-        bars_elapsed = max(1, round(elapsed / bar_seconds))
-        ladder = later["price_ladder"]
-        closes = ladder.get("closes_px") or []
-        typical_range = ladder.get("median_range_px")
-        entry_index = age + bars_elapsed
-        if not typical_range or typical_range <= 0 or entry_index >= len(closes):
-            skipped += 1
-            continue
-        entry_now = closes[entry_index]
-        current = closes[0]
-        if entry_now is None or current is None:
-            skipped += 1
-            continue
-        # y menor = preço maior.
-        move = (float(entry_now) - float(current)) / float(typical_range)
-        if direction == "SELL":
-            move = -move
-        if move >= min_move_units:
-            outcome = FAVORABLE
-        elif move <= -min_move_units:
-            outcome = ADVERSE
-        else:
-            outcome = NEUTRAL
         results.append(
             {
                 "grade": frame.get("code"),
                 "direction": direction,
                 "reasons": list(frame.get("reasons") or []),
-                "outcome": outcome,
-                "move_units": round(move, 3),
-                "bars_elapsed": bars_elapsed,
+                **measured,
             }
         )
 
@@ -340,6 +368,81 @@ def compute_outcomes(
         "min_move_units": min_move_units,
         "by_grade": summary,
     }
+
+
+def compute_baseline(
+    frames: Sequence[Mapping[str, Any]],
+    *,
+    bar_seconds: float = 60.0,
+    horizon_bars: int = 3,
+    min_move_units: float = 0.5,
+) -> dict[str, Any]:
+    """O que aconteceria entrando em TODO quadro com escada, sem classificador.
+
+    É o controle que faltava: se os sinais de uma classe acertam na mesma
+    proporção que entrar sem critério nenhum na mesma direção, a classe não
+    escolheu nada — só a direção do período pagou.
+    """
+    timeline = sorted(
+        (frame for frame in frames if frame.get("price_ladder")),
+        key=lambda item: str(item.get("occurred_at_utc")),
+    )
+    baseline: dict[str, Any] = {"frames_with_ladder": len(timeline)}
+    for direction in ("BUY", "SELL"):
+        counts = {FAVORABLE: 0, NEUTRAL: 0, ADVERSE: 0}
+        moves: list[float] = []
+        for frame in timeline:
+            measured = _measure(
+                timeline,
+                frame,
+                direction,
+                0,
+                bar_seconds,
+                horizon_bars,
+                min_move_units,
+            )
+            if measured is None:
+                continue
+            counts[measured["outcome"]] += 1
+            moves.append(measured["move_units"])
+        total = sum(counts.values())
+        baseline[direction] = {
+            "total": total,
+            **counts,
+            "median_move_units": round(median(moves), 3) if moves else None,
+        }
+    return baseline
+
+
+def format_baseline(baseline: Mapping[str, Any]) -> str:
+    lines = [
+        "",
+        "    LINHA DE BASE - entrar em todo quadro com escada, sem classificador",
+        "    (o controle: sinal que acerta igual a esta linha, na mesma direção,",
+        "    não escolheu nada; quem pagou foi a direção do período)",
+        "    direção    n   favorável   neutra   adversa   mediano",
+    ]
+    for direction in ("BUY", "SELL"):
+        bucket = baseline.get(direction) or {}
+        total = bucket.get("total") or 0
+        if not total:
+            continue
+        lines.append(
+            f"    {direction:<7} {total:>4}   "
+            f"{bucket[FAVORABLE]:>4} ({bucket[FAVORABLE] / total:>4.0%})   "
+            f"{bucket[NEUTRAL]:>4}   {bucket[ADVERSE]:>4}   "
+            f"{bucket['median_move_units']:>7}"
+        )
+    if not any((baseline.get(direction) or {}).get("total") for direction in ("BUY", "SELL")):
+        lines.append("    Nenhum quadro pôde ser acompanhado até o horizonte.")
+    lines.append(
+        "    Quadros com escada: "
+        f"{baseline.get('frames_with_ladder', 0)} · entrada na vela mais recente"
+    )
+    lines.append(
+        "    Quadros vizinhos leem a mesma vela: o n efetivo é menor que o n impresso."
+    )
+    return "\n".join(lines)
 
 
 def _percentile(values: Sequence[float], fraction: float) -> float:
@@ -975,6 +1078,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         for horizon in args.horizon_bars
     ]
+    baseline_by_horizon = [
+        compute_baseline(
+            frames,
+            bar_seconds=args.bar_seconds,
+            horizon_bars=horizon,
+            min_move_units=args.min_move,
+        )
+        for horizon in args.horizon_bars
+    ]
     sweeps: list[tuple[str, list[dict[str, Any]]]] = []
     for spec in args.sweep:
         try:
@@ -992,6 +1104,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "sweeps": {parameter: results for parameter, results in sweeps},
                     "accuracy_available": False,
                     "outcomes": outcomes_by_horizon,
+                    "baseline": baseline_by_horizon,
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -999,8 +1112,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     else:
         print(format_report(summary, sweeps))
-        for outcomes in outcomes_by_horizon:
+        for outcomes, baseline in zip(outcomes_by_horizon, baseline_by_horizon):
             print(format_outcomes(outcomes))
+            print(format_baseline(baseline))
     return 0
 
 

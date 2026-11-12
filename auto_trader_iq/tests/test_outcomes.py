@@ -4,7 +4,9 @@ from auto_trader_iq.grade_report import (
     ADVERSE,
     FAVORABLE,
     NEUTRAL,
+    compute_baseline,
     compute_outcomes,
+    format_baseline,
     format_outcomes,
 )
 
@@ -187,6 +189,45 @@ class BreakdownTests(unittest.TestCase):
         })
         self.assertIn("Por motivo registrado", text)
         self.assertIn("corpo esticado", text)
+
+
+class BaselineTests(unittest.TestCase):
+    def test_baseline_has_no_classifier_and_uses_every_frame(self):
+        # Nenhum quadro é sinal: a linha de base não depende de A/B/C.
+        frames = [
+            frame("2026-11-11T18:00:00+00:00", "NO_TRADE", "BUY", 0, [100.0] * 5),
+            frame("2026-11-11T18:03:00+00:00", "NO_TRADE", "BUY", 0,
+                  [180.0, 100.0, 100.0, 100.0]),
+        ]
+        baseline = compute_baseline(frames)
+        self.assertEqual(baseline["frames_with_ladder"], 2)
+        self.assertEqual(baseline["BUY"][ADVERSE], 1)
+        self.assertEqual(baseline["SELL"][FAVORABLE], 1)
+
+    def test_baseline_reports_both_directions_on_a_trend(self):
+        frames = [frame("2026-11-11T18:00:00+00:00", "NO_TRADE", "SELL", 0, [100.0] * 5)]
+        for minute in range(1, 4):
+            frames.append(frame(
+                f"2026-11-11T18:0{minute}:00+00:00", "NO_TRADE", "SELL", 0,
+                [180.0, 140.0, 110.0, 100.0, 100.0],
+            ))
+        baseline = compute_baseline(frames, horizon_bars=3)
+        self.assertEqual(baseline["SELL"][FAVORABLE], 1)
+        self.assertEqual(baseline["BUY"][ADVERSE], 1)
+
+    def test_baseline_text_is_rendered_and_printable(self):
+        frames = [
+            frame("2026-11-11T18:00:00+00:00", "A", "BUY", 0, [100.0] * 5),
+            frame("2026-11-11T18:03:00+00:00", "A", "BUY", 0, [140.0] * 5),
+        ]
+        text = format_baseline(compute_baseline(frames))
+        self.assertIn("LINHA DE BASE", text)
+        self.assertIn("BUY", text)
+        text.encode("cp1252")
+
+    def test_baseline_is_empty_when_no_frame_has_a_ladder(self):
+        text = format_baseline(compute_baseline([]))
+        self.assertIn("Nenhum quadro", text)
 
 
 class FormatTests(unittest.TestCase):
