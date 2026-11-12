@@ -42,7 +42,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Validação local do relógio M1 · sequência {sequence_name}")
     print(f"Quadros no manifesto: {report.total_rows}")
     print(
-        f"Leituras válidas (confiança ≥ {args.confianca_minima:g}%): "
+        f"Leituras válidas (confiança >= {args.confianca_minima:g}%): "
         f"{report.valid_clock_rows}/{report.total_rows}"
     )
     print(f"Quadros sem relógio válido: {report.unreadable_or_low_confidence_rows}")
@@ -54,7 +54,7 @@ def main(argv: list[str] | None = None) -> int:
         for transition in rollovers:
             print(
                 f"  linha {transition.previous.row_number} {transition.previous.clock_text}"
-                f" → linha {transition.current.row_number} {transition.current.clock_text}"
+                f" -> linha {transition.current.row_number} {transition.current.clock_text}"
                 f" ({_format_gap(transition.recorder_gap_seconds)})"
             )
     else:
@@ -66,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
         for transition in discontinuities:
             print(
                 f"  linha {transition.previous.row_number} {transition.previous.clock_text}"
-                f" → linha {transition.current.row_number} {transition.current.clock_text}"
+                f" -> linha {transition.current.row_number} {transition.current.clock_text}"
                 f" ({_format_gap(transition.recorder_gap_seconds)})"
             )
 

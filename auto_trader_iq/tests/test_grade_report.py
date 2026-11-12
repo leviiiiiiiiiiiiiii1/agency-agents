@@ -153,6 +153,27 @@ class DiagnosisTests(unittest.TestCase):
         self.assertIn("mercado lateralizado", text)
 
 
+class WindowsEncodingTests(unittest.TestCase):
+    def test_report_text_fits_the_windows_codepage(self):
+        # Console e pipes do Windows usam cp1252; um caractere fora dela derruba
+        # o relatório inteiro com UnicodeEncodeError no meio da impressão.
+        text = format_report(
+            summarize([frame("A"), frame("C", reasons=("mercado lateralizado",))])
+        )
+        text.encode("cp1252")
+
+    def test_main_reconfigures_stdout_before_printing(self):
+        import io
+        import sys
+
+        stream = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+        with mock.patch.object(sys, "stdout", stream):
+            with mock.patch("auto_trader_iq.grade_report.load_frames", return_value=[]):
+                with mock.patch("auto_trader_iq.grade_report.load_tracks", return_value=[]):
+                    main(["--json"])
+        self.assertEqual(stream.encoding.lower().replace("-", ""), "utf8")
+
+
 class TrackTests(unittest.TestCase):
     def test_tracks_are_not_presented_as_signals(self):
         tracks = [{"tracking_id": "t1"}, {"tracking_id": "t2"}]

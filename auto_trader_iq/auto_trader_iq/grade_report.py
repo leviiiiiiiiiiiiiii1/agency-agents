@@ -707,7 +707,7 @@ def format_report(summary: Mapping[str, Any], sweeps: Sequence[tuple[str, Sequen
     lines.append(f"Quadros com paleta calibrada: {summary['palette_calibrated_frames']}")
     lines.append(f"Sessões: {summary['sessions']}")
     lines.append(
-        f"Período: {summary['first_frame_at_utc']} → {summary['last_frame_at_utc']}"
+        f"Período: {summary['first_frame_at_utc']} -> {summary['last_frame_at_utc']}"
     )
     if summary["criteria_hashes"]:
         lines.append(f"Hash(es) dos limiares: {', '.join(summary['criteria_hashes'])}")
@@ -896,7 +896,22 @@ def _parse_sweep(spec: str) -> tuple[str, list[Any]]:
     return parameter, values
 
 
+def _make_stdout_printable() -> None:
+    """Console e pipes do Windows usam cp1252 e quebram o relatório em qualquer
+    caractere fora dessa pagina de codigo (aconteceu com a seta unicode ao
+    usar Tee-Object)."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            pass
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    _make_stdout_printable()
     parser = argparse.ArgumentParser(
         description="Resume as medidas de classificação gravadas no journal (somente leitura)."
     )

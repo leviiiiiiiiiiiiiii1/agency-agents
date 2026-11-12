@@ -190,6 +190,13 @@ class BreakdownTests(unittest.TestCase):
 
 
 class FormatTests(unittest.TestCase):
+    def test_outcome_text_fits_the_windows_codepage(self):
+        frames = [
+            frame("2026-11-11T18:00:00+00:00", "A", "BUY", 0, [140.0] * 5),
+            frame("2026-11-11T18:03:00+00:00", "A", "BUY", 0, [100.0, 140.0, 140.0, 140.0]),
+        ]
+        format_outcomes(compute_outcomes(frames)).encode("cp1252")
+
     def test_report_states_it_is_not_a_hit_rate(self):
         text = format_outcomes(compute_outcomes([]))
         self.assertIn("NÃO é taxa de acerto", text)
