@@ -1219,6 +1219,8 @@ def _flow_stratified_edge(
             cells.append(
                 {
                     "deviation": bucket.get("acerta", 0) - rate * total,
+                    "wins": bucket.get("acerta", 0),
+                    "base_rate_times_total": rate * total,
                     "variance": rate * (1 - rate) * total,
                     "total": total,
                     "margin": bucket.get("acerta", 0) / total - rate,
@@ -1241,6 +1243,8 @@ def _flow_stratified_edge(
         else 0.0
     )
     bets = sum(cell["total"] for cell in cells)
+    wins = sum(cell["wins"] for cell in cells)
+    base_wins = sum(cell["base_rate_times_total"] for cell in cells)
     # Quantas apostas elegíveis faltam para o z passar de 1.96 mantendo o
     # desvio por aposta observado. Sem isso o usuário não sabe se capturar
     # mais dez minutos ou mais dez horas.
@@ -1252,6 +1256,8 @@ def _flow_stratified_edge(
     return {
         "blocks": len(cells),
         "bets": bets,
+        "wins": wins,
+        "base_rate": (base_wins / bets) if bets else 0.0,
         "deviation": deviation,
         "variance": variance,
         "z": deviation / math.sqrt(variance),
@@ -1306,6 +1312,24 @@ def _flow_edge_verdict(rows: Sequence[Mapping[str, Any]]) -> list[str]:
             f"    Ritmo atual: {margin * 100:+.1f}pp por aposta em {bets} apostas"
             f" elegíveis; z = 1.96 exigiria ~{needed:.0f}."
         )
+    # A vantagem que decide não é "acima de zero", é acima do payout: a base
+    # deste bloco já paga parte da conta, e o resto tem de vir da regra.
+    if bets:
+        margin = edge["deviation"] / bets
+        spread = 1.96 * math.sqrt(edge["variance"]) / bets
+        base_rate = float(edge.get("base_rate") or 0.0)
+        lines.append(
+            f"    Vantagem por aposta: {margin * 100:+.1f}pp"
+            f" [{(margin - spread) * 100:+.1f}pp, {(margin + spread) * 100:+.1f}pp]"
+            f" em {bets} · a base desses blocos já entrega {base_rate:.0%}"
+            f" (o payout de {PAYOUT_MIN:.0%} exige {_breakeven(PAYOUT_MIN):.1%}),"
+            " então a regra só vale o que passar disso."
+        )
+        if margin - spread < 0:
+            lines.append(
+                "    O intervalo da vantagem ainda cruza zero: este dado não "
+                "distingue a regra de não ter regra nenhuma."
+            )
     if edge["blocks"] > 1 and edge["z_without_best"] < 1.0:
         lines.append(
             f"    Sem a melhor célula ({edge['best_label']},"
