@@ -691,7 +691,9 @@ def compute_session_comparison(
                     min_move_units,
                 )
                 if flow_measured is not None:
-                    slot["flow"].append(flow_measured)
+                    slot["flow"].append(
+                        {**flow_measured, "direction": flow_directions[0]}
+                    )
 
         measured = _measure(
             timeline, frame, "BUY", 0, bar_seconds, horizon_bars, min_move_units
@@ -738,6 +740,13 @@ def compute_session_comparison(
                 "following": _summarize_items(slot["following"]),
                 "against": _summarize_items(slot["against"]),
                 "flow": _summarize_items(slot["flow"]),
+                "flow_by_direction": {
+                    direction: _summarize_items(
+                        [item for item in slot["flow"] if item["direction"] == direction]
+                    )
+                    for direction in ("BUY", "SELL")
+                    if any(item["direction"] == direction for item in slot["flow"])
+                },
             }
         )
     return rows
@@ -929,6 +938,16 @@ def format_session_comparison(rows: Sequence[Mapping[str, Any]]) -> str:
             )
         detail = " · ".join(parts) if parts else "(sem sinal)"
         lines.append(f"    {started:<17} {detail}")
+        flow_split = row.get("flow_by_direction") or {}
+        if flow_split:
+            pieces = []
+            for direction, bucket in flow_split.items():
+                bucket_total = bucket["total"] or 1
+                pieces.append(
+                    f"{direction} {bucket[FAVORABLE]}/{bucket['total']}"
+                    f" ({bucket[FAVORABLE] / bucket_total:.0%})"
+                )
+            lines.append("        fluxo 2+ por direção: " + " · ".join(pieces))
     return "\n".join(lines)
 
 

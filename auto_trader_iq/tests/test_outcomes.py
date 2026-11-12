@@ -438,6 +438,7 @@ class SessionComparisonTests(unittest.TestCase):
         ]
         rows = compute_session_comparison(frames, horizon_bars=3)
         self.assertEqual(rows[0]["flow"]["total"], 1)
+        self.assertEqual(rows[0]["flow_by_direction"]["BUY"]["total"], 1)
 
     def test_session_table_is_rendered(self):
         frames = [
