@@ -1181,58 +1181,92 @@ FLOW_EDGE_MIN_MARGIN = 0.10
 FLOW_EDGE_MIN_SESSIONS = 3
 
 
+FLOW_STRATIFIED_MIN = 15
+
+
+def _flow_stratified_edge(
+    rows: Sequence[Mapping[str, Any]]
+) -> dict[str, float] | None:
+    """Vantagem da regra DENTRO de cada bloco e direção.
+
+    Somar os acertos e comparar com uma base agregada é o erro clássico: a regra
+    aposta mais nos blocos em que a direção já pagava, e a média sobe sem que ela
+    tenha escolhido nada. Aqui cada bloco contribui só com o desvio entre o que a
+    regra acertou e o que a base do MESMO bloco previa, e a variância desses
+    desvios dá o z.
+    """
+    deviation = 0.0
+    variance = 0.0
+    used = 0
+    for row in rows:
+        for direction in ("BUY", "SELL"):
+            bucket = (row.get("flow_by_direction") or {}).get(direction)
+            base = (row.get("base_by_direction") or {}).get(direction)
+            if not bucket or not base:
+                continue
+            total = int(bucket.get("total") or 0)
+            base_total = int(base.get("total") or 0)
+            if total < FLOW_STRATIFIED_MIN or not base_total:
+                continue
+            rate = base.get("acerta", 0) / base_total
+            deviation += bucket.get("acerta", 0) - rate * total
+            variance += rate * (1 - rate) * total
+            used += 1
+    if not used or variance <= 0:
+        return None
+    return {
+        "blocks": used,
+        "deviation": deviation,
+        "variance": variance,
+        "z": deviation / math.sqrt(variance),
+    }
+
+
 def _flow_edge_verdict(rows: Sequence[Mapping[str, Any]]) -> list[str]:
-    """Traduz o controle por sessão no veredito que já estava combinado."""
+    """Veredito da regra de fluxo, controlando bloco e direção."""
     lines = [
-        "    CONTROLE DA REGRA DE FLUXO - acerto sobre a base cega da MESMA sessão",
-        f"    (uma aposta por vela; só entra sessão/direção com n >= {FLOW_EDGE_MIN_SAMPLE};"
-        f" vantagem = delta >= {FLOW_EDGE_MIN_MARGIN:.0%} no acerto)",
+        "    CONTROLE DA REGRA DE FLUXO - acerto sobre a base cega do MESMO bloco",
+        f"    (uma aposta por vela; bloco = 60 min; só entra bloco/direção com n >="
+        f" {FLOW_STRATIFIED_MIN})",
     ]
-    wins_by_direction: dict[str, int] = {}
-    counted_total = 0
-    losses = 0
     for direction in ("BUY", "SELL"):
-        wins = counted = 0
+        deltas = []
         for row in rows:
             bucket = (row.get("flow_by_direction") or {}).get(direction)
             base = (row.get("base_by_direction") or {}).get(direction)
             if not bucket or not base:
                 continue
-            bucket_total = int(bucket.get("total") or 0)
+            total = int(bucket.get("total") or 0)
             base_total = int(base.get("total") or 0)
-            if bucket_total < FLOW_EDGE_MIN_SAMPLE or not base_total:
+            if total < FLOW_STRATIFIED_MIN or not base_total:
                 continue
-            counted += 1
-            # A régua é o acerto na expiração, não o deslocamento de meia faixa:
-            # é o acerto que se compara com o payout.
             delta = (
-                bucket.get("acerta", 0) / bucket_total
-                - base.get("acerta", 0) / base_total
+                bucket.get("acerta", 0) / total - base.get("acerta", 0) / base_total
             )
-            if delta >= FLOW_EDGE_MIN_MARGIN:
-                wins += 1
-            elif delta < 0:
-                losses += 1
-        wins_by_direction[direction] = wins
-        counted_total += counted
-        lines.append(f"    {direction}: {wins}/{counted} sessão(ões) com vantagem")
-    if counted_total < FLOW_EDGE_MIN_SESSIONS:
-        # Julgar com zero sessões elegíveis seria inventar veredito.
+            deltas.append(f"{delta:+.0%} (n={total})")
         lines.append(
-            "    Regra de fluxo: amostra insuficiente para julgar - são necessários"
-            f" {FLOW_EDGE_MIN_SESSIONS} blocos com n >= {FLOW_EDGE_MIN_SAMPLE},"
-            f" e só {counted_total} chegou lá."
+            f"    {direction}: " + (" · ".join(deltas) if deltas else "sem bloco elegível")
+        )
+    edge = _flow_stratified_edge(rows)
+    if edge is None:
+        lines.append(
+            "    Regra de fluxo: amostra insuficiente para julgar - nenhum bloco"
+            " com n suficiente em apostas independentes."
         )
         return lines
-    if max(wins_by_direction.values()) >= FLOW_EDGE_MIN_SESSIONS and losses == 0:
+    lines.append(
+        f"    Vantagem estratificada: {edge['deviation']:+.1f} acerto(s) acima do"
+        f" esperado em {int(edge['blocks'])} bloco(s) · z = {edge['z']:.2f}"
+    )
+    if edge["z"] >= 1.96 and edge["deviation"] > 0:
         lines.append(
-            "    Regra de fluxo: vantagem própria em sessões suficientes - "
-            "candidata a veredito, sujeita a aprovação."
+            "    Regra de fluxo: vantagem própria além da composição de blocos -"
+            " candidata a veredito, sujeita a aprovação."
         )
     else:
         lines.append(
-            "    Regra de fluxo: sem vantagem própria sustentada - não adotar "
-            "como veredito de entrada."
+            "    Regra de fluxo: sem evidência de vantagem própria - o que aparece"
+            " no agregado é compatível com composição de blocos. Não adotar."
         )
     return lines
 

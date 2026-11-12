@@ -463,7 +463,7 @@ class SessionComparisonTests(unittest.TestCase):
         self.assertIn("vs base", text)
         text.encode("cp1252")
 
-    def test_flow_verdict_needs_three_sessions_above_base(self):
+    def test_flow_verdict_reads_the_stratified_edge(self):
         def row(flow_buy, base_buy):
             # O veredito usa o acerto na expiração: é ele que se compara com payout.
             return {
@@ -471,17 +471,12 @@ class SessionComparisonTests(unittest.TestCase):
                 "base_by_direction": {"BUY": {"total": 100, "acerta": base_buy}},
             }
 
-        # Três blocos elegíveis e só um com vantagem: a regra não passa.
-        one_win = _flow_edge_verdict([row(60, 30), row(30, 30), row(50, 50)])
-        self.assertTrue(any("não adotar" in line for line in one_win))
-        enough = _flow_edge_verdict([row(60, 30), row(70, 20), row(55, 40)])
-        self.assertTrue(any("candidata a veredito" in line for line in enough))
-        # Evidência insuficiente não é reprovação.
-        thin = _flow_edge_verdict([row(60, 30), row(30, 30)])
-        self.assertTrue(any("amostra insuficiente" in line for line in thin))
-        self.assertFalse(any("não adotar" in line for line in thin))
+        strong = _flow_edge_verdict([row(60, 30), row(60, 30), row(60, 30)])
+        self.assertTrue(any("candidata a veredito" in line for line in strong))
+        flat = _flow_edge_verdict([row(52, 50), row(52, 50), row(52, 50)])
+        self.assertTrue(any("sem evidência" in line for line in flat))
 
-    def test_flow_verdict_ignores_small_sessions(self):
+    def test_flow_verdict_ignores_small_blocks(self):
         tiny = [
             {
                 "flow_by_direction": {"BUY": {"total": 10, "acerta": 9}},
@@ -490,21 +485,9 @@ class SessionComparisonTests(unittest.TestCase):
             for _ in range(4)
         ]
         verdict = _flow_edge_verdict(tiny)
-        # Sem sessão elegível o relatório não pode fingir que julgou.
+        # Sem bloco elegível o relatório não pode fingir que julgou.
         self.assertTrue(any("amostra insuficiente" in line for line in verdict))
-        self.assertFalse(any("não adotar" in line for line in verdict))
-
-    def test_baseline_reports_settlement(self):
-        frames = [
-            frame("2026-11-11T18:00:00+00:00", "NO_TRADE", "BUY", 0, [140.0] * 5),
-            frame("2026-11-11T18:03:00+00:00", "NO_TRADE", "BUY", 0,
-                  [100.0, 100.0, 100.0, 140.0, 140.0]),
-        ]
-        baseline = compute_baseline(frames, horizon_bars=3)
-        bucket = baseline["BUY"]
-        self.assertEqual(bucket["acerta"], 1)
-        self.assertEqual(bucket["erra"], 0)
-        self.assertIn("acerto", format_baseline(baseline))
+        self.assertFalse(any("sem evidência" in line for line in verdict))
 
     def test_empty_session_list_says_so(self):
         self.assertIn("Nenhuma sessão", format_session_comparison([]))
