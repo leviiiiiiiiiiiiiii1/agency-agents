@@ -1173,7 +1173,10 @@ def format_session_comparison(rows: Sequence[Mapping[str, Any]]) -> str:
 # escolhido depois de ver o número: a regra de fluxo só passa se bater a base
 # cega da própria sessão em pelo menos 3 sessões, e nenhuma sessão grande pode
 # ficar abaixo da base.
-FLOW_EDGE_MIN_SAMPLE = 50
+# Um bloco de 60 min tem no máximo 60 candles, e a regra de fluxo só aparece em
+# ~47% deles: ~28 apostas por bloco é o teto. Exigir 50 por bloco seria exigir o
+# impossível; 25 é o piso que um bloco cheio consegue entregar.
+FLOW_EDGE_MIN_SAMPLE = 25
 FLOW_EDGE_MIN_MARGIN = 0.10
 FLOW_EDGE_MIN_SESSIONS = 3
 
