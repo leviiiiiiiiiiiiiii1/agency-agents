@@ -475,9 +475,15 @@ def compute_baseline(
     # Mesma ideia, agora com a única condição que separou algo nos sinais:
     # apostar a favor do movimento anterior, em TODO quadro, sem classificador.
     situations: dict[str, list[dict[str, Any]]] = {}
+    situations_by_direction: dict[str, dict[str, list[dict[str, Any]]]] = {}
 
     def _add(situation: str, measured: Mapping[str, Any]) -> None:
         situations.setdefault(situation, []).append(dict(measured))
+
+    def _add_directed(situation: str, direction: str, measured: Mapping[str, Any]) -> None:
+        situations_by_direction.setdefault(situation, {}).setdefault(direction, []).append(
+            dict(measured)
+        )
 
     for frame in timeline:
         measured = _measure(
@@ -499,22 +505,35 @@ def compute_baseline(
             _add("movimento anterior parado", measured)
             continue
         with_move = measured if trailing > 0 else _flip(measured)
+        ahead = "BUY" if trailing > 0 else "SELL"
+        behind = "SELL" if ahead == "BUY" else "BUY"
+        opposite = _flip(with_move)
         _add("seguindo o movimento anterior", with_move)
-        _add("contra o movimento anterior", _flip(with_move))
+        _add("contra o movimento anterior", opposite)
+        _add_directed("seguindo o movimento anterior", ahead, with_move)
+        _add_directed("contra o movimento anterior", behind, opposite)
 
-    by_situation: dict[str, Any] = {}
-    for situation, items in situations.items():
+    def _summarize(items: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         counts = {FAVORABLE: 0, NEUTRAL: 0, ADVERSE: 0}
         moves = []
         for item in items:
             counts[item["outcome"]] += 1
             moves.append(item["move_units"])
-        by_situation[situation] = {
+        return {
             "total": len(items),
             **counts,
             "median_move_units": round(median(moves), 3) if moves else None,
         }
-    baseline["by_situation"] = by_situation
+
+    baseline["by_situation"] = {
+        situation: _summarize(items) for situation, items in situations.items()
+    }
+    baseline["by_situation_direction"] = {
+        situation: {
+            direction: _summarize(items) for direction, items in directions.items()
+        }
+        for situation, directions in situations_by_direction.items()
+    }
     return baseline
 
 
@@ -565,6 +584,25 @@ def format_baseline(baseline: Mapping[str, Any]) -> str:
                 f"{bucket[NEUTRAL]:>4}   {bucket[ADVERSE]:>4}   "
                 f"{bucket['median_move_units']:>7}"
             )
+        split = baseline.get("by_situation_direction") or {}
+        if split:
+            lines.append("")
+            lines.append(
+                "    Mesma linha de base, com a direção de cada aposta (sem isso a"
+                " queda puxa a média):"
+            )
+            lines.append(
+                "    situação                        direção    n   favorável   neutra   adversa   mediano"
+            )
+            for situation, directions in split.items():
+                for direction, bucket in directions.items():
+                    total = bucket["total"] or 1
+                    lines.append(
+                        f"    {situation:<30} {direction:<7} {total:>4}   "
+                        f"{bucket[FAVORABLE]:>4} ({bucket[FAVORABLE] / total:>4.0%})   "
+                        f"{bucket[NEUTRAL]:>4}   {bucket[ADVERSE]:>4}   "
+                        f"{bucket['median_move_units']:>7}"
+                    )
         lines.append(
             "    Se seguir o movimento rende aqui o mesmo que nos sinais, a classe não"
         )

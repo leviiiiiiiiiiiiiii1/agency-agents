@@ -274,6 +274,17 @@ class BaselineTests(unittest.TestCase):
         self.assertEqual(following[FAVORABLE], 1)
         self.assertEqual(against[ADVERSE], 1)
 
+    def test_baseline_situation_keeps_the_bet_direction(self):
+        frames = [
+            frame("2026-11-11T18:00:00+00:00", "NO_TRADE", "BUY", 0, [100.0] * 7),
+            frame("2026-11-11T18:03:00+00:00", "NO_TRADE", "BUY", 0,
+                  [100.0, 120.0, 130.0, 140.0, 150.0, 160.0, 180.0]),
+        ]
+        baseline = compute_baseline(frames, horizon_bars=3)
+        split = baseline["by_situation_direction"]["seguindo o movimento anterior"]
+        self.assertEqual(split["BUY"][FAVORABLE], 1)
+        self.assertNotIn("SELL", split)
+
     def test_baseline_situation_block_is_rendered(self):
         frames = [
             frame("2026-11-11T18:00:00+00:00", "NO_TRADE", "BUY", 0, [100.0] * 7),
@@ -283,6 +294,7 @@ class BaselineTests(unittest.TestCase):
         text = format_baseline(compute_baseline(frames, horizon_bars=3))
         self.assertIn("seguindo (ou contrariando) o movimento anterior", text)
         self.assertIn("seguindo o movimento anterior", text)
+        self.assertIn("com a direção de cada aposta", text)
         text.encode("cp1252")
 
     def test_baseline_text_is_rendered_and_printable(self):
