@@ -191,6 +191,43 @@ class BreakdownTests(unittest.TestCase):
         self.assertIn("corpo esticado", text)
 
 
+class AlignmentTests(unittest.TestCase):
+    """O sinal só vale se não for apenas repetição do que já andou."""
+
+    def probe(self, direction, code, closes):
+        signal = frame("2026-11-11T18:00:00+00:00", code, direction, 0, [100.0] * 7)
+        reference = frame("2026-11-11T18:03:00+00:00", "NO_TRADE", direction, 0, closes)
+        return compute_outcomes([signal, reference])
+
+    def test_buy_after_a_rise_is_aligned(self):
+        # closes[6]=180 (preço mais baixo antes) -> subiu; entrada em closes[3]=100.
+        result = self.probe("BUY", "A", [140.0, 140.0, 140.0, 100.0, 100.0, 100.0, 180.0])
+        self.assertEqual(result["by_alignment"]["a favor do movimento anterior"]["adversa"], 1)
+
+    def test_sell_after_a_fall_is_aligned(self):
+        # entrada em closes[3]=180, preço cai até closes[0]=220 (y maior) e já
+        # vinha caindo (closes[6]=100, y menor = preço mais alto antes).
+        result = self.probe("SELL", "C", [220.0, 220.0, 220.0, 180.0, 180.0, 180.0, 100.0])
+        self.assertEqual(
+            result["by_alignment"]["a favor do movimento anterior"]["favorável"], 1
+        )
+
+    def test_buy_after_a_fall_contradicts_the_move(self):
+        result = self.probe("BUY", "A", [140.0, 140.0, 140.0, 100.0, 100.0, 100.0, 60.0])
+        self.assertEqual(result["by_alignment"]["contra o movimento anterior"]["adversa"], 1)
+
+    def test_short_ladder_is_counted_as_missing_history(self):
+        result = self.probe("BUY", "A", [140.0, 140.0, 140.0, 100.0])
+        self.assertEqual(result["by_alignment"]["sem histórico no quadro"]["adversa"], 1)
+
+    def test_alignment_block_is_rendered(self):
+        result = self.probe("BUY", "A", [140.0, 140.0, 140.0, 100.0, 100.0, 100.0, 180.0])
+        text = format_outcomes(result)
+        self.assertIn("SINAL SEGUE OU CONTRARIA O MOVIMENTO ANTERIOR", text)
+        self.assertIn("a favor do movimento anterior", text)
+        text.encode("cp1252")
+
+
 class BaselineTests(unittest.TestCase):
     def test_baseline_has_no_classifier_and_uses_every_frame(self):
         # Nenhum quadro é sinal: a linha de base não depende de A/B/C.

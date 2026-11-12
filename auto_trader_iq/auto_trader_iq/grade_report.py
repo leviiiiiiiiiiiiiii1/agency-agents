@@ -235,7 +235,22 @@ def _measure(
         outcome = ADVERSE
     else:
         outcome = NEUTRAL
-    return {"outcome": outcome, "move_units": move, "bars_elapsed": bars_elapsed}
+    # Mesma janela, imediatamente ANTES da vela de entrada: o sinal só repete
+    # um movimento que já aconteceu, ou está apostando contra ele?
+    trailing = None
+    trailing_index = entry_index + bars_elapsed
+    if trailing_index < len(closes):
+        older = closes[trailing_index]
+        if older is not None:
+            trailing = round((float(older) - float(entry_now)) / float(typical_range), 3)
+            if trailing == 0:
+                trailing = 0.0
+    return {
+        "outcome": outcome,
+        "move_units": move,
+        "bars_elapsed": bars_elapsed,
+        "trailing_units": trailing,
+    }
 
 
 def compute_outcomes(
@@ -315,6 +330,24 @@ def compute_outcomes(
             "median_move_units": round(median(moves), 3) if moves else None,
         }
 
+    aligned: dict[str, list[dict[str, Any]]] = {}
+    for item in results:
+        trailing = item.get("trailing_units")
+        if trailing is None:
+            aligned.setdefault("sem histórico no quadro", []).append(item)
+        elif (trailing > 0 and item["direction"] == "BUY") or (
+            trailing < 0 and item["direction"] == "SELL"
+        ):
+            aligned.setdefault("a favor do movimento anterior", []).append(item)
+        elif trailing == 0:
+            aligned.setdefault("movimento anterior parado", []).append(item)
+        else:
+            aligned.setdefault("contra o movimento anterior", []).append(item)
+    by_alignment = {
+        situation: _bucket(items)
+        for situation, items in sorted(aligned.items(), key=lambda pair: -len(pair[1]))
+    }
+
     by_reason: dict[str, dict[str, Any]] = {}
     for item in results:
         for reason in item["reasons"]:
@@ -356,6 +389,7 @@ def compute_outcomes(
         "evaluated": len(results),
         "by_direction": by_reason_direction,
         "by_grade_direction": by_grade_direction,
+        "by_alignment": by_alignment,
         "by_reason": dict(
             sorted(reasons_summary.items(), key=lambda item: (-item[1]["total"], item[0]))
         ),
@@ -772,6 +806,30 @@ def format_outcomes(outcomes: Mapping[str, Any]) -> str:
                 "    Células com menos de 5 sinais não sustentam leitura; compare classes"
             )
             lines.append("    dentro da mesma direção, não entre direções.")
+
+        alignment = outcomes.get("by_alignment") or {}
+        if alignment:
+            lines.append("")
+            lines.append(
+                "    SINAL SEGUE OU CONTRARIA O MOVIMENTO ANTERIOR (mesma janela,"
+                " antes da entrada):"
+            )
+            lines.append(
+                "    situação                        n   favorável   neutra   adversa   mediano"
+            )
+            for situation, bucket in alignment.items():
+                total = bucket["total"] or 1
+                lines.append(
+                    f"    {situation:<30} {bucket['total']:>4}   "
+                    f"{bucket['favorável']:>4} ({bucket['favorável'] / total:>4.0%})   "
+                    f"{bucket['neutra']:>4}   {bucket['adversa']:>4}   "
+                    f"{bucket['median_move_units']:>7}"
+                )
+            lines.append(
+                "    Se quase todo sinal está a favor do que já andou, o app segue o"
+                " movimento"
+            )
+            lines.append("    em vez de escolher ponto de virada.")
 
         reasons = outcomes.get("by_reason") or {}
         if reasons:
