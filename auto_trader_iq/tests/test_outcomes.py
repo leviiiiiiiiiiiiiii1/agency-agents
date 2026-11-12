@@ -341,6 +341,33 @@ class BaselineTests(unittest.TestCase):
         self.assertEqual(split["BUY"][FAVORABLE], 1)
         self.assertNotIn("SELL", split)
 
+    def test_baseline_separates_regimes(self):
+        lateral = frame("2026-11-11T18:00:00+00:00", "NO_TRADE", "BUY", 0, [100.0] * 7)
+        lateral["context_regime"] = "lateral"
+        flow = frame("2026-11-11T18:10:00+00:00", "NO_TRADE", "BUY", 0, [100.0] * 7)
+        flow["context_regime"] = "flow"
+        frames = [
+            lateral,
+            frame("2026-11-11T18:03:00+00:00", "NO_TRADE", "BUY", 0,
+                  [100.0, 110.0, 120.0, 130.0, 140.0, 150.0, 180.0]),
+            flow,
+            frame("2026-11-11T18:13:00+00:00", "NO_TRADE", "BUY", 0,
+                  [100.0, 110.0, 120.0, 130.0, 140.0, 150.0, 180.0]),
+        ]
+        baseline = compute_baseline(frames, horizon_bars=3)
+        self.assertEqual(baseline["by_regime"]["lateral"]["seguir"]["total"], 1)
+        self.assertEqual(baseline["by_regime"]["flow"]["seguir"]["total"], 1)
+
+    def test_regime_block_is_rendered(self):
+        frames = [
+            frame("2026-11-11T18:00:00+00:00", "NO_TRADE", "BUY", 0, [100.0] * 7),
+            frame("2026-11-11T18:03:00+00:00", "NO_TRADE", "BUY", 0,
+                  [100.0, 110.0, 120.0, 130.0, 140.0, 150.0, 180.0]),
+        ]
+        text = format_baseline(compute_baseline(frames, horizon_bars=3))
+        self.assertIn("REGIME LIDO", text)
+        text.encode("cp1252")
+
     def test_baseline_situation_block_is_rendered(self):
         frames = [
             frame("2026-11-11T18:00:00+00:00", "NO_TRADE", "BUY", 0, [100.0] * 7),

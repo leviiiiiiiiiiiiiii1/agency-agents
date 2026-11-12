@@ -563,6 +563,7 @@ def compute_baseline(
     # apostar a favor do movimento anterior, em TODO quadro, sem classificador.
     situations: dict[str, list[dict[str, Any]]] = {}
     situations_by_direction: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    by_regime: dict[str, dict[str, list[dict[str, Any]]]] = {}
 
     def _add(situation: str, measured: Mapping[str, Any]) -> None:
         situations.setdefault(situation, []).append(dict(measured))
@@ -592,6 +593,11 @@ def compute_baseline(
             _add("movimento anterior parado", measured)
             continue
         with_move = measured if trailing > 0 else _flip(measured)
+        regime = str(frame.get("context_regime") or "desconhecido")
+        by_regime.setdefault(regime, {"seguir": [], "contra": []})["seguir"].append(
+            with_move
+        )
+        by_regime[regime]["contra"].append(_flip(with_move))
         ahead = "BUY" if trailing > 0 else "SELL"
         behind = "SELL" if ahead == "BUY" else "BUY"
         opposite = _flip(with_move)
@@ -600,6 +606,13 @@ def compute_baseline(
         _add_directed("seguindo o movimento anterior", ahead, with_move)
         _add_directed("contra o movimento anterior", behind, opposite)
 
+    baseline["by_regime"] = {
+        regime: {
+            "seguir": _summarize_items(groups["seguir"]),
+            "contra": _summarize_items(groups["contra"]),
+        }
+        for regime, groups in by_regime.items()
+    }
     baseline["by_situation"] = {
         situation: _summarize_items(items) for situation, items in situations.items()
     }
@@ -812,6 +825,27 @@ def format_baseline(baseline: Mapping[str, Any]) -> str:
                         f"{bucket[NEUTRAL]:>4}   {bucket[ADVERSE]:>4}   "
                         f"{bucket['median_move_units']:>7}"
                     )
+        regimes = baseline.get("by_regime") or {}
+        if regimes:
+            lines.append("")
+            lines.append(
+                "    REGIME LIDO - seguir o movimento dentro de cada regime (se o regime"
+                " não separa, ele só reduz o funil):"
+            )
+            lines.append("    regime         seguir n/fav     contra n/fav")
+            for regime, groups in sorted(
+                regimes.items(), key=lambda pair: -pair[1]["seguir"]["total"]
+            ):
+                following = groups["seguir"]
+                against = groups["contra"]
+                follow_total = following["total"] or 1
+                against_total = against["total"] or 1
+                lines.append(
+                    f"    {regime:<14} {following['total']:>4}/{following[FAVORABLE]:<3}"
+                    f" ({following[FAVORABLE] / follow_total:>4.0%})   "
+                    f"{against['total']:>4}/{against[FAVORABLE]:<3}"
+                    f" ({against[FAVORABLE] / against_total:>4.0%})"
+                )
         lines.append(
             "    Se seguir o movimento rende aqui o mesmo que nos sinais, a classe não"
         )
