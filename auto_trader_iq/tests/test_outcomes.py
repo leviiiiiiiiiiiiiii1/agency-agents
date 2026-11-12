@@ -457,7 +457,7 @@ class SessionComparisonTests(unittest.TestCase):
                   session="queda"),
         ]
         text = format_session_comparison(compute_session_comparison(frames, horizon_bars=3))
-        self.assertIn("POR SESSÃO", text)
+        self.assertIn("POR BLOCO DE 60 MIN", text)
         self.assertIn("por situação e direção", text)
         self.assertIn("fluxo 2+ x base cega", text)
         self.assertIn("vs base", text)
@@ -471,10 +471,15 @@ class SessionComparisonTests(unittest.TestCase):
                 "base_by_direction": {"BUY": {"total": 100, "acerta": base_buy}},
             }
 
-        one_win = _flow_edge_verdict([row(60, 30), row(30, 30)])
+        # Três blocos elegíveis e só um com vantagem: a regra não passa.
+        one_win = _flow_edge_verdict([row(60, 30), row(30, 30), row(50, 50)])
         self.assertTrue(any("não adotar" in line for line in one_win))
         enough = _flow_edge_verdict([row(60, 30), row(70, 20), row(55, 40)])
         self.assertTrue(any("candidata a veredito" in line for line in enough))
+        # Evidência insuficiente não é reprovação.
+        thin = _flow_edge_verdict([row(60, 30), row(30, 30)])
+        self.assertTrue(any("amostra insuficiente" in line for line in thin))
+        self.assertFalse(any("não adotar" in line for line in thin))
 
     def test_flow_verdict_ignores_small_sessions(self):
         tiny = [

@@ -674,13 +674,25 @@ def compute_session_comparison(
         (frame for frame in frames if frame.get("price_ladder")),
         key=lambda item: str(item.get("occurred_at_utc")),
     )
-    sessions: dict[str, dict[str, Any]] = {}
+    starts: dict[str, float] = {}
+    for frame in timeline:
+        session = str(frame.get("session_id") or "?")
+        when = _parse_time(frame.get("occurred_at_utc"))
+        if when is None:
+            continue
+        if session not in starts or when.timestamp() < starts[session]:
+            starts[session] = when.timestamp()
+    sessions: dict[tuple[str, int], dict[str, Any]] = {}
     bets = set(id(frame) for frame in _one_per_bar(timeline, bar_seconds))
     seen_signal_candles: set[tuple[Any, int]] = set()
     for frame in timeline:
         session = str(frame.get("session_id") or "?")
+        when = _parse_time(frame.get("occurred_at_utc"))
+        block = 0
+        if when is not None and session in starts:
+            block = int((when.timestamp() - starts[session]) // BLOCK_SECONDS)
         slot = sessions.setdefault(
-            session,
+            (session, block),
             {
                 "signals": [],
                 "following": [],
@@ -759,7 +771,9 @@ def compute_session_comparison(
         slot["following"].append(with_move)
         slot["against"].append(_flip(with_move))
     rows = []
-    for session, slot in sorted(sessions.items(), key=lambda pair: str(pair[1]["started_at_utc"])):
+    for (session, block), slot in sorted(
+        sessions.items(), key=lambda pair: str(pair[1]["started_at_utc"])
+    ):
         # Sessão sem sinal ainda interessa: mostra o que a regra de fluxo faria ali.
         if not slot["signals"] and not slot["flow"]:
             continue
@@ -773,6 +787,7 @@ def compute_session_comparison(
         rows.append(
             {
                 "session": session,
+                "block": block,
                 "started_at_utc": slot["started_at_utc"],
                 "signals": _summarize_items(slot["signals"]),
                 "signals_by_direction": {
@@ -813,6 +828,11 @@ def compute_session_comparison(
 
 # Calibração de cor informada pelo usuário: vela branca é de BAIXA neste gráfico.
 COLOR_DIRECTION = {"green": "BUY", "red": "SELL", "white": "SELL"}
+
+# Bloco de comparação: dentro de uma sessão longa, uma hora é o pedaço que pode
+# se comportar como regime próprio. Sem isso, uma sessão de 5 horas vira "uma
+# sessão" e o teste de "é a hora?" não tem como separar nada.
+BLOCK_SECONDS = 3600
 
 FLOW_WINDOW = 5
 
@@ -1053,15 +1073,22 @@ def format_flow_rule(flow: Mapping[str, Any]) -> str:
                     f" {_expected_value(low, PAYOUT_MIN):+.0%}"
                     f" a {_expected_value(high, PAYOUT_MIN):+.0%} por aposta"
                 )
+                if bucket["empata"] / total >= 0.10:
+                    lines.append(
+                        f"    {'':<14} {bucket['empata'] / total:.0%} de empates: o preço"
+                        " não cruzou um pixel dentro da janela. Empate contado como"
+                        " perda; leia este horizonte com cautela."
+                    )
     return "\n".join(lines)
 
 
 def format_session_comparison(rows: Sequence[Mapping[str, Any]]) -> str:
     lines = [
         "",
-        "    POR SESSÃO - sinais e linha de base na MESMA janela de mercado",
-        "    (se o sinal bate a base aqui dentro, o ganho não é o regime da hora)",
-        "    (fluxo e base cega contados uma vez por vela; sinais contados por quadro)",
+        "    POR BLOCO DE 60 MIN - sinais e base na MESMA janela de mercado",
+        "    (sessão longa é cortada em blocos; se o sinal bate a base aqui dentro,",
+        "     o ganho não é o regime da hora)",
+        "    (fluxo, base e sinais contados uma vez por vela)",
         "    início            sinais n/fav     seguir n/fav     fluxo2+ n/fav",
     ]
     if not rows:
@@ -1186,11 +1213,12 @@ def _flow_edge_verdict(rows: Sequence[Mapping[str, Any]]) -> list[str]:
         wins_by_direction[direction] = wins
         counted_total += counted
         lines.append(f"    {direction}: {wins}/{counted} sessão(ões) com vantagem")
-    if not counted_total:
+    if counted_total < FLOW_EDGE_MIN_SESSIONS:
         # Julgar com zero sessões elegíveis seria inventar veredito.
         lines.append(
-            "    Regra de fluxo: amostra insuficiente para julgar - nenhuma sessão"
-            " chegou ao n mínimo em apostas independentes."
+            "    Regra de fluxo: amostra insuficiente para julgar - são necessários"
+            f" {FLOW_EDGE_MIN_SESSIONS} blocos com n >= {FLOW_EDGE_MIN_SAMPLE},"
+            f" e só {counted_total} chegou lá."
         )
         return lines
     if max(wins_by_direction.values()) >= FLOW_EDGE_MIN_SESSIONS and losses == 0:
