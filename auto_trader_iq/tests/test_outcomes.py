@@ -150,6 +150,31 @@ class BreakdownTests(unittest.TestCase):
         result = compute_outcomes(frames)
         self.assertEqual(result["by_direction"]["BUY"]["favorável"], 1)
 
+    def test_grade_direction_cross_tab_keeps_directions_apart(self):
+        frames = [
+            # A compra e acerta; A vende e erra.
+            frame("2026-11-11T18:00:00+00:00", "A", "BUY", 0, [140.0] * 5),
+            frame("2026-11-11T18:03:00+00:00", "NO_TRADE", "BUY", 0,
+                  [100.0, 140.0, 140.0, 140.0]),
+            frame("2026-11-11T18:10:00+00:00", "A", "SELL", 0, [100.0] * 5),
+            frame("2026-11-11T18:13:00+00:00", "NO_TRADE", "SELL", 0,
+                  [100.0, 140.0, 140.0, 140.0]),
+        ]
+        result = compute_outcomes(frames)
+        self.assertEqual(result["by_grade_direction"]["A"]["BUY"]["favorável"], 1)
+        self.assertEqual(result["by_grade_direction"]["A"]["SELL"]["adversa"], 1)
+
+    def test_cross_tab_is_rendered_with_mix(self):
+        frames = [
+            frame("2026-11-11T18:00:00+00:00", "C", "SELL", 0, [100.0] * 5),
+            frame("2026-11-11T18:03:00+00:00", "NO_TRADE", "SELL", 0,
+                  [180.0, 100.0, 100.0, 100.0]),
+        ]
+        text = format_outcomes(compute_outcomes(frames))
+        self.assertIn("Por classe e direção", text)
+        self.assertIn("Mistura de direção por classe", text)
+        self.assertIn("C: SELL 1/1 (100%)", text)
+
     def test_reason_table_is_rendered(self):
         text = format_outcomes({
             "evaluated": 3, "skipped": 0, "horizon_bars": 3, "bar_seconds": 60,

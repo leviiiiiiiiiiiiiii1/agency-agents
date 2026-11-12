@@ -302,6 +302,15 @@ def compute_outcomes(
         if items:
             by_reason_direction[direction] = _bucket(items)
 
+    # Uma classe que quase só emite SELL não pode ser comparada com outra que
+    # quase só emite BUY numa amostra com tendência: o cruzamento separa os dois.
+    by_grade_direction_items: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for item in results:
+        by_grade_direction_items.setdefault((item["grade"], item["direction"]), []).append(item)
+    by_grade_direction: dict[str, dict[str, dict[str, Any]]] = {}
+    for (grade, direction), items in sorted(by_grade_direction_items.items()):
+        by_grade_direction.setdefault(grade, {})[direction] = _bucket(items)
+
     summary: dict[str, Any] = {}
     for grade, bucket in sorted(by_grade.items()):
         total = bucket["favorável"] + bucket["neutra"] + bucket["adversa"]
@@ -318,6 +327,7 @@ def compute_outcomes(
     return {
         "evaluated": len(results),
         "by_direction": by_reason_direction,
+        "by_grade_direction": by_grade_direction,
         "by_reason": dict(
             sorted(reasons_summary.items(), key=lambda item: (-item[1]["total"], item[0]))
         ),
@@ -624,6 +634,42 @@ def format_outcomes(outcomes: Mapping[str, Any]) -> str:
                 f"{bucket['neutra']:>4}   {bucket['adversa']:>4}   "
                 f"{bucket['median_move_units']:>7}"
             )
+        by_grade_direction = outcomes.get("by_grade_direction") or {}
+        if by_grade_direction:
+            lines.append("")
+            lines.append(
+                "    Por classe e direção (controle do viés de mercado): uma classe que"
+                " quase só vende"
+            )
+            lines.append(
+                "    não pode ser comparada com uma que quase só compra na mesma amostra."
+            )
+            lines.append(
+                "    classe  direção    n   favorável   neutra   adversa   mediano"
+            )
+            for grade, directions in by_grade_direction.items():
+                for direction, bucket in directions.items():
+                    total = bucket["total"] or 1
+                    lines.append(
+                        f"    {grade:<7} {direction:<7} {bucket['total']:>4}   "
+                        f"{bucket['favorável']:>4} ({bucket['favorável'] / total:>4.0%})   "
+                        f"{bucket['neutra']:>4}   {bucket['adversa']:>4}   "
+                        f"{bucket['median_move_units']:>7}"
+                    )
+            lines.append("")
+            lines.append("    Mistura de direção por classe (o que pode explicar a diferença):")
+            for grade, directions in by_grade_direction.items():
+                total = sum(bucket["total"] for bucket in directions.values()) or 1
+                parts = " · ".join(
+                    f"{direction} {bucket['total']}/{total} ({bucket['total'] / total:.0%})"
+                    for direction, bucket in directions.items()
+                )
+                lines.append(f"      {grade}: {parts}")
+            lines.append(
+                "    Células com menos de 5 sinais não sustentam leitura; compare classes"
+            )
+            lines.append("    dentro da mesma direção, não entre direções.")
+
         reasons = outcomes.get("by_reason") or {}
         if reasons:
             lines.append("")
