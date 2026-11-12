@@ -482,7 +482,9 @@ class SessionComparisonTests(unittest.TestCase):
             for _ in range(4)
         ]
         verdict = _flow_edge_verdict(tiny)
-        self.assertTrue(any("não adotar" in line for line in verdict))
+        # Sem sessão elegível o relatório não pode fingir que julgou.
+        self.assertTrue(any("amostra insuficiente" in line for line in verdict))
+        self.assertFalse(any("não adotar" in line for line in verdict))
 
     def test_baseline_reports_settlement(self):
         frames = [

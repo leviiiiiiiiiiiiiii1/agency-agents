@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sqlite3
 import sys
@@ -559,10 +560,15 @@ def compute_baseline(
         (frame for frame in frames if frame.get("price_ladder")),
         key=lambda item: str(item.get("occurred_at_utc")),
     )
-    baseline: dict[str, Any] = {"frames_with_ladder": len(timeline)}
+    # Uma entrada por vela: cinco quadros do mesmo minuto não são cinco apostas.
+    bets = _one_per_bar(timeline, bar_seconds)
+    baseline: dict[str, Any] = {
+        "frames_with_ladder": len(timeline),
+        "bets": len(bets),
+    }
     for direction in ("BUY", "SELL"):
         measured_items: list[dict[str, Any]] = []
-        for frame in timeline:
+        for frame in bets:
             measured = _measure(
                 timeline,
                 frame,
@@ -591,7 +597,7 @@ def compute_baseline(
             dict(measured)
         )
 
-    for frame in timeline:
+    for frame in bets:
         measured = _measure(
             timeline,
             frame,
@@ -967,16 +973,20 @@ def format_flow_rule(flow: Mapping[str, Any]) -> str:
         lines.append(
             "    (acerto precisa passar de 1/(1+payout): 54% com 85%, 56% com 80%, 53% com 90%)"
         )
-        lines.append("    aposta 2+ velas    n   acerta   empata    erra   acerto")
+        lines.append(
+            "    aposta 2+ velas    n   acerta   empata    erra   acerto   margem 95%"
+        )
         for label in ("todas", "BUY", "SELL"):
             bucket = settlement.get(label) or {}
             total = bucket.get("total") or 0
             if not total:
                 continue
+            rate = bucket["acerta"] / total
+            margin = 1.96 * math.sqrt(rate * (1 - rate) / total)
             lines.append(
                 f"    {label:<14} {total:>5}   {bucket['acerta']:>6}   "
                 f"{bucket['empata']:>7}   {bucket['erra']:>6}   "
-                f"{bucket['acerta'] / total:>6.0%}"
+                f"{rate:>6.0%}   +/-{margin * 100:>3.0f}pp"
             )
     return "\n".join(lines)
 
@@ -1084,6 +1094,7 @@ def _flow_edge_verdict(rows: Sequence[Mapping[str, Any]]) -> list[str]:
         f" vantagem = delta >= {FLOW_EDGE_MIN_MARGIN:.0%} no acerto)",
     ]
     wins_by_direction: dict[str, int] = {}
+    counted_total = 0
     losses = 0
     for direction in ("BUY", "SELL"):
         wins = counted = 0
@@ -1108,7 +1119,15 @@ def _flow_edge_verdict(rows: Sequence[Mapping[str, Any]]) -> list[str]:
             elif delta < 0:
                 losses += 1
         wins_by_direction[direction] = wins
+        counted_total += counted
         lines.append(f"    {direction}: {wins}/{counted} sessão(ões) com vantagem")
+    if not counted_total:
+        # Julgar com zero sessões elegíveis seria inventar veredito.
+        lines.append(
+            "    Regra de fluxo: amostra insuficiente para julgar - nenhuma sessão"
+            " chegou ao n mínimo em apostas independentes."
+        )
+        return lines
     if max(wins_by_direction.values()) >= FLOW_EDGE_MIN_SESSIONS and losses == 0:
         lines.append(
             "    Regra de fluxo: vantagem própria em sessões suficientes - "
@@ -1146,7 +1165,8 @@ def format_baseline(baseline: Mapping[str, Any]) -> str:
         lines.append("    Nenhum quadro pôde ser acompanhado até o horizonte.")
     lines.append(
         "    Quadros com escada: "
-        f"{baseline.get('frames_with_ladder', 0)} · entrada na vela mais recente"
+        f"{baseline.get('frames_with_ladder', 0)} · entradas contadas (1 por vela): "
+        f"{baseline.get('bets', 0)} · entrada na vela mais recente"
     )
     lines.append(
         "    Quadros vizinhos leem a mesma vela: o n efetivo é menor que o n impresso."
