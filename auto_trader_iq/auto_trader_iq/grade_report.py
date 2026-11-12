@@ -1204,9 +1204,7 @@ def _flow_stratified_edge(
     regra acertou e o que a base do MESMO bloco previa, e a variância desses
     desvios dá o z.
     """
-    deviation = 0.0
-    variance = 0.0
-    used = 0
+    cells: list[dict[str, Any]] = []
     for row in rows:
         for direction in ("BUY", "SELL"):
             bucket = (row.get("flow_by_direction") or {}).get(direction)
@@ -1218,16 +1216,38 @@ def _flow_stratified_edge(
             if total < FLOW_STRATIFIED_MIN or not base_total:
                 continue
             rate = base.get("acerta", 0) / base_total
-            deviation += bucket.get("acerta", 0) - rate * total
-            variance += rate * (1 - rate) * total
-            used += 1
-    if not used or variance <= 0:
+            cells.append(
+                {
+                    "deviation": bucket.get("acerta", 0) - rate * total,
+                    "variance": rate * (1 - rate) * total,
+                    "total": total,
+                    "margin": bucket.get("acerta", 0) / total - rate,
+                    "label": f"{str(row.get('started_at_utc') or '')[:16].replace('T', ' ')}"
+                    f" {direction}",
+                }
+            )
+    if not cells:
         return None
+    deviation = sum(cell["deviation"] for cell in cells)
+    variance = sum(cell["variance"] for cell in cells)
+    if variance <= 0:
+        return None
+    # Se uma única hora carrega o número, o teste está medindo essa hora.
+    best = max(cells, key=lambda cell: cell["deviation"])
+    rest_variance = variance - best["variance"]
+    rest_z = (
+        (deviation - best["deviation"]) / math.sqrt(rest_variance)
+        if rest_variance > 0
+        else 0.0
+    )
     return {
-        "blocks": used,
+        "blocks": len(cells),
         "deviation": deviation,
         "variance": variance,
         "z": deviation / math.sqrt(variance),
+        "z_without_best": rest_z,
+        "best_label": best["label"],
+        "best_margin": best["margin"],
     }
 
 
@@ -1267,6 +1287,12 @@ def _flow_edge_verdict(rows: Sequence[Mapping[str, Any]]) -> list[str]:
         f"    Vantagem estratificada: {edge['deviation']:+.1f} acerto(s) acima do"
         f" esperado em {int(edge['blocks'])} bloco(s) · z = {edge['z']:.2f}"
     )
+    if edge["blocks"] > 1 and edge["z_without_best"] < 1.0:
+        lines.append(
+            f"    Sem a melhor célula ({edge['best_label']},"
+            f" {edge['best_margin']:+.0%}): z = {edge['z_without_best']:.02f}"
+            " - uma hora sustenta o número."
+        )
     if edge["z"] >= 1.96 and edge["deviation"] > 0:
         lines.append(
             "    Regra de fluxo: vantagem própria além da composição de blocos -"

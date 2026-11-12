@@ -491,6 +491,24 @@ class SessionComparisonTests(unittest.TestCase):
         flat = _flow_edge_verdict([row(52, 50), row(52, 50), row(52, 50)])
         self.assertTrue(any("sem evidência" in line for line in flat))
 
+    def test_flow_verdict_names_the_single_block_that_carries_it(self):
+        def row(started, flow_wins, base_wins):
+            return {
+                "started_at_utc": started,
+                "flow_by_direction": {"BUY": {"total": 40, "acerta": flow_wins}},
+                "base_by_direction": {"BUY": {"total": 40, "acerta": base_wins}},
+            }
+
+        rows = [
+            row("2026-11-12T10:00:00+00:00", 20, 20),
+            row("2026-11-12T11:00:00+00:00", 20, 20),
+            row("2026-11-12T12:00:00+00:00", 36, 20),
+        ]
+        verdict = _flow_edge_verdict(rows)
+        # Duas horas neutras e uma boa: o número é dessa hora, e o relatório diz.
+        self.assertTrue(any("uma hora sustenta o número" in line for line in verdict))
+        self.assertTrue(any("12:00 BUY" in line for line in verdict))
+
     def test_flow_verdict_ignores_small_blocks(self):
         tiny = [
             {
