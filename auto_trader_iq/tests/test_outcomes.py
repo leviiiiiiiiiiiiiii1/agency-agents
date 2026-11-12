@@ -439,16 +439,23 @@ class SessionComparisonTests(unittest.TestCase):
         rows = compute_session_comparison(frames, horizon_bars=3)
         self.assertEqual(rows[0]["flow"]["total"], 1)
         self.assertEqual(rows[0]["flow_by_direction"]["BUY"]["total"], 1)
+        # A base cega da MESMA sessão é o único controle que separa regra de hora.
+        self.assertEqual(rows[0]["base_by_direction"]["BUY"]["total"], 1)
+        self.assertEqual(rows[0]["base_by_direction"]["SELL"]["total"], 1)
 
     def test_session_table_is_rendered(self):
         frames = [
             frame("2026-11-11T18:00:00+00:00", "A", "BUY", 0, [100.0] * 7, session="queda"),
             frame("2026-11-11T18:03:00+00:00", "NO_TRADE", "BUY", 0,
-                  [140.0, 140.0, 140.0, 100.0, 100.0, 100.0, 180.0], session="queda"),
+                  [100.0, 120.0, 140.0, 140.0, 140.0, 160.0, 180.0], session="queda"),
+            frame("2026-11-11T18:06:00+00:00", "NO_TRADE", "BUY", 0, [100.0] * 7,
+                  session="queda"),
         ]
         text = format_session_comparison(compute_session_comparison(frames, horizon_bars=3))
         self.assertIn("POR SESSÃO", text)
         self.assertIn("por situação e direção", text)
+        self.assertIn("fluxo 2+ x base cega", text)
+        self.assertIn("vs base", text)
         text.encode("cp1252")
 
     def test_empty_session_list_says_so(self):

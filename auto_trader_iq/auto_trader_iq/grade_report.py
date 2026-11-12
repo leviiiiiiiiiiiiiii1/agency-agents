@@ -651,6 +651,7 @@ def compute_session_comparison(
                 "following": [],
                 "against": [],
                 "flow": [],
+                "base": [],
                 "started_at_utc": None,
             },
         )
@@ -700,6 +701,9 @@ def compute_session_comparison(
         )
         if measured is None:
             continue
+        # Base cega por direção: a mesma sessão, sem escolher quadro.
+        slot["base"].append({**measured, "direction": "BUY"})
+        slot["base"].append({**_flip(measured), "direction": "SELL"})
         trailing = measured["trailing_units"]
         if trailing is None or trailing == 0:
             continue
@@ -746,6 +750,13 @@ def compute_session_comparison(
                     )
                     for direction in ("BUY", "SELL")
                     if any(item["direction"] == direction for item in slot["flow"])
+                },
+                "base_by_direction": {
+                    direction: _summarize_items(
+                        [item for item in slot["base"] if item["direction"] == direction]
+                    )
+                    for direction in ("BUY", "SELL")
+                    if any(item["direction"] == direction for item in slot["base"])
                 },
             }
         )
@@ -940,14 +951,28 @@ def format_session_comparison(rows: Sequence[Mapping[str, Any]]) -> str:
         lines.append(f"    {started:<17} {detail}")
         flow_split = row.get("flow_by_direction") or {}
         if flow_split:
+            base_split = row.get("base_by_direction") or {}
             pieces = []
             for direction, bucket in flow_split.items():
                 bucket_total = bucket["total"] or 1
+                rate = bucket[FAVORABLE] / bucket_total
+                base = base_split.get(direction) or {}
+                base_total = base.get("total") or 0
+                if not base_total:
+                    pieces.append(
+                        f"{direction} {bucket[FAVORABLE]}/{bucket['total']}"
+                        f" ({rate:.0%}) sem base"
+                    )
+                    continue
+                base_rate = base[FAVORABLE] / base_total
                 pieces.append(
                     f"{direction} {bucket[FAVORABLE]}/{bucket['total']}"
-                    f" ({bucket[FAVORABLE] / bucket_total:.0%})"
+                    f" ({rate:.0%}) vs base {base[FAVORABLE]}/{base_total}"
+                    f" ({base_rate:.0%}) {rate - base_rate:+.0%}"
                 )
-            lines.append("        fluxo 2+ por direção: " + " · ".join(pieces))
+            lines.append(
+                "        fluxo 2+ x base cega (mesma sessão): " + " · ".join(pieces)
+            )
     return "\n".join(lines)
 
 
