@@ -81,6 +81,7 @@ from .opportunity_grade import (
     DEFAULT_CRITERIA as DEFAULT_GRADE_CRITERIA,
     GRADE_CRITERIA_VERSION,
     GRADE_METHOD,
+    GRADE_RULES_VERSION,
     GradeCriteria,
     migrate_criteria,
     build_features,
@@ -3260,7 +3261,13 @@ class AutoTraderApp(tk.Tk):
         )
 
     def grade_criteria_hash(self) -> str:
-        payload = json.dumps(self.grade_criteria.as_dict(), sort_keys=True)
+        payload = json.dumps(
+            {
+                **self.grade_criteria.as_dict(),
+                "rules_version": GRADE_RULES_VERSION,
+            },
+            sort_keys=True,
+        )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
     def _grade_candidates(

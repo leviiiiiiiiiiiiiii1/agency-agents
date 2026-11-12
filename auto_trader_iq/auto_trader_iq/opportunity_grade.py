@@ -25,6 +25,13 @@ UNMEASURED = ("rsi20", "macd_histograma", "distancia_ema20")
 # formação fica sempre à direita da seta). Versão 2 corrige para 1.
 GRADE_CRITERIA_VERSION = 2
 
+# Versão das REGRAS de classificação, separada dos limiares: mudar uma regra sem
+# mudar limiar precisa mudar o hash, senão quadros de antes e de depois da mudança
+# caem no mesmo balde do relatório.
+# 3: sinal contra o contexto lido deixou de ser nota de risco em C e passou a
+#    bloqueio (NO_TRADE).
+GRADE_RULES_VERSION = 3
+
 # Marca como a geometria foi medida. ``setup_candle_v1`` mede a vela anterior à
 # seta; registros sem esta marca usaram a própria vela da seta e não são
 # comparáveis com os novos.
@@ -297,6 +304,16 @@ def grade_opportunity(
             GRADE_NO_TRADE,
             (f"rótulo a {features.age_bars} vela(s), acima do limite {criteria.max_age_bars}",),
         )
+    if (
+        features.context_direction is not None
+        and features.context_direction != features.direction
+    ):
+        # Medido: 154 sinais assim acertaram 4% a uma vela. Não é risco a anotar,
+        # é sinal que não deve existir.
+        return Grade(
+            GRADE_NO_TRADE,
+            (f"sinal {features.direction} contra contexto {features.context_direction}",),
+        )
 
     severe: list[str] = []
     minor: list[str] = []
@@ -333,14 +350,6 @@ def grade_opportunity(
     close_pos = features.close_from_extreme
     if close_pos is not None and close_pos <= 0.2:
         severe.append("fechou colado no extremo do próprio candle")
-
-    if (
-        features.context_direction is not None
-        and features.context_direction != features.direction
-    ):
-        severe.append(
-            f"sinal {features.direction} contra contexto {features.context_direction}"
-        )
 
     if severe:
         return Grade(GRADE_RISKY, tuple(severe + minor))

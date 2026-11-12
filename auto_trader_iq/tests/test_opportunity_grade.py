@@ -141,10 +141,15 @@ class GradeTests(unittest.TestCase):
     def test_close_at_own_extreme_is_risky(self):
         self.assertEqual(self.grade(age_bars=0, close_from_extreme=0.05).code, GRADE_RISKY)
 
-    def test_signal_against_context_is_risky(self):
+    def test_signal_against_context_is_blocked(self):
+        # 154 sinais assim acertaram 4% a uma vela: bloqueio, não nota de risco.
         grade = self.grade(age_bars=0, context_direction="SELL")
-        self.assertEqual(grade.code, GRADE_RISKY)
+        self.assertEqual(grade.code, GRADE_NO_TRADE)
         self.assertIn("contra contexto", grade.reasons[0])
+
+    def test_signal_with_context_still_graded(self):
+        grade = self.grade(age_bars=0, context_direction="BUY")
+        self.assertNotEqual(grade.code, GRADE_NO_TRADE)
 
     def test_unknown_candle_is_no_trade(self):
         self.assertEqual(
