@@ -259,6 +259,7 @@ def compute_outcomes(
             {
                 "grade": frame.get("code"),
                 "direction": direction,
+                "reasons": list(frame.get("reasons") or []),
                 "outcome": outcome,
                 "move_units": round(move, 3),
                 "bars_elapsed": bars_elapsed,
@@ -273,6 +274,33 @@ def compute_outcomes(
         )
         bucket[item["outcome"]] += 1
         bucket["moves"].append(item["move_units"])
+
+    def _bucket(items: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+        counts = {FAVORABLE: 0, NEUTRAL: 0, ADVERSE: 0}
+        moves: list[float] = []
+        for item in items:
+            counts[item["outcome"]] += 1
+            moves.append(item["move_units"])
+        return {
+            "total": len(items),
+            **counts,
+            "median_move_units": round(median(moves), 3) if moves else None,
+        }
+
+    by_reason: dict[str, dict[str, Any]] = {}
+    for item in results:
+        for reason in item["reasons"]:
+            by_reason.setdefault(reason, []).append(item)
+    reasons_summary = {
+        reason: _bucket(items)
+        for reason, items in by_reason.items()
+        if len(items) >= 3
+    }
+    by_reason_direction: dict[str, dict[str, Any]] = {}
+    for direction in ("BUY", "SELL"):
+        items = [item for item in results if item["direction"] == direction]
+        if items:
+            by_reason_direction[direction] = _bucket(items)
 
     summary: dict[str, Any] = {}
     for grade, bucket in sorted(by_grade.items()):
@@ -289,6 +317,10 @@ def compute_outcomes(
 
     return {
         "evaluated": len(results),
+        "by_direction": by_reason_direction,
+        "by_reason": dict(
+            sorted(reasons_summary.items(), key=lambda item: (-item[1]["total"], item[0]))
+        ),
         "skipped": skipped,
         "signals_with_ladder": len(signals),
         "signals_graded": graded_total,
@@ -584,6 +616,28 @@ def format_outcomes(outcomes: Mapping[str, Any]) -> str:
                 f"{bucket['neutra']:>4}   {bucket['adversa']:>4}   "
                 f"{bucket['median_move_units']:>7}"
             )
+        for direction, bucket in (outcomes.get("by_direction") or {}).items():
+            total = bucket["total"] or 1
+            lines.append(
+                f"    {direction:<7} {bucket['total']:>4}   "
+                f"{bucket['favorável']:>4} ({bucket['favorável'] / total:>4.0%})   "
+                f"{bucket['neutra']:>4}   {bucket['adversa']:>4}   "
+                f"{bucket['median_move_units']:>7}"
+            )
+        reasons = outcomes.get("by_reason") or {}
+        if reasons:
+            lines.append("")
+            lines.append(
+                "    Por motivo registrado (mínimo 3 sinais). Em A/B o motivo descreve "
+                "o que está bom; em C, a regra que marcou risco:"
+            )
+            for reason, bucket in reasons.items():
+                total = bucket["total"] or 1
+                lines.append(
+                    f"      {bucket['favorável']:>3}/{bucket['total']:<3} "
+                    f"({bucket['favorável'] / total:>4.0%}) "
+                    f"mediana {bucket['median_move_units']:>7}  {reason}"
+                )
     lines += [
         "",
         "    Isto NÃO é taxa de acerto. Mede deslocamento relativo à faixa mediana,",
@@ -825,8 +879,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--horizon-bars",
         type=int,
-        default=3,
-        help="Quantas velas depois do sinal avaliar (padrão: 3).",
+        nargs="+",
+        default=[3],
+        help="Quantas velas depois do sinal avaliar; aceita vários (padrão: 3).",
     )
     parser.add_argument(
         "--min-move",
@@ -850,12 +905,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     summary = summarize(frames, tracks)
-    outcomes = compute_outcomes(
-        frames,
-        bar_seconds=args.bar_seconds,
-        horizon_bars=args.horizon_bars,
-        min_move_units=args.min_move,
-    )
+    outcomes_by_horizon = [
+        compute_outcomes(
+            frames,
+            bar_seconds=args.bar_seconds,
+            horizon_bars=horizon,
+            min_move_units=args.min_move,
+        )
+        for horizon in args.horizon_bars
+    ]
     sweeps: list[tuple[str, list[dict[str, Any]]]] = []
     for spec in args.sweep:
         try:
@@ -872,7 +930,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "summary": summary,
                     "sweeps": {parameter: results for parameter, results in sweeps},
                     "accuracy_available": False,
-                    "outcomes": outcomes,
+                    "outcomes": outcomes_by_horizon,
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -880,7 +938,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     else:
         print(format_report(summary, sweeps))
-        print(format_outcomes(outcomes))
+        for outcomes in outcomes_by_horizon:
+            print(format_outcomes(outcomes))
     return 0
 
 
