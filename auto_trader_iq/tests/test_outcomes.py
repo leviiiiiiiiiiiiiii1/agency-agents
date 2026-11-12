@@ -2,6 +2,7 @@ import unittest
 
 from auto_trader_iq.grade_report import (
     ADVERSE,
+    _one_per_bar,
     FAVORABLE,
     NEUTRAL,
     compute_baseline,
@@ -461,9 +462,10 @@ class SessionComparisonTests(unittest.TestCase):
 
     def test_flow_verdict_needs_three_sessions_above_base(self):
         def row(flow_buy, base_buy):
+            # O veredito usa o acerto na expiração: é ele que se compara com payout.
             return {
-                "flow_by_direction": {"BUY": {"total": 100, FAVORABLE: flow_buy}},
-                "base_by_direction": {"BUY": {"total": 100, FAVORABLE: base_buy}},
+                "flow_by_direction": {"BUY": {"total": 100, "acerta": flow_buy}},
+                "base_by_direction": {"BUY": {"total": 100, "acerta": base_buy}},
             }
 
         one_win = _flow_edge_verdict([row(60, 30), row(30, 30)])
@@ -474,8 +476,8 @@ class SessionComparisonTests(unittest.TestCase):
     def test_flow_verdict_ignores_small_sessions(self):
         tiny = [
             {
-                "flow_by_direction": {"BUY": {"total": 10, FAVORABLE: 9}},
-                "base_by_direction": {"BUY": {"total": 500, FAVORABLE: 50}},
+                "flow_by_direction": {"BUY": {"total": 10, "acerta": 9}},
+                "base_by_direction": {"BUY": {"total": 500, "acerta": 50}},
             }
             for _ in range(4)
         ]
@@ -552,6 +554,31 @@ class FlowRuleTests(unittest.TestCase):
         self.assertEqual(flow["mode"], "fechamentos")
         self.assertEqual(flow["by_streak_direction"][4]["BUY"]["total"], 1)
 
+    def test_one_bet_per_candle_keeps_the_last_frame_of_the_minute(self):
+        frames = [
+            frame("2026-11-11T18:00:05+00:00", "NO_TRADE", "BUY", 0, [100.0] * 7),
+            frame("2026-11-11T18:00:35+00:00", "NO_TRADE", "BUY", 0, [110.0] * 7),
+            frame("2026-11-11T18:00:55+00:00", "NO_TRADE", "BUY", 0, [120.0] * 7),
+            frame("2026-11-11T18:01:05+00:00", "NO_TRADE", "BUY", 0, [130.0] * 7),
+        ]
+        bets = _one_per_bar(frames, 60)
+        self.assertEqual(len(bets), 2)
+        self.assertIn(120.0, [bet["price_ladder"]["closes_px"][0] for bet in bets])
+
+    def test_repeated_frames_of_one_candle_are_not_counted_twice(self):
+        # Três quadros do mesmo minuto: a regra de fluxo tem uma aposta, não três.
+        frames = [
+            frame("2026-11-11T18:00:05+00:00", "NO_TRADE", "BUY", 0, [100.0] * 7),
+            frame("2026-11-11T18:00:35+00:00", "NO_TRADE", "BUY", 0, [100.0] * 7),
+            frame("2026-11-11T18:00:55+00:00", "NO_TRADE", "BUY", 0, [100.0] * 7),
+            frame("2026-11-11T18:02:00+00:00", "NO_TRADE", "BUY", 0,
+                  [100.0, 120.0, 130.0, 140.0, 150.0, 160.0, 180.0]),
+            frame("2026-11-11T18:03:00+00:00", "NO_TRADE", "BUY", 0, [140.0] * 7),
+        ]
+        flow = compute_flow_rule(frames, horizon_bars=1)
+        total = sum(bucket["total"] for bucket in flow["by_streak"].values())
+        self.assertLessEqual(total, 2)
+
     def test_flow_block_is_rendered(self):
         text = format_flow_rule(compute_flow_rule(self.closes_frames(), horizon_bars=3))
         self.assertIn("REGRA DE FLUXO", text)
@@ -582,9 +609,10 @@ class FormatTests(unittest.TestCase):
         ]
         format_outcomes(compute_outcomes(frames)).encode("cp1252")
 
-    def test_report_states_it_is_not_a_hit_rate(self):
+    def test_report_states_that_acerto_is_not_profit(self):
         text = format_outcomes(compute_outcomes([]))
-        self.assertIn("NÃO é taxa de acerto", text)
+        self.assertIn("sem resultado financeiro", text)
+        self.assertIn("equilíbrio é 54%", text)
         self.assertIn("Nenhum sinal", text)
 
     def test_table_lists_each_class(self):

@@ -322,12 +322,20 @@ def compute_outcomes(
     def _bucket(items: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         counts = {FAVORABLE: 0, NEUTRAL: 0, ADVERSE: 0}
         moves: list[float] = []
+        wins = ties = 0
         for item in items:
             counts[item["outcome"]] += 1
             moves.append(item["move_units"])
+            if item["move_units"] > 0:
+                wins += 1
+            elif item["move_units"] == 0:
+                ties += 1
         return {
             "total": len(items),
             **counts,
+            "acerta": wins,
+            "empata": ties,
+            "erra": len(items) - wins - ties,
             "median_move_units": round(median(moves), 3) if moves else None,
         }
 
@@ -440,11 +448,17 @@ def compute_outcomes(
     summary: dict[str, Any] = {}
     for grade, bucket in sorted(by_grade.items()):
         total = bucket["favorável"] + bucket["neutra"] + bucket["adversa"]
+        moves = bucket["moves"]
+        wins = sum(1 for move in moves if move > 0)
+        ties = sum(1 for move in moves if move == 0)
         summary[grade] = {
             "total": total,
             "favorável": bucket["favorável"],
             "neutra": bucket["neutra"],
             "adversa": bucket["adversa"],
+            "acerta": wins,
+            "empata": ties,
+            "erra": total - wins - ties,
             "median_move_units": (
                 round(median(bucket["moves"]), 3) if bucket["moves"] else None
             ),
@@ -646,6 +660,7 @@ def compute_session_comparison(
         key=lambda item: str(item.get("occurred_at_utc")),
     )
     sessions: dict[str, dict[str, Any]] = {}
+    bets = set(id(frame) for frame in _one_per_bar(timeline, bar_seconds))
     for frame in timeline:
         session = str(frame.get("session_id") or "?")
         slot = sessions.setdefault(
@@ -677,6 +692,9 @@ def compute_session_comparison(
                         "situation": _situation(measured["trailing_units"], direction),
                     }
                 )
+        if id(frame) not in bets:
+            # Mesma vela já votou neste minuto.
+            continue
         # Fluxo é independente do movimento anterior: entra antes dos descartes.
         _, flow_directions = _flow_directions(frame.get("price_ladder") or {}, FLOW_WINDOW)
         if flow_directions and flow_directions[0] is not None:
@@ -795,6 +813,25 @@ def _flow_directions(ladder: Mapping[str, Any], window: int) -> tuple[str, list[
     return "fechamentos", steps
 
 
+def _one_per_bar(
+    timeline: Sequence[Mapping[str, Any]], bar_seconds: float
+) -> list[Mapping[str, Any]]:
+    """Uma aposta por vela.
+
+    Quadros do mesmo minuto leem a mesma vela: contá-los todos infla o n e faz
+    o mesmo minuto votar cinco vezes. Fica o quadro mais recente de cada vela.
+    """
+    window = max(1.0, float(bar_seconds))
+    latest: dict[tuple[Any, int], Mapping[str, Any]] = {}
+    for frame in timeline:
+        when = _parse_time(frame.get("occurred_at_utc"))
+        if when is None:
+            continue
+        key = (frame.get("session_id"), int(when.timestamp() // window))
+        latest[key] = frame
+    return list(latest.values())
+
+
 def compute_flow_rule(
     frames: Sequence[Mapping[str, Any]],
     *,
@@ -817,7 +854,7 @@ def compute_flow_rule(
         mode_counts[found] = mode_counts.get(found, 0) + 1
     mode = max(mode_counts, key=lambda key: mode_counts[key]) if mode_counts else "fechamentos"
     by_streak: dict[int, list[dict[str, Any]]] = {}
-    for frame in timeline:
+    for frame in _one_per_bar(timeline, bar_seconds):
         ladder = frame.get("price_ladder") or {}
         found_mode, directions = _flow_directions(ladder, window)
         if found_mode != mode or not directions or directions[0] is None:
@@ -878,6 +915,7 @@ def format_flow_rule(flow: Mapping[str, Any]) -> str:
         "",
         f"    REGRA DE FLUXO - últimas {window} velas, lidas por {source}",
         "    (entrar na direção das velas seguidas; nada muda no app, isto é medição)",
+        "    (uma aposta por vela: quadros do mesmo minuto leem a mesma vela e contam uma vez)",
         "    velas seguidas    n   favorável   neutra   adversa   mediano",
     ]
     streaks = flow.get("by_streak") or {}
@@ -948,6 +986,7 @@ def format_session_comparison(rows: Sequence[Mapping[str, Any]]) -> str:
         "",
         "    POR SESSÃO - sinais e linha de base na MESMA janela de mercado",
         "    (se o sinal bate a base aqui dentro, o ganho não é o regime da hora)",
+        "    (fluxo e base cega contados uma vez por vela; sinais contados por quadro)",
         "    início            sinais n/fav     seguir n/fav     fluxo2+ n/fav",
     ]
     if not rows:
@@ -1010,6 +1049,19 @@ def format_session_comparison(rows: Sequence[Mapping[str, Any]]) -> str:
             lines.append(
                 "        fluxo 2+ x base cega (mesma sessão): " + " · ".join(pieces)
             )
+            acertos = []
+            for direction, bucket in flow_split.items():
+                base = (row.get("base_by_direction") or {}).get(direction) or {}
+                flow_total = bucket["total"] or 1
+                base_total = base.get("total") or 0
+                if not base_total:
+                    continue
+                acertos.append(
+                    f"{direction} acerto {bucket.get('acerta', 0) / flow_total:.0%}"
+                    f" vs base {base.get('acerta', 0) / base_total:.0%}"
+                )
+            if acertos:
+                lines.append("        acerto na expiração: " + " · ".join(acertos))
     lines.append("")
     lines.extend(_flow_edge_verdict(rows))
     return "\n".join(lines)
@@ -1027,9 +1079,9 @@ FLOW_EDGE_MIN_SESSIONS = 3
 def _flow_edge_verdict(rows: Sequence[Mapping[str, Any]]) -> list[str]:
     """Traduz o controle por sessão no veredito que já estava combinado."""
     lines = [
-        "    CONTROLE DA REGRA DE FLUXO - vantagem sobre a base cega da MESMA sessão",
-        f"    (só entra sessão/direção com n >= {FLOW_EDGE_MIN_SAMPLE};"
-        f" vantagem = delta >= {FLOW_EDGE_MIN_MARGIN:.0%})",
+        "    CONTROLE DA REGRA DE FLUXO - acerto sobre a base cega da MESMA sessão",
+        f"    (uma aposta por vela; só entra sessão/direção com n >= {FLOW_EDGE_MIN_SAMPLE};"
+        f" vantagem = delta >= {FLOW_EDGE_MIN_MARGIN:.0%} no acerto)",
     ]
     wins_by_direction: dict[str, int] = {}
     losses = 0
@@ -1045,7 +1097,12 @@ def _flow_edge_verdict(rows: Sequence[Mapping[str, Any]]) -> list[str]:
             if bucket_total < FLOW_EDGE_MIN_SAMPLE or not base_total:
                 continue
             counted += 1
-            delta = bucket[FAVORABLE] / bucket_total - base[FAVORABLE] / base_total
+            # A régua é o acerto na expiração, não o deslocamento de meia faixa:
+            # é o acerto que se compara com o payout.
+            delta = (
+                bucket.get("acerta", 0) / bucket_total
+                - base.get("acerta", 0) / base_total
+            )
             if delta >= FLOW_EDGE_MIN_MARGIN:
                 wins += 1
             elif delta < 0:
@@ -1443,7 +1500,9 @@ def format_outcomes(outcomes: Mapping[str, Any]) -> str:
             f"descartados: {outcomes['skipped']}"
         )
         lines.append("")
-        lines.append("    classe   n     favorável   neutra   adversa   movimento mediano")
+        lines.append(
+            "    classe   n     favorável   neutra   adversa   mediano   acerto"
+        )
         for grade, bucket in outcomes["by_grade"].items():
             total = bucket["total"] or 1
             lines.append(
@@ -1451,6 +1510,7 @@ def format_outcomes(outcomes: Mapping[str, Any]) -> str:
                 f"{bucket['favorável']:>4} ({bucket['favorável'] / total:>4.0%})   "
                 f"{bucket['neutra']:>4}   {bucket['adversa']:>4}   "
                 f"{bucket['median_move_units']:>7}"
+                f"   {bucket.get('acerta', 0) / total:>5.0%}"
             )
         for direction, bucket in (outcomes.get("by_direction") or {}).items():
             total = bucket["total"] or 1
@@ -1459,6 +1519,7 @@ def format_outcomes(outcomes: Mapping[str, Any]) -> str:
                 f"{bucket['favorável']:>4} ({bucket['favorável'] / total:>4.0%})   "
                 f"{bucket['neutra']:>4}   {bucket['adversa']:>4}   "
                 f"{bucket['median_move_units']:>7}"
+                f"   {bucket.get('acerta', 0) / total:>5.0%}"
             )
         by_grade_direction = outcomes.get("by_grade_direction") or {}
         if by_grade_direction:
@@ -1471,7 +1532,7 @@ def format_outcomes(outcomes: Mapping[str, Any]) -> str:
                 "    não pode ser comparada com uma que quase só compra na mesma amostra."
             )
             lines.append(
-                "    classe  direção    n   favorável   neutra   adversa   mediano"
+                "    classe  direção    n   favorável   neutra   adversa   mediano   acerto"
             )
             for grade, directions in by_grade_direction.items():
                 for direction, bucket in directions.items():
@@ -1481,6 +1542,7 @@ def format_outcomes(outcomes: Mapping[str, Any]) -> str:
                         f"{bucket['favorável']:>4} ({bucket['favorável'] / total:>4.0%})   "
                         f"{bucket['neutra']:>4}   {bucket['adversa']:>4}   "
                         f"{bucket['median_move_units']:>7}"
+                        f"   {bucket.get('acerta', 0) / total:>5.0%}"
                     )
             lines.append("")
             lines.append("    Mistura de direção por classe (o que pode explicar a diferença):")
@@ -1599,9 +1661,10 @@ def format_outcomes(outcomes: Mapping[str, Any]) -> str:
                 )
     lines += [
         "",
-        "    Isto NÃO é taxa de acerto. Mede deslocamento relativo à faixa mediana,",
-        "    sem custo, sem spread, sem payout e sem resultado financeiro. Serve para",
-        "    comparar classes entre si na mesma amostra, não para prever nada.",
+        "    'acerto' é só fechamento a favor na vela de expiração: sem custo, sem",
+        "    spread, sem payout e sem resultado financeiro. Com payout de 85% o",
+        "    equilíbrio é 54%. 'favorável' mede deslocamento relativo à faixa mediana",
+        "    e serve para comparar classes entre si na mesma amostra.",
         "    A conversão de tempo em velas assume o período informado em --bar-seconds;",
         "    se o gráfico não for de 1 minuto, o horizonte medido estará errado.",
     ]
