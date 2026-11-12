@@ -195,7 +195,13 @@ def _measure(
     started = _parse_time(start.get("occurred_at_utc"))
     if started is None:
         return None
+    # O quadro de referência tem que cair no instante do horizonte, não no
+    # primeiro quadro depois de 80% dele: com quadros a cada 10 s, aceitar 80%
+    # media 2,4 velas e chamava de 3, e 0,83 vela chamado de 1 (daí os empates).
+    wanted = bar_seconds * horizon_bars
+    tolerance = bar_seconds * 0.4
     target = None
+    best_error = None
     # O quadro de referência pode ser qualquer um com escada: exigir que ele
     # também esteja classificado descartava quase todos os sinais.
     for later in timeline:
@@ -207,13 +213,16 @@ def _measure(
         if when is None:
             continue
         elapsed = (when - started).total_seconds()
-        if elapsed >= bar_seconds * horizon_bars * 0.8:
+        error = abs(elapsed - wanted)
+        if best_error is None or error < best_error:
+            best_error = error
             target = (later, elapsed)
+        if elapsed > wanted + tolerance:
             break
-    if target is None:
+    if target is None or best_error is None or best_error > tolerance:
         return None
     later, elapsed = target
-    bars_elapsed = max(1, round(elapsed / bar_seconds))
+    bars_elapsed = max(1, int(elapsed / bar_seconds + 0.5))
     ladder = later.get("price_ladder") or {}
     closes = ladder.get("closes_px") or []
     typical_range = ladder.get("median_range_px")

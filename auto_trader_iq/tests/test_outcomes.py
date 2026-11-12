@@ -74,6 +74,21 @@ class ComputeOutcomeTests(unittest.TestCase):
         # idade 1 + 3 velas = índice 4 da escada (100); atual 140 -> preço caiu.
         self.assertEqual(result["by_grade"]["A"][ADVERSE], 1)
 
+    def test_horizon_uses_the_frame_at_the_horizon_not_the_first_past_it(self):
+        # Com quadros a cada 10 s, aceitar o primeiro quadro depois de 80% do
+        # horizonte media 0,83 vela e chamava de 1 vela.
+        frames = [
+            frame("2026-11-11T18:00:00+00:00", "A", "BUY", 0, [100.0] * 5),
+            frame("2026-11-11T18:00:50+00:00", "NO_TRADE", "BUY", 0, [100.0] * 5),
+            frame("2026-11-11T18:01:00+00:00", "NO_TRADE", "BUY", 0,
+                  [100.0, 140.0, 140.0, 140.0, 140.0]),
+        ]
+        result = compute_outcomes(frames, bar_seconds=60, horizon_bars=1)
+        self.assertEqual(result["evaluated"], 1)
+        # O quadro de 60 s mostra alta; o de 50 s mostra preço parado.
+        self.assertEqual(result["by_grade"]["A"][FAVORABLE], 1)
+        self.assertEqual(result["by_grade"]["A"][NEUTRAL], 0)
+
     def test_horizon_not_reached_is_skipped(self):
         frames = [
             frame("2026-11-11T18:00:00+00:00", "A", "BUY", 0, [100.0] * 5),
