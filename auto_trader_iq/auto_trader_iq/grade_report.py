@@ -492,12 +492,23 @@ def _situation(trailing: float | None, direction: str) -> str:
 def _summarize_items(items: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     counts = {FAVORABLE: 0, NEUTRAL: 0, ADVERSE: 0}
     moves: list[float] = []
+    wins = ties = 0
     for item in items:
         counts[item["outcome"]] += 1
-        moves.append(item["move_units"])
+        move = float(item["move_units"])
+        moves.append(move)
+        # Liquidação sem limiar: na vela de expiração fechou a favor, empatou ou não.
+        # É a única contagem que se compara com payout; "favorável" depende do sarrafo.
+        if move > 0:
+            wins += 1
+        elif move == 0:
+            ties += 1
     return {
         "total": len(items),
         **counts,
+        "acerta": wins,
+        "empata": ties,
+        "erra": len(items) - wins - ties,
         "median_move_units": round(median(moves), 3) if moves else None,
     }
 
@@ -536,8 +547,7 @@ def compute_baseline(
     )
     baseline: dict[str, Any] = {"frames_with_ladder": len(timeline)}
     for direction in ("BUY", "SELL"):
-        counts = {FAVORABLE: 0, NEUTRAL: 0, ADVERSE: 0}
-        moves: list[float] = []
+        measured_items: list[dict[str, Any]] = []
         for frame in timeline:
             measured = _measure(
                 timeline,
@@ -550,14 +560,8 @@ def compute_baseline(
             )
             if measured is None:
                 continue
-            counts[measured["outcome"]] += 1
-            moves.append(measured["move_units"])
-        total = sum(counts.values())
-        baseline[direction] = {
-            "total": total,
-            **counts,
-            "median_move_units": round(median(moves), 3) if moves else None,
-        }
+            measured_items.append(measured)
+        baseline[direction] = _summarize_items(measured_items)
 
     # Mesma ideia, agora com a única condição que separou algo nos sinais:
     # apostar a favor do movimento anterior, em TODO quadro, sem classificador.
@@ -830,9 +834,22 @@ def compute_flow_rule(
         if measured is None:
             continue
         by_streak.setdefault(streak, []).append({**measured, "direction": direction})
+    def _settle(items: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+        total = len(items)
+        wins = sum(1 for item in items if float(item["move_units"]) > 0)
+        ties = sum(1 for item in items if float(item["move_units"]) == 0)
+        return {"total": total, "acerta": wins, "empata": ties, "erra": total - wins - ties}
+
+    picked = [item for streak, items in by_streak.items() if streak >= 2 for item in items]
+    settlement = {
+        "todas": _settle(picked),
+        "BUY": _settle([item for item in picked if item["direction"] == "BUY"]),
+        "SELL": _settle([item for item in picked if item["direction"] == "SELL"]),
+    }
     return {
         "mode": mode,
         "window": window,
+        "settlement": settlement,
         "by_streak": {
             streak: _summarize_items(items) for streak, items in sorted(by_streak.items())
         },
@@ -903,6 +920,26 @@ def format_flow_rule(flow: Mapping[str, Any]) -> str:
                     f"    {streak:>2} seguidas     {direction:<7} {bucket['total']:>4}   "
                     f"{bucket['favorável']:>4} ({bucket['favorável'] / total:>4.0%})"
                 )
+    settlement = flow.get("settlement") or {}
+    if settlement:
+        lines.append("")
+        lines.append(
+            "    LIQUIDAÇÃO NA VELA DE EXPIRAÇÃO - fechou a favor, sem limiar de movimento"
+        )
+        lines.append(
+            "    (acerto precisa passar de 1/(1+payout): 54% com 85%, 56% com 80%, 53% com 90%)"
+        )
+        lines.append("    aposta 2+ velas    n   acerta   empata    erra   acerto")
+        for label in ("todas", "BUY", "SELL"):
+            bucket = settlement.get(label) or {}
+            total = bucket.get("total") or 0
+            if not total:
+                continue
+            lines.append(
+                f"    {label:<14} {total:>5}   {bucket['acerta']:>6}   "
+                f"{bucket['empata']:>7}   {bucket['erra']:>6}   "
+                f"{bucket['acerta'] / total:>6.0%}"
+            )
     return "\n".join(lines)
 
 
@@ -973,7 +1010,59 @@ def format_session_comparison(rows: Sequence[Mapping[str, Any]]) -> str:
             lines.append(
                 "        fluxo 2+ x base cega (mesma sessão): " + " · ".join(pieces)
             )
+    lines.append("")
+    lines.extend(_flow_edge_verdict(rows))
     return "\n".join(lines)
+
+
+# Régua combinada com o usuário ANTES do teste, para o veredito não ser
+# escolhido depois de ver o número: a regra de fluxo só passa se bater a base
+# cega da própria sessão em pelo menos 3 sessões, e nenhuma sessão grande pode
+# ficar abaixo da base.
+FLOW_EDGE_MIN_SAMPLE = 50
+FLOW_EDGE_MIN_MARGIN = 0.10
+FLOW_EDGE_MIN_SESSIONS = 3
+
+
+def _flow_edge_verdict(rows: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Traduz o controle por sessão no veredito que já estava combinado."""
+    lines = [
+        "    CONTROLE DA REGRA DE FLUXO - vantagem sobre a base cega da MESMA sessão",
+        f"    (só entra sessão/direção com n >= {FLOW_EDGE_MIN_SAMPLE};"
+        f" vantagem = delta >= {FLOW_EDGE_MIN_MARGIN:.0%})",
+    ]
+    wins_by_direction: dict[str, int] = {}
+    losses = 0
+    for direction in ("BUY", "SELL"):
+        wins = counted = 0
+        for row in rows:
+            bucket = (row.get("flow_by_direction") or {}).get(direction)
+            base = (row.get("base_by_direction") or {}).get(direction)
+            if not bucket or not base:
+                continue
+            bucket_total = int(bucket.get("total") or 0)
+            base_total = int(base.get("total") or 0)
+            if bucket_total < FLOW_EDGE_MIN_SAMPLE or not base_total:
+                continue
+            counted += 1
+            delta = bucket[FAVORABLE] / bucket_total - base[FAVORABLE] / base_total
+            if delta >= FLOW_EDGE_MIN_MARGIN:
+                wins += 1
+            elif delta < 0:
+                losses += 1
+        wins_by_direction[direction] = wins
+        lines.append(f"    {direction}: {wins}/{counted} sessão(ões) com vantagem")
+    if max(wins_by_direction.values()) >= FLOW_EDGE_MIN_SESSIONS and losses == 0:
+        lines.append(
+            "    Regra de fluxo: vantagem própria em sessões suficientes - "
+            "candidata a veredito, sujeita a aprovação."
+        )
+    else:
+        lines.append(
+            "    Regra de fluxo: sem vantagem própria sustentada - não adotar "
+            "como veredito de entrada."
+        )
+    return lines
 
 
 def format_baseline(baseline: Mapping[str, Any]) -> str:
@@ -994,6 +1083,7 @@ def format_baseline(baseline: Mapping[str, Any]) -> str:
             f"{bucket[FAVORABLE]:>4} ({bucket[FAVORABLE] / total:>4.0%})   "
             f"{bucket[NEUTRAL]:>4}   {bucket[ADVERSE]:>4}   "
             f"{bucket['median_move_units']:>7}"
+            f"   acerto {(bucket.get('acerta') or 0) / total:>4.0%}"
         )
     if not any((baseline.get(direction) or {}).get("total") for direction in ("BUY", "SELL")):
         lines.append("    Nenhum quadro pôde ser acompanhado até o horizonte.")

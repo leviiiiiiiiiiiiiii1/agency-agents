@@ -12,6 +12,7 @@ from auto_trader_iq.grade_report import (
     format_flow_rule,
     format_outcomes,
     format_session_comparison,
+    _flow_edge_verdict,
 )
 
 
@@ -458,6 +459,41 @@ class SessionComparisonTests(unittest.TestCase):
         self.assertIn("vs base", text)
         text.encode("cp1252")
 
+    def test_flow_verdict_needs_three_sessions_above_base(self):
+        def row(flow_buy, base_buy):
+            return {
+                "flow_by_direction": {"BUY": {"total": 100, FAVORABLE: flow_buy}},
+                "base_by_direction": {"BUY": {"total": 100, FAVORABLE: base_buy}},
+            }
+
+        one_win = _flow_edge_verdict([row(60, 30), row(30, 30)])
+        self.assertTrue(any("não adotar" in line for line in one_win))
+        enough = _flow_edge_verdict([row(60, 30), row(70, 20), row(55, 40)])
+        self.assertTrue(any("candidata a veredito" in line for line in enough))
+
+    def test_flow_verdict_ignores_small_sessions(self):
+        tiny = [
+            {
+                "flow_by_direction": {"BUY": {"total": 10, FAVORABLE: 9}},
+                "base_by_direction": {"BUY": {"total": 500, FAVORABLE: 50}},
+            }
+            for _ in range(4)
+        ]
+        verdict = _flow_edge_verdict(tiny)
+        self.assertTrue(any("não adotar" in line for line in verdict))
+
+    def test_baseline_reports_settlement(self):
+        frames = [
+            frame("2026-11-11T18:00:00+00:00", "NO_TRADE", "BUY", 0, [140.0] * 5),
+            frame("2026-11-11T18:03:00+00:00", "NO_TRADE", "BUY", 0,
+                  [100.0, 100.0, 100.0, 140.0, 140.0]),
+        ]
+        baseline = compute_baseline(frames, horizon_bars=3)
+        bucket = baseline["BUY"]
+        self.assertEqual(bucket["acerta"], 1)
+        self.assertEqual(bucket["erra"], 0)
+        self.assertIn("acerto", format_baseline(baseline))
+
     def test_empty_session_list_says_so(self):
         self.assertIn("Nenhuma sessão", format_session_comparison([]))
 
@@ -521,6 +557,21 @@ class FlowRuleTests(unittest.TestCase):
         self.assertIn("REGRA DE FLUXO", text)
         self.assertIn("Regra de 2+ velas seguidas", text)
         text.encode("cp1252")
+
+    def test_settlement_counts_what_happened_without_a_threshold(self):
+        flow = compute_flow_rule(self.closes_frames(), horizon_bars=3)
+        settle = flow["settlement"]["todas"]
+        self.assertEqual(
+            settle["acerta"] + settle["empata"] + settle["erra"], settle["total"]
+        )
+        streaks = flow["by_streak"]
+        self.assertEqual(
+            settle["total"],
+            sum(bucket["total"] for streak, bucket in streaks.items() if streak >= 2),
+        )
+        text = format_flow_rule(flow)
+        self.assertIn("LIQUIDAÇÃO", text)
+        self.assertIn("1/(1+payout)", text)
 
 
 class FormatTests(unittest.TestCase):
