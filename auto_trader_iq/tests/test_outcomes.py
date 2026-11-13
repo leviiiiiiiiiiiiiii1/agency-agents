@@ -726,3 +726,100 @@ class BankrollTests(unittest.TestCase):
         self.assertTrue(result["ruined"])
         self.assertEqual(result["bets"], 17)
         self.assertAlmostEqual(result["final"], 0.0)
+
+
+class BankrollLedgerTests(unittest.TestCase):
+    def _entry(self, when, win):
+        return {"when": when, "win": win, "direction": "BUY"}
+
+    def test_day_stops_at_the_loss_limit_and_the_rest_is_not_bet(self):
+        from auto_trader_iq.bankroll_ledger import StopRules, run_days
+
+        entries = [self._entry("2026-11-12T14:00:00+00:00", False) for _ in range(12)]
+        result = run_days(
+            entries,
+            bankroll=200.0,
+            stake_amount=5.0,
+            payout=0.86,
+            rules=StopRules(stop_loss_fraction=0.10, stop_win_fraction=0.50),
+        )
+        day = result["days"][0]
+        self.assertEqual(day["stop"], "limite de perda")
+        # Perde 5 por aposta: 10% de 200 = 20, então quatro apostas fecham o dia.
+        self.assertEqual(day["entries"], 4)
+        self.assertEqual(day["blocked"], 8)
+        self.assertAlmostEqual(day["end_balance"], 180.0)
+
+    def test_day_stops_at_the_win_target(self):
+        from auto_trader_iq.bankroll_ledger import StopRules, run_days
+
+        entries = [self._entry("2026-11-12T14:00:00+00:00", True) for _ in range(10)]
+        result = run_days(
+            entries,
+            bankroll=200.0,
+            stake_amount=5.0,
+            payout=0.86,
+            rules=StopRules(stop_loss_fraction=0.50, stop_win_fraction=0.05),
+        )
+        day = result["days"][0]
+        self.assertEqual(day["stop"], "meta de ganho")
+        # 5% de 200 = 10 de lucro; cada acerto rende 4,30.
+        self.assertEqual(day["entries"], 3)
+        self.assertGreater(day["blocked"], 0)
+
+    def test_the_bankroll_carries_over_to_the_next_day(self):
+        from auto_trader_iq.bankroll_ledger import StopRules, run_days
+
+        entries = [
+            self._entry("2026-11-12T14:00:00+00:00", True),
+            self._entry("2026-11-13T14:00:00+00:00", True),
+        ]
+        result = run_days(
+            entries,
+            bankroll=200.0,
+            stake_amount=5.0,
+            payout=0.86,
+            rules=StopRules(stop_loss_fraction=0.20, stop_win_fraction=0.50),
+        )
+        first, second = result["days"]
+        self.assertEqual(second["start_balance"], first["end_balance"])
+        self.assertAlmostEqual(result["final"], 200.0 + 2 * 5 * 0.86)
+
+    def test_without_money_to_bet_the_day_stops_as_broke(self):
+        from auto_trader_iq.bankroll_ledger import StopRules, run_days
+
+        entries = [self._entry("2026-11-12T14:00:00+00:00", False) for _ in range(50)]
+        result = run_days(
+            entries,
+            bankroll=12.0,
+            stake_amount=5.0,
+            payout=0.86,
+            rules=StopRules(stop_loss_fraction=10.0, stop_win_fraction=10.0),
+        )
+        self.assertEqual(result["days"][0]["stop"], "sem banca")
+        self.assertEqual(result["days"][0]["entries"], 2)
+
+    def test_ledger_section_shows_the_day_and_the_blocked_entries(self):
+        from auto_trader_iq.grade_report import format_ledger
+
+        flow = {
+            "sequence": [
+                {"when": "2026-11-12T14:00:00+00:00", "win": False},
+                {"when": "2026-11-12T14:05:00+00:00", "win": False},
+                {"when": "2026-11-12T14:10:00+00:00", "win": False},
+                {"when": "2026-11-12T14:15:00+00:00", "win": True},
+            ]
+        }
+        lines = format_ledger(
+            flow,
+            bankroll=200.0,
+            stake_amount=5.0,
+            stake_fraction=0.02,
+            payout=0.86,
+            stop_loss=0.05,
+            stop_win=0.50,
+        )
+        text = "\n".join(lines)
+        self.assertIn("BANCA POR DIA", text)
+        self.assertIn("limite de perda", text)
+        self.assertIn("travadas", text)

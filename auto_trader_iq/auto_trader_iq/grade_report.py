@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from .bankroll import bootstrap_by_block, breakeven_rate, simulate
+from .bankroll_ledger import StopRules, run_days
 from .opportunity_grade import (
     DEFAULT_CRITERIA,
     GRADE_METHOD,
@@ -969,7 +970,12 @@ def compute_flow_rule(
             if key not in block_ids:
                 block_ids[key] = len(block_ids)
             sequence.append(
-                {"block": block_ids[key], "win": float(measured["move_units"]) > 0}
+                {
+                    "block": block_ids[key],
+                    "win": float(measured["move_units"]) > 0,
+                    "when": str(frame.get("occurred_at_utc")),
+                    "direction": direction,
+                }
             )
     def _settle(items: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         total = len(items)
@@ -1066,6 +1072,74 @@ def format_bankroll(
         " verdadeira for a do extremo do intervalo, a banca final também vai para"
         " o extremo - e é por isso que a taxa ainda não está provada."
     )
+    return lines
+
+
+def format_ledger(
+    flow: Mapping[str, Any],
+    *,
+    bankroll: float,
+    stake_amount: float | None,
+    stake_fraction: float,
+    payout: float,
+    stop_loss: float,
+    stop_win: float,
+    detail: int = 0,
+) -> list[str]:
+    """A banca dia a dia, com o stop cortando o dia quando o limite bate."""
+    entries = [item for item in (flow.get("sequence") or []) if item.get("when")]
+    if not entries:
+        return []
+    stake = stake_amount if stake_amount else bankroll * stake_fraction
+    rules = StopRules(stop_loss_fraction=stop_loss, stop_win_fraction=stop_win)
+    result = run_days(
+        entries,
+        bankroll=bankroll,
+        stake_amount=stake,
+        payout=payout,
+        rules=rules,
+    )
+    lines = [
+        "",
+        "BANCA POR DIA - stop de ganho e de perda (conta do que foi medido, sem ordem)",
+        f"    banca {bankroll:.0f} · R$ {stake:.2f} por entrada · payout {payout:.0%}"
+        f" · stop de {stop_loss:.0%} da banca do dia na perda"
+        f" e {stop_win:.0%} na meta",
+        "    dia           entrada  acerto  travada  inicio   fim    resultado  parou em",
+    ]
+    for day in result["days"]:
+        total = day["entries"] or 1
+        change = day["end_balance"] / day["start_balance"] - 1
+        lines.append(
+            f"    {day['day']:<15} {day['entries']:>7} {day['wins'] / total:>7.0%}"
+            f" {day['blocked']:>8} {day['start_balance']:>7.0f}"
+            f" {day['end_balance']:>6.0f} {change:>+10.0%}  {day['stop']}"
+        )
+    lines.append(
+        f"    total: {result['entries']} entradas, {result['blocked']} travadas"
+        f" pelo stop, banca final R$ {result['final']:.0f}"
+        f" ({result['final'] / bankroll - 1:+.0%})"
+    )
+    if result["blocked"]:
+        lines.append(
+            "    As entradas travadas não foram apostadas: o stop vale até a virada"
+            " do dia e o app volta a operar no dia seguinte."
+        )
+    if detail and result["days"]:
+        shown = result["days"][-1]["ledger"][-detail:]
+        lines.append("")
+        lines.append(
+            f"    ÚLTIMAS {len(shown)} ENTRADAS CONTADAS - uma linha por ordem que"
+            " seria executada (nada foi executado)"
+        )
+        lines.append("    hora                 direção   aposta   resultado    lucro   banca")
+        for item in shown:
+            when = item["when"][11:19]
+            result_label = "acertou" if item["win"] else "errou  "
+            lines.append(
+                f"    {when:<20} {item['direction']:<8} {item['stake']:>7.2f}"
+                f"   {result_label:<10} {item['profit']:>+7.2f} {item['balance']:>7.2f}"
+            )
     return lines
 
 
@@ -2316,6 +2390,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Fração da banca apostada em cada entrada (padrão: 0.02 = 2%%).",
     )
     parser.add_argument(
+        "--ledger-detail",
+        type=int,
+        default=0,
+        help="Quantas entradas do último dia listar, uma por linha (padrão: 0).",
+    )
+    parser.add_argument(
+        "--stop-loss",
+        type=float,
+        default=0.20,
+        help="Limite de perda do dia, em fração da banca do dia (padrão: 0.20).",
+    )
+    parser.add_argument(
+        "--stop-win",
+        type=float,
+        default=0.30,
+        help="Meta de ganho do dia, em fração da banca do dia (padrão: 0.30).",
+    )
+    parser.add_argument(
         "--stake-amount",
         type=float,
         default=None,
@@ -2425,6 +2517,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                         )
                     )
                 )
+                ledger = format_ledger(
+                    flow,
+                    bankroll=args.bankroll,
+                    stake_amount=args.stake_amount,
+                    stake_fraction=args.stake,
+                    payout=args.payout,
+                    stop_loss=args.stop_loss,
+                    stop_win=args.stop_win,
+                    detail=args.ledger_detail,
+                )
+                if ledger:
+                    print("\n".join(ledger))
     return 0
 
 
