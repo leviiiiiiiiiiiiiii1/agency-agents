@@ -1243,6 +1243,19 @@ def _flow_stratified_edge(
         else 0.0
     )
     bets = sum(cell["total"] for cell in cells)
+    # Metade inicial contra metade final: se a vantagem está encolhendo, o z
+    # pode até subir com mais dado enquanto a margem cai, e isso muda a
+    # decisão. As células já vêm em ordem cronológica.
+    half = max(1, len(cells) // 2)
+    early, late = cells[:half], cells[half:]
+    early_bets = sum(cell["total"] for cell in early)
+    late_bets = sum(cell["total"] for cell in late)
+    early_margin = (
+        sum(cell["deviation"] for cell in early) / early_bets if early_bets else 0.0
+    )
+    late_margin = (
+        sum(cell["deviation"] for cell in late) / late_bets if late_bets else 0.0
+    )
     wins = sum(cell["wins"] for cell in cells)
     base_wins = sum(cell["base_rate_times_total"] for cell in cells)
     # Quantas apostas elegíveis faltam para o z passar de 1.96 mantendo o
@@ -1264,6 +1277,10 @@ def _flow_stratified_edge(
         "z_without_best": rest_z,
         "best_label": best["label"],
         "best_margin": best["margin"],
+        "early_margin": early_margin,
+        "early_bets": early_bets,
+        "late_margin": late_margin,
+        "late_bets": late_bets,
         "bets_needed": needed,
     }
 
@@ -1333,6 +1350,14 @@ def _flow_edge_verdict(rows: Sequence[Mapping[str, Any]]) -> list[str]:
     # Os dois critérios de adoção, ditos em voz alta para não virarem conversa
     # depois: z de 1.96 sobre a base do próprio bloco e sobrevivência à remoção
     # da melhor célula.
+    if edge["blocks"] > 2 and edge["early_bets"] and edge["late_bets"]:
+        lines.append(
+            f"    Metade inicial: {edge['early_margin'] * 100:+.1f}pp"
+            f" (n={edge['early_bets']}) · metade final:"
+            f" {edge['late_margin'] * 100:+.1f}pp (n={edge['late_bets']})"
+            " - se a margem cai enquanto o z sobe, o número está sendo"
+            " sustentado por dado antigo."
+        )
     robust = edge["z_without_best"] >= 1.0
     if edge["blocks"] > 1:
         lines.append(
