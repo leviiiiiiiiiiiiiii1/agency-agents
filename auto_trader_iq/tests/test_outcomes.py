@@ -1064,3 +1064,21 @@ class DayStopTests(unittest.TestCase):
         )
         self.assertIn("ruído do dia", text)
         self.assertIn("DENTRO do ruído", text)
+
+    def test_two_bets_in_the_same_minute_show_the_candle_they_bet(self):
+        # Dois quadros do mesmo minuto apostando velas diferentes (idades 1 e 0):
+        # a tabela mostrava a hora da leitura nas duas e parecia aposta dobrada.
+        fall = [100.0, 140.0, 140.0, 140.0, 140.0, 140.0]
+        frames = [
+            frame("2026-11-11T18:00:00+00:00", "A", "BUY", 1, [140.0] * 6),
+            frame("2026-11-11T18:00:30+00:00", "A", "BUY", 0, [140.0] * 6),
+            frame("2026-11-11T18:03:00+00:00", "A", "BUY", 0, fall),
+            frame("2026-11-11T18:03:30+00:00", "A", "BUY", 0, fall),
+        ]
+        sequence = compute_outcomes(frames, bar_seconds=60)["sequence"]
+        stamps = [item["when"] for item in sequence]
+        self.assertEqual(len(stamps), 2, stamps)
+        self.assertEqual(len(set(stamps)), 2, stamps)
+        # A leitura dos dois foi no mesmo minuto; a aposta, não.
+        self.assertEqual({item["read_at"][:16] for item in sequence},
+                         {"2026-11-11T18:00"})

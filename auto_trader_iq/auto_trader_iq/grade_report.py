@@ -304,6 +304,7 @@ def compute_outcomes(
             skipped += 1
             continue
         candle = _entry_candle(frame, bar_seconds)
+        candle_index = candle if isinstance(candle, int) else None
         if candle is not None:
             if candle in seen_candles:
                 repeated += 1
@@ -327,6 +328,7 @@ def compute_outcomes(
             {
                 "grade": frame.get("code"),
                 "when": str(frame.get("occurred_at_utc") or ""),
+                "candle_index": candle_index,
                 "session_id": frame.get("session_id"),
                 "direction": direction,
                 "reasons": list(frame.get("reasons") or []),
@@ -500,9 +502,22 @@ def compute_outcomes(
         key = (item.get("session_id"), int(when.timestamp() // 3600))
         if key not in blocks:
             blocks[key] = len(blocks)
+        # O horário da aposta é o da vela apostada, não o do quadro em que ela foi
+        # lida: dois quadros do mesmo minuto podiam apostar velas diferentes e
+        # saíam com a mesma hora na tabela, parecendo aposta contada duas vezes.
+        candle_index = item.get("candle_index")
+        if isinstance(candle_index, int):
+            from datetime import datetime, timezone
+
+            booked_at = datetime.fromtimestamp(
+                candle_index * max(1.0, float(bar_seconds)), tz=timezone.utc
+            ).isoformat()
+        else:
+            booked_at = str(item.get("when"))
         sequence.append(
             {
-                "when": str(item.get("when")),
+                "when": booked_at,
+                "read_at": str(item.get("when")),
                 "direction": item["direction"],
                 "win": float(item["move_units"]) > 0,
                 "block": blocks[key],
