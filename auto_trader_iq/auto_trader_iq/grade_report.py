@@ -1010,6 +1010,7 @@ def format_bankroll(
     bankroll: float,
     payout: float,
     stake: float,
+    stake_amount: float | None = None,
 ) -> list[str]:
     """O que a banca faria seguindo exatamente os desfechos que foram medidos."""
     sequence = list(flow.get("sequence") or [])
@@ -1023,14 +1024,26 @@ def format_bankroll(
     blocks: dict[Any, list[bool]] = {}
     for item in sequence:
         blocks.setdefault(item.get("block"), []).append(bool(item.get("win")))
-    path = simulate(ordered, bankroll=bankroll, payout=payout, stake_fraction=stake)
-    spread = bootstrap_by_block(
-        list(blocks.values()), bankroll=bankroll, payout=payout, stake_fraction=stake
+    path = simulate(
+        ordered,
+        bankroll=bankroll,
+        payout=payout,
+        stake_fraction=stake,
+        stake_amount=stake_amount,
     )
+    spread = bootstrap_by_block(
+        list(blocks.values()),
+        bankroll=bankroll,
+        payout=payout,
+        stake_fraction=stake,
+        stake_amount=stake_amount,
+        runs=1000,
+    )
+    size = f"R$ {stake_amount:.2f} por entrada" if stake_amount else f"{stake:.0%} da banca"
     lines = [
         "",
         "BANCA HIPOTÉTICA - a regra de fluxo com os desfechos medidos, nada previsto",
-        f"    banca {bankroll:.0f} · payout {payout:.0%} · aposta {stake:.0%} da banca"
+        f"    banca {bankroll:.0f} · payout {payout:.0%} · aposta {size}"
         f" · equilíbrio {breakeven_rate(payout):.1%} de acerto"
         f" · empate conta como perda",
         f"    apostas {len(ordered)} · acertos {wins} ({wins / len(ordered):.0%})"
@@ -2303,6 +2316,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Fração da banca apostada em cada entrada (padrão: 0.02 = 2%%).",
     )
     parser.add_argument(
+        "--stake-amount",
+        type=float,
+        default=None,
+        help="Valor fixo por entrada (sobrepõe --stake), ex.: 12.",
+    )
+    parser.add_argument(
         "--min-move",
         type=float,
         default=0.5,
@@ -2402,6 +2421,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             bankroll=args.bankroll,
                             payout=args.payout,
                             stake=args.stake,
+                            stake_amount=args.stake_amount,
                         )
                     )
                 )

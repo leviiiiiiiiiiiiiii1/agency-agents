@@ -21,8 +21,14 @@ def simulate(
     bankroll: float = 200.0,
     payout: float = 0.85,
     stake_fraction: float = 0.02,
+    stake_amount: float | None = None,
 ) -> dict[str, Any]:
-    """Banca final, maior queda e se chegou a quebrar, apostando uma fração fixa."""
+    """Banca final, maior queda e se chegou a quebrar.
+
+    Com `stake_amount` a aposta é um valor fixo (é o que a corretora cobra); sem
+    ele, é uma fração da banca atual. Valor fixo sobre banca pequena quebra: a
+    aposta não encolhe quando a banca encolhe.
+    """
     equity = float(bankroll)
     peak = equity
     worst = 0.0
@@ -32,12 +38,14 @@ def simulate(
         if equity <= 0:
             ruined = True
             break
-        amount = equity * stake_fraction
+        amount = stake_amount if stake_amount is not None else equity * stake_fraction
+        amount = min(amount, equity)
         bets += 1
         if win:
             equity += amount * payout
         else:
             equity -= amount
+        equity = max(equity, 0.0)
         peak = max(peak, equity)
         worst = min(worst, equity / peak - 1.0)
     return {
@@ -56,6 +64,7 @@ def bootstrap_by_block(
     bankroll: float = 200.0,
     payout: float = 0.85,
     stake_fraction: float = 0.02,
+    stake_amount: float | None = None,
     runs: int = 2000,
     seed: int = 7,
 ) -> dict[str, Any]:
@@ -82,6 +91,7 @@ def bootstrap_by_block(
             bankroll=bankroll,
             payout=payout,
             stake_fraction=stake_fraction,
+            stake_amount=stake_amount,
         )
         finals.append(result["final"])
         drawdowns.append(result["max_drawdown"])

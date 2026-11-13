@@ -714,3 +714,15 @@ class BankrollTests(unittest.TestCase):
         self.assertIn("não prevê", text)
         self.assertIn("apostas 3", text)
         self.assertIn("horas 2", text)
+
+    def test_fixed_stake_does_not_shrink_with_the_bankroll(self):
+        from auto_trader_iq.bankroll import simulate
+
+        # R$ 12 sobre R$ 200: sete perdas seguidas quebram a banca, porque a
+        # aposta não acompanha a banca para baixo.
+        result = simulate(
+            [False] * 17, bankroll=200.0, payout=0.86, stake_amount=12.0
+        )
+        self.assertTrue(result["ruined"])
+        self.assertEqual(result["bets"], 17)
+        self.assertAlmostEqual(result["final"], 0.0)
