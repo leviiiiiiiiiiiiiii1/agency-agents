@@ -329,6 +329,7 @@ def compute_outcomes(
                 "grade": frame.get("code"),
                 "when": str(frame.get("occurred_at_utc") or ""),
                 "candle_index": candle_index,
+                "criteria_hash": str(frame.get("criteria_hash") or "sem-hash"),
                 "session_id": frame.get("session_id"),
                 "direction": direction,
                 "reasons": list(frame.get("reasons") or []),
@@ -524,8 +525,18 @@ def compute_outcomes(
             }
         )
 
+    # Três versões de limiar convivem no banco: somar todas e chamar de "o
+    # classificador" mede a média de três classificadores diferentes.
+    by_hash: dict[str, dict[str, int]] = {}
+    for item in results:
+        bucket = by_hash.setdefault(str(item.get("criteria_hash")), {"n": 0, "acerta": 0})
+        bucket["n"] += 1
+        if float(item["move_units"]) > 0:
+            bucket["acerta"] += 1
+
     return {
         "sequence": sequence,
+        "by_criteria_hash": by_hash,
         "evaluated": len(results),
         "by_direction": by_reason_direction,
         "by_grade_direction": by_grade_direction,
@@ -2065,6 +2076,17 @@ def format_outcomes(outcomes: Mapping[str, Any]) -> str:
                 f"    ({outcomes['repeated_across_sessions']} desses vieram de outra"
                 " sessão vendo a mesma vela - sessão reiniciada, mesma aposta)"
             )
+        if len(outcomes.get("by_criteria_hash") or {}) > 1:
+            lines.append("    Por versão de limiar (o desfecho não é do classificador de hoje):")
+            for key, bucket in sorted(
+                (outcomes["by_criteria_hash"] or {}).items(),
+                key=lambda pair: -pair[1]["n"],
+            ):
+                total = bucket["n"] or 1
+                lines.append(
+                    f"      {key:<18} n={bucket['n']:>4}  acerto"
+                    f" {bucket['acerta'] / total:>4.0%}"
+                )
         lines.append("")
         lines.append(
             "    classe   n     favorável   neutra   adversa   mediano   acerto"

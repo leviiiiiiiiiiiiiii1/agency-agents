@@ -1082,3 +1082,21 @@ class DayStopTests(unittest.TestCase):
         # A leitura dos dois foi no mesmo minuto; a aposta, não.
         self.assertEqual({item["read_at"][:16] for item in sequence},
                          {"2026-11-11T18:00"})
+
+    def test_outcomes_say_which_threshold_version_produced_them(self):
+        # Dois classificadores diferentes no mesmo banco: somar os dois e chamar
+        # o resultado de "o app acerta 55%" mistura duas réguas.
+        frames = [
+            frame("2026-11-11T18:00:00+00:00", "A", "BUY", 0, [140.0] * 5),
+            frame("2026-11-11T18:03:00+00:00", "A", "BUY", 0, [100.0, 140.0, 140.0, 140.0]),
+            frame("2026-11-11T18:10:00+00:00", "A", "BUY", 0, [140.0] * 5),
+            frame("2026-11-11T18:13:00+00:00", "A", "BUY", 0, [180.0, 140.0, 140.0, 140.0]),
+        ]
+        frames[0]["criteria_hash"] = "cdde517363f504c8"
+        frames[1]["criteria_hash"] = "cdde517363f504c8"
+        frames[2]["criteria_hash"] = "29e7f80bf3066e89"
+        frames[3]["criteria_hash"] = "29e7f80bf3066e89"
+        result = compute_outcomes(frames)
+        by_hash = result["by_criteria_hash"]
+        self.assertEqual(set(by_hash), {"cdde517363f504c8", "29e7f80bf3066e89"})
+        self.assertEqual(sum(bucket["n"] for bucket in by_hash.values()), 2)
