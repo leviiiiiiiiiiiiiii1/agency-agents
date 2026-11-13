@@ -1123,3 +1123,26 @@ class DayStopTests(unittest.TestCase):
         text = "\n".join(_flow_edge_verdict(rows))
         self.assertIn("Faltam ~", text)
         self.assertIn("h de captura", text)
+
+    def test_stake_ladder_shows_when_the_stop_stops_being_noise(self):
+        from auto_trader_iq.grade_report import format_stake_ladder
+
+        # Mesmo stream, três tamanhos: só em 0,5% o stop de 25% fica fora do
+        # ruído do dia. É essa a decisão que a tabela existe para mostrar.
+        sequence = [
+            {"when": f"2026-11-12T{h:02d}:{m:02d}:00+00:00",
+             "win": (h + m) % 5 < 3, "direction": "BUY"}
+            for h in range(6, 18) for m in range(0, 60, 5)
+        ]
+        lines = format_stake_ladder(
+            {"sequence": sequence}, bankroll=200.0, payout=0.86, stop_loss=0.25
+        )
+        text = "\n".join(lines)
+        self.assertIn("2.5% = R$  5.00", text)
+        self.assertIn("1.0% = R$  2.00", text)
+        self.assertIn("0.5% = R$  1.00", text)
+        self.assertIn("1.0σ", text)
+        self.assertIn("4.8σ", text)
+        # Cada linha é o mesmo stream com aposta menor: o final cai e o stop
+        # deixa de ser ruído. Sem esse contraste a tabela não diria nada.
+        self.assertIn("±      26%", text)

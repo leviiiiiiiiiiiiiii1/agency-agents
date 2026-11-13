@@ -1132,6 +1132,75 @@ def format_bankroll(
     return lines
 
 
+def _day_noise(day: Mapping[str, Any], stake: float, payout: float) -> float | None:
+    """Um desvio-padrão do dia, em fração da banca de abertura.
+
+    Com aposta de 5 numa banca de 200 e 300 apostas, isso passa de 40%: nenhum
+    limite percentual abaixo disso separa azar de falha.
+    """
+    count = int(day.get("entries") or 0)
+    start = float(day.get("start_balance") or 1.0)
+    if count < 2 or start <= 0:
+        return None
+    p = float(day.get("wins") or 0) / count
+    mean = p * payout - (1 - p)
+    variance = p * (payout - mean) ** 2 + (1 - p) * (-1 - mean) ** 2
+    return math.sqrt(variance * count) * stake / start
+
+
+def format_stake_ladder(
+    flow: Mapping[str, Any],
+    *,
+    bankroll: float,
+    payout: float,
+    stop_loss: float,
+    fractions: Sequence[float] = (0.025, 0.01, 0.005),
+) -> list[str]:
+    """A mesma sequência em três tamanhos de aposta.
+
+    O stop de 25% e o tamanho da aposta não são decisões separadas: a um
+    desvio-padrão do dia de 40% da banca, qualquer limite abaixo disso dispara
+    por sorte. Esta tabela diz em que tamanho o limite passa a significar algo.
+    """
+    entries = [item for item in (flow.get("sequence") or []) if item.get("when")]
+    if not entries:
+        return []
+    entries.sort(key=lambda item: str(item.get("when")))
+    lines = [
+        "",
+        "O MESMO STREAM EM TRÊS TAMANHOS DE APOSTA - o stop só vale onde ele cabe",
+        "    aposta por entrada   final      pior dia   ruído (±1σ)   stop/ruído",
+    ]
+    for fraction in fractions:
+        stake = bankroll * fraction
+        result = run_days(
+            entries,
+            bankroll=bankroll,
+            stake_amount=stake,
+            payout=payout,
+            rules=StopRules(stop_loss_fraction=stop_loss, stop_win_fraction=0.0),
+        )
+        worst = min(
+            (day["worst_fraction"] for day in result["days"]), default=0.0
+        )
+        noises = [
+            noise
+            for noise in (_day_noise(day, stake, payout) for day in result["days"])
+            if noise is not None
+        ]
+        noise = max(noises) if noises else 0.0
+        ratio = f"{stop_loss / noise:.1f}σ" if noise else "-"
+        lines.append(
+            f"    {fraction:.1%} = R$ {stake:>5.2f}      {result['final']:>7.0f}"
+            f"   {worst:>+8.0%}   ±{noise:>9.0%}   {ratio:>8}"
+        )
+    lines.append(
+        "    stop/ruído abaixo de 1σ significa que o limite é atingido por azar"
+        " antes de qualquer coisa mudar no mercado."
+    )
+    return lines
+
+
 def format_ledger(
     flow: Mapping[str, Any],
     *,
@@ -1205,16 +1274,11 @@ def format_ledger(
     )
     noisy = None
     for day in result["days"]:
-        count = day["entries"]
-        start = day["start_balance"] or 1.0
-        if count < 2:
+        noise = _day_noise(day, stake, payout)
+        if noise is None:
             continue
-        p = day["wins"] / count
-        mean = p * payout - (1 - p)
-        variance = p * (payout - mean) ** 2 + (1 - p) * (-1 - mean) ** 2
-        noise = math.sqrt(variance * count) * stake / start
         if noisy is None or noise > noisy[1]:
-            noisy = (day["day"], noise, count)
+            noisy = (day["day"], noise, day["entries"])
     if noisy:
         day_key, noise, count = noisy
         verdict = (
@@ -2704,6 +2768,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 if signals:
                     print("\n".join(signals))
+                for stream in (flow, outcomes):
+                    ladder = format_stake_ladder(
+                        stream,
+                        bankroll=args.bankroll,
+                        payout=args.payout,
+                        stop_loss=args.stop_loss,
+                    )
+                    if ladder:
+                        print("\n".join(ladder))
     return 0
 
 
