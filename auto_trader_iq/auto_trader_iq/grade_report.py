@@ -1120,6 +1120,12 @@ def format_ledger(
         f" pelo stop, banca final R$ {result['final']:.0f}"
         f" ({result['final'] / bankroll - 1:+.0%})"
     )
+    if result.get("suspect_day_bucket"):
+        lines.append(
+            f"    AVISO: as entradas atravessam {result['span_hours']:.0f} horas e"
+            " caíram todas num dia só. O balde de dia (fuso local) está errado e o"
+            " stop abaixo vale para o período inteiro, não para um dia."
+        )
     if result["blocked"]:
         lines.append(
             "    As entradas travadas não foram apostadas: o stop vale até a virada"

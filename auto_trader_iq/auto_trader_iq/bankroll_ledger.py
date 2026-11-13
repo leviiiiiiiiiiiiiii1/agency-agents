@@ -39,6 +39,20 @@ class StopRules:
             raise ValueError("limite de stop não pode ser negativo")
 
 
+def _moment(when: str | datetime) -> datetime | None:
+    moment = when
+    if isinstance(when, str):
+        try:
+            moment = datetime.fromisoformat(when.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if not isinstance(moment, datetime):
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment
+
+
 def day_of(when: str | datetime) -> str:
     """Dia local da entrada. O journal grava UTC; quem opera vive no fuso da máquina."""
     moment = when
@@ -124,8 +138,20 @@ def run_days(
             current["stop"] = STOP_WIN
 
     taken = sum(day["entries"] for day in days)
+    # Se tudo caiu num dia só mas as entradas atravessam mais de 24 horas, o
+    # balde de dia está errado (fuso, data sem fuso, ordem) e o stop virou um
+    # stop de 27 horas. Melhor avisar do que apresentar a conta como se fosse dia.
+    span_hours = 0.0
+    if len(entries) >= 2:
+        first = _moment(str(entries[0].get("when") or ""))
+        last = _moment(str(entries[-1].get("when") or ""))
+        if first and last:
+            span_hours = (last - first).total_seconds() / 3600.0
+    suspect = len(days) <= 1 and span_hours > 24.0
     return {
         "days": days,
+        "span_hours": span_hours,
+        "suspect_day_bucket": suspect,
         "final": balance,
         "entries": taken,
         "blocked": total_blocked,

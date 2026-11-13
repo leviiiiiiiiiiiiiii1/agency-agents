@@ -863,3 +863,22 @@ class BankrollLedgerTests(unittest.TestCase):
         # 74% com 31 casos não é uma taxa: o relatório mostra o quanto isso oscila.
         self.assertIn("74%", text)
         self.assertIn("+/- 15pp", text)
+
+    def test_entries_spanning_more_than_a_day_warn_about_the_day_bucket(self):
+        from auto_trader_iq.bankroll_ledger import StopRules, run_days
+
+        entries = [
+            self._entry("2026-11-11T20:48:00+00:00", True),
+            self._entry("2026-11-12T20:48:00+00:00", True),
+        ]
+        result = run_days(
+            entries,
+            bankroll=200.0,
+            stake_amount=5.0,
+            payout=0.86,
+            rules=StopRules(stop_loss_fraction=0.25, stop_win_fraction=0.0),
+        )
+        # Dois dias de calendário: o balde funcionou e não há aviso.
+        self.assertEqual(len(result["days"]), 2)
+        self.assertFalse(result["suspect_day_bucket"])
+        self.assertGreater(result["span_hours"], 24)
