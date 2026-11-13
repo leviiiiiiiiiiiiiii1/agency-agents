@@ -94,6 +94,7 @@ def run_days(
                 "losses": 0,
                 "blocked": 0,
                 "stop": STOP_NONE,
+                "min_balance": balance,
                 "ledger": [],
             }
             days.append(current)
@@ -116,6 +117,9 @@ def run_days(
         current["entries"] += 1
         current["wins" if won else "losses"] += 1
         current["end_balance"] = balance
+        # O fundo do dia é o que diz se o stop chegou perto: queda a partir do
+        # pico esconde a distância até o limite, que é contada do início do dia.
+        current["min_balance"] = min(current["min_balance"], balance)
         current["ledger"].append(
             {
                 "when": str(entry.get("when")),
@@ -137,6 +141,15 @@ def run_days(
         ]:
             current["stop"] = STOP_WIN
 
+    for day in days:
+        start = day["start_balance"] or 1.0
+        day["worst_fraction"] = day["min_balance"] / start - 1.0
+        day["margin_to_stop"] = (
+            stop.stop_loss_fraction + day["worst_fraction"]
+            if stop.stop_loss_fraction
+            else None
+        )
+
     taken = sum(day["entries"] for day in days)
     # Se tudo caiu num dia só mas as entradas atravessam mais de 24 horas, o
     # balde de dia está errado (fuso, data sem fuso, ordem) e o stop virou um
@@ -157,4 +170,57 @@ def run_days(
         "entries": taken,
         "blocked": total_blocked,
         "stopped_days": sum(1 for day in days if day["stop"] not in (STOP_NONE,)),
+    }
+
+
+def day_stop(
+    entries: Sequence[Mapping[str, Any]],
+    *,
+    bankroll: float = 200.0,
+    stake_amount: float = 5.0,
+    payout: float = 0.86,
+    rules: StopRules | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """O que o app precisa saber antes de mostrar sinal novo, no dia de hoje.
+
+    Recebe as entradas já liquidadas (as mesmas que o relatório mede) e devolve
+    se o dia ainda aceita sinal. Sem entrada nenhuma hoje, o dia começa na banca
+    cheia: recomeçar é o comportamento do stop, não um caso especial.
+    """
+    stop = rules or StopRules()
+    today = day_of(now or datetime.now(timezone.utc))
+    booked = [e for e in entries if day_of(str(e.get("when") or "")) == today]
+    result = run_days(
+        booked,
+        bankroll=bankroll,
+        stake_amount=stake_amount,
+        payout=payout,
+        rules=stop,
+    )
+    day = result["days"][-1] if result["days"] else None
+    state = day["stop"] if day else STOP_NONE
+    allowed = state == STOP_NONE
+    if allowed:
+        reason = ""
+    elif state == STOP_LOSS:
+        reason = (
+            f"stop do dia: {day['worst_fraction']:.0%} da banca de abertura"
+            f" (limite {stop.stop_loss_fraction:.0%})"
+        )
+    elif state == STOP_WIN:
+        reason = f"meta de ganho do dia: {day['end_balance'] / day['start_balance'] - 1:+.0%}"
+    else:
+        reason = "sem banca para a próxima entrada"
+    return {
+        "day": today,
+        "allowed": allowed,
+        "reason": reason,
+        "stop": state,
+        "entries": day["entries"] if day else 0,
+        "balance": result["final"],
+        "blocked": day["blocked"] if day else 0,
+        "margin_to_stop": day["margin_to_stop"] if day else (
+            stop.stop_loss_fraction if stop.stop_loss_fraction else None
+        ),
     }

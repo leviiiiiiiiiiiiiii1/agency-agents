@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timezone
 
 from auto_trader_iq.grade_report import (
     ADVERSE,
@@ -930,3 +931,96 @@ class BankrollLedgerTests(unittest.TestCase):
         )
         self.assertIn("hora local", text)
         self.assertNotIn("08:05:00", text)
+
+    def test_signal_sequence_comes_in_the_order_it_happened(self):
+        frames = [
+            frame("2026-11-11T18:00:00+00:00", "A", "BUY", 0, [140.0] * 5),
+            frame("2026-11-11T18:03:00+00:00", "A", "BUY", 0, [100.0, 140.0, 140.0, 140.0]),
+            frame("2026-11-11T18:05:00+00:00", "A", "SELL", 0, [100.0] * 5),
+            frame("2026-11-11T18:08:00+00:00", "A", "SELL", 0, [180.0, 100.0, 100.0, 100.0]),
+        ]
+        sequence = compute_outcomes(frames)["sequence"]
+        self.assertEqual(len(sequence), 2)
+        self.assertEqual([item["when"] for item in sequence],
+                         sorted(item["when"] for item in sequence))
+        self.assertEqual([item["direction"] for item in sequence], ["BUY", "SELL"])
+        self.assertTrue(all(item["win"] for item in sequence))
+
+
+class DayStopTests(unittest.TestCase):
+    def test_day_stop_vetoes_the_rest_of_the_day(self):
+        from auto_trader_iq.bankroll_ledger import StopRules, day_stop
+
+        entries = [
+            {"when": "2026-11-12T10:00:00+00:00", "win": False},
+            {"when": "2026-11-12T10:05:00+00:00", "win": False},
+            {"when": "2026-11-12T10:10:00+00:00", "win": True},
+        ]
+        state = day_stop(
+            entries,
+            bankroll=200.0,
+            stake_amount=50.0,
+            rules=StopRules(stop_loss_fraction=0.25, stop_win_fraction=0.0),
+            now=datetime(2026, 11, 12, 12, tzinfo=timezone.utc),
+        )
+        self.assertFalse(state["allowed"])
+        self.assertEqual(state["stop"], "limite de perda")
+        # Uma perda de 50 numa banca de 200 já bate o limite: a terceira entrada
+        # não é apostada, e o app diria isso antes de mostrar o sinal.
+        self.assertEqual(state["entries"], 1)
+        self.assertEqual(state["blocked"], 2)
+
+    def test_day_stop_starts_clean_on_the_next_day(self):
+        from auto_trader_iq.bankroll_ledger import StopRules, day_stop
+
+        entries = [{"when": "2026-11-12T10:00:00+00:00", "win": False}]
+        state = day_stop(
+            entries,
+            bankroll=200.0,
+            stake_amount=50.0,
+            rules=StopRules(stop_loss_fraction=0.25, stop_win_fraction=0.0),
+            now=datetime(2026, 11, 13, 9, tzinfo=timezone.utc),
+        )
+        self.assertTrue(state["allowed"])
+        self.assertEqual(state["entries"], 0)
+
+    def test_day_stop_never_blocks_with_the_win_target_off(self):
+        from auto_trader_iq.bankroll_ledger import StopRules, day_stop
+
+        entries = [{"when": "2026-11-12T10:00:00+00:00", "win": True}] * 20
+        state = day_stop(
+            entries,
+            bankroll=200.0,
+            stake_amount=5.0,
+            rules=StopRules(stop_loss_fraction=0.25, stop_win_fraction=0.0),
+            now=datetime(2026, 11, 12, 12, tzinfo=timezone.utc),
+        )
+        self.assertTrue(state["allowed"])
+        self.assertEqual(state["blocked"], 0)
+
+    def test_ledger_names_the_sequence_and_the_floor_of_the_day(self):
+        from auto_trader_iq.grade_report import format_ledger
+
+        flow = {
+            "sequence": [
+                {"when": "2026-11-12T10:00:00+00:00", "win": False, "direction": "BUY"},
+                {"when": "2026-11-12T10:05:00+00:00", "win": True, "direction": "BUY"},
+            ]
+        }
+        text = "\n".join(
+            format_ledger(
+                flow,
+                bankroll=200.0,
+                stake_amount=5.0,
+                stake_fraction=0.02,
+                payout=0.86,
+                stop_loss=0.25,
+                stop_win=0.0,
+                detail=0,
+                label="regra de fluxo",
+            )
+        )
+        self.assertIn("sequência: regra de fluxo", text)
+        self.assertIn("pior", text)
+        # Uma perda de cinco em 200 é -2,5%: é essa a distância que importa.
+        self.assertIn("-3%", text)

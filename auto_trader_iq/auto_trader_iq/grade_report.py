@@ -323,6 +323,8 @@ def compute_outcomes(
         results.append(
             {
                 "grade": frame.get("code"),
+                "when": str(frame.get("occurred_at_utc") or ""),
+                "session_id": frame.get("session_id"),
                 "direction": direction,
                 "reasons": list(frame.get("reasons") or []),
                 "context_opposed": _context_opposed(features),
@@ -484,7 +486,28 @@ def compute_outcomes(
             ),
         }
 
+    # A sequência dos sinais do próprio app: é ela que a banca deveria apostar.
+    # A ordem é a do tempo; quadros do mesmo minuto já foram reduzidos a um.
+    sequence: list[dict[str, Any]] = []
+    blocks: dict[Any, int] = {}
+    for item in results:
+        when = _parse_time(item.get("when"))
+        if when is None:
+            continue
+        key = (item.get("session_id"), int(when.timestamp() // 3600))
+        if key not in blocks:
+            blocks[key] = len(blocks)
+        sequence.append(
+            {
+                "when": str(item.get("when")),
+                "direction": item["direction"],
+                "win": float(item["move_units"]) > 0,
+                "block": blocks[key],
+            }
+        )
+
     return {
+        "sequence": sequence,
         "evaluated": len(results),
         "by_direction": by_reason_direction,
         "by_grade_direction": by_grade_direction,
@@ -1085,8 +1108,13 @@ def format_ledger(
     stop_loss: float,
     stop_win: float,
     detail: int = 0,
+    label: str = "",
 ) -> list[str]:
-    """A banca dia a dia, com o stop cortando o dia quando o limite bate."""
+    """A banca dia a dia, com o stop cortando o dia quando o limite bate.
+
+    `label` diz de qual sequência é esta conta. Sem ele, a banca da regra de
+    fluxo e a banca dos sinais do app saem idênticas na tela.
+    """
     entries = [item for item in (flow.get("sequence") or []) if item.get("when")]
     if not entries:
         return []
@@ -1106,9 +1134,11 @@ def format_ledger(
     if stamps:
         first = min(stamps).astimezone()
         last = max(stamps).astimezone()
+        span = (max(stamps) - min(stamps)).total_seconds()
+        length = f"{span / 60:.0f} min" if span < 3600 else f"{span / 3600:.0f} h"
         window = (
             f"    período: {first:%d/%m %H:%M} a {last:%d/%m %H:%M} (hora local)"
-            f" · {(max(stamps) - min(stamps)).total_seconds() / 3600:.0f} h"
+            f" · {length}"
         )
     lines = [
         "",
@@ -1117,10 +1147,13 @@ def format_ledger(
         f" · stop de {stop_loss:.0%} da banca do dia na perda"
         f" e meta de ganho {f'{stop_win:.0%}' if stop_win else 'desligada'}",
     ]
+    if label:
+        lines.append(f"    sequência: {label}")
     if window:
         lines.append(window)
     lines.append(
-        "    dia           entrada  acerto  travada  inicio   fim    resultado  parou em"
+        "    dia           entrada  acerto  travada  inicio   fim    resultado"
+        "   pior  parou em"
     )
     for day in result["days"]:
         total = day["entries"] or 1
@@ -1128,7 +1161,8 @@ def format_ledger(
         lines.append(
             f"    {day['day']:<15} {day['entries']:>7} {day['wins'] / total:>7.0%}"
             f" {day['blocked']:>8} {day['start_balance']:>7.0f}"
-            f" {day['end_balance']:>6.0f} {change:>+10.0%}  {day['stop']}"
+            f" {day['end_balance']:>6.0f} {change:>+10.0%}"
+            f" {day.get('worst_fraction', 0.0):>+6.0%}  {day['stop']}"
         )
     lines.append(
         f"    total: {result['entries']} entradas, {result['blocked']} travadas"
@@ -2562,9 +2596,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                     stop_loss=args.stop_loss,
                     stop_win=args.stop_win,
                     detail=args.ledger_detail,
+                    label="regra de fluxo (2+ velas seguidas) - ainda não adotada",
                 )
                 if ledger:
                     print("\n".join(ledger))
+                signals = format_ledger(
+                    outcomes,
+                    bankroll=args.bankroll,
+                    stake_amount=args.stake_amount,
+                    stake_fraction=args.stake,
+                    payout=args.payout,
+                    stop_loss=args.stop_loss,
+                    stop_win=args.stop_win,
+                    detail=args.ledger_detail,
+                    label="sinais do app (só A/B/C, um por vela) - é o que seria apostado",
+                )
+                if signals:
+                    print("\n".join(signals))
     return 0
 
 
