@@ -1039,3 +1039,28 @@ class DayStopTests(unittest.TestCase):
         self.assertEqual(result["evaluated"], 1)
         self.assertEqual(result["repeated_across_sessions"], 1)
         self.assertEqual(len(result["sequence"]), 1)
+
+    def test_ledger_says_when_the_stop_sits_inside_the_day_noise(self):
+        from auto_trader_iq.grade_report import format_ledger
+
+        # 300 apostas de 5 numa banca de 200: um desvio-padrão do dia passa de 40%,
+        # então um stop de 25% corta por sorte, não por falha. O relatório diz isso.
+        sequence = [
+            {"when": f"2026-11-12T{h:02d}:{m:02d}:00+00:00",
+             "win": (h + m) % 2 == 0, "direction": "BUY"}
+            for h in range(6, 21) for m in range(0, 60, 3)
+        ]
+        text = "\n".join(
+            format_ledger(
+                {"sequence": sequence},
+                bankroll=200.0,
+                stake_amount=5.0,
+                stake_fraction=0.02,
+                payout=0.86,
+                stop_loss=0.25,
+                stop_win=0.0,
+                detail=0,
+            )
+        )
+        self.assertIn("ruído do dia", text)
+        self.assertIn("DENTRO do ruído", text)

@@ -1177,6 +1177,29 @@ def format_ledger(
         f" pelo stop, banca final R$ {result['final']:.0f}"
         f" ({result['final'] / bankroll - 1:+.0%})"
     )
+    noisy = None
+    for day in result["days"]:
+        count = day["entries"]
+        start = day["start_balance"] or 1.0
+        if count < 2:
+            continue
+        p = day["wins"] / count
+        mean = p * payout - (1 - p)
+        variance = p * (payout - mean) ** 2 + (1 - p) * (-1 - mean) ** 2
+        noise = math.sqrt(variance * count) * stake / start
+        if noisy is None or noise > noisy[1]:
+            noisy = (day["day"], noise, count)
+    if noisy:
+        day_key, noise, count = noisy
+        verdict = (
+            "está DENTRO do ruído: ele corta por sorte, não por falha"
+            if stop_loss and stop_loss < noise
+            else "fica fora do ruído do dia: quando dispara, algo mudou"
+        )
+        lines.append(
+            f"    ruído do dia (±1σ): ±{noise:.0%} em {count} apostas ({day_key})"
+            f" · o stop de {stop_loss:.0%} {verdict}"
+        )
     if result.get("suspect_day_bucket"):
         lines.append(
             f"    AVISO: as entradas vão de {result['first_when']} a"
