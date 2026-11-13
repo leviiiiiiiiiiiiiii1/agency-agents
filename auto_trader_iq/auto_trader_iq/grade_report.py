@@ -1104,7 +1104,7 @@ def format_ledger(
         "BANCA POR DIA - stop de ganho e de perda (conta do que foi medido, sem ordem)",
         f"    banca {bankroll:.0f} · R$ {stake:.2f} por entrada · payout {payout:.0%}"
         f" · stop de {stop_loss:.0%} da banca do dia na perda"
-        f" e {stop_win:.0%} na meta",
+        f" e meta de ganho {f'{stop_win:.0%}' if stop_win else 'desligada'}",
         "    dia           entrada  acerto  travada  inicio   fim    resultado  parou em",
     ]
     for day in result["days"]:
@@ -1156,7 +1156,8 @@ def format_flow_rule(flow: Mapping[str, Any]) -> str:
         f"    REGRA DE FLUXO - últimas {window} velas, lidas por {source}",
         "    (entrar na direção das velas seguidas; nada muda no app, isto é medição)",
         "    (uma aposta por vela: quadros do mesmo minuto leem a mesma vela e contam uma vez)",
-        "    velas seguidas    n   favorável   neutra   adversa   mediano",
+        "    velas seguidas    n   acerto   favorável   neutra   adversa   mediano"
+        "   margem 95%",
     ]
     streaks = flow.get("by_streak") or {}
     if not streaks:
@@ -1164,11 +1165,16 @@ def format_flow_rule(flow: Mapping[str, Any]) -> str:
         return "\n".join(lines)
     for streak, bucket in streaks.items():
         total = bucket["total"] or 1
+        # O acerto de poucas apostas não é uma taxa: a margem vai junto para
+        # que uma célula de 31 casos não vire regra por parecer alta.
+        rate = bucket["acerta"] / total
+        margin = 1.96 * math.sqrt(rate * (1 - rate) / total)
         lines.append(
             f"    {streak:>2} seguidas     {bucket['total']:>4}   "
+            f"{rate:>4.0%}   "
             f"{bucket['favorável']:>4} ({bucket['favorável'] / total:>4.0%})   "
             f"{bucket['neutra']:>4}   {bucket['adversa']:>4}   "
-            f"{bucket['median_move_units']:>7}"
+            f"{bucket['median_move_units']:>7}   +/-{margin * 100:>3.0f}pp"
         )
     for minimum in (2, 3):
         kept = [
@@ -1190,13 +1196,17 @@ def format_flow_rule(flow: Mapping[str, Any]) -> str:
     if splits:
         lines.append("")
         lines.append("    Mesma regra separada por direção:")
-        lines.append("    velas seguidas  direção    n   favorável")
+        lines.append("    velas seguidas  direção    n   acerto   favorável   margem 95%")
         for streak, directions in splits.items():
             for direction, bucket in directions.items():
                 total = bucket["total"] or 1
+                rate = bucket["acerta"] / total
+                margin = 1.96 * math.sqrt(rate * (1 - rate) / total)
                 lines.append(
                     f"    {streak:>2} seguidas     {direction:<7} {bucket['total']:>4}   "
+                    f"{rate:>4.0%}   "
                     f"{bucket['favorável']:>4} ({bucket['favorável'] / total:>4.0%})"
+                    f"   +/-{margin * 100:>3.0f}pp"
                 )
     settlement = flow.get("settlement") or {}
     if settlement:
@@ -2398,14 +2408,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--stop-loss",
         type=float,
-        default=0.20,
-        help="Limite de perda do dia, em fração da banca do dia (padrão: 0.20).",
+        default=0.25,
+        help="Limite de perda do dia, em fração da banca do dia (padrão: 0.25; 0 desliga).",
     )
     parser.add_argument(
         "--stop-win",
         type=float,
-        default=0.30,
-        help="Meta de ganho do dia, em fração da banca do dia (padrão: 0.30).",
+        default=0.0,
+        help="Meta de ganho do dia, em fração da banca do dia (padrão: 0 = desligada).",
     )
     parser.add_argument(
         "--stake-amount",

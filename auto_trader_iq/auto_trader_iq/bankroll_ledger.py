@@ -23,16 +23,20 @@ STOP_BROKE = "sem banca"
 
 @dataclass(frozen=True)
 class StopRules:
-    """Limites do dia, em fração da banca com que o dia começou."""
+    """Limites do dia, em fração da banca com que o dia começou.
 
-    stop_loss_fraction: float = 0.20
-    stop_win_fraction: float = 0.30
+    Zero desliga o limite. A meta de ganho vem desligada de fábrica: cortar um
+    fluxo com vantagem positiva no meio do dia joga fora a vantagem que sobrou,
+    e o número de hoje mostrou exatamente isso. O limite de perda fica, porque
+    ele não otimiza nada - ele para quando o mundo mudou.
+    """
+
+    stop_loss_fraction: float = 0.25
+    stop_win_fraction: float = 0.0
 
     def __post_init__(self) -> None:
-        if self.stop_loss_fraction <= 0:
-            raise ValueError("o limite de perda precisa ser maior que zero")
-        if self.stop_win_fraction <= 0:
-            raise ValueError("a meta de ganho precisa ser maior que zero")
+        if self.stop_loss_fraction < 0 or self.stop_win_fraction < 0:
+            raise ValueError("limite de stop não pode ser negativo")
 
 
 def day_of(when: str | datetime) -> str:
@@ -110,9 +114,13 @@ def run_days(
         )
 
         day_pnl = balance - current["start_balance"]
-        if day_pnl <= -stop.stop_loss_fraction * current["start_balance"]:
+        if stop.stop_loss_fraction and day_pnl <= -stop.stop_loss_fraction * current[
+            "start_balance"
+        ]:
             current["stop"] = STOP_LOSS
-        elif day_pnl >= stop.stop_win_fraction * current["start_balance"]:
+        elif stop.stop_win_fraction and day_pnl >= stop.stop_win_fraction * current[
+            "start_balance"
+        ]:
             current["stop"] = STOP_WIN
 
     taken = sum(day["entries"] for day in days)

@@ -823,3 +823,43 @@ class BankrollLedgerTests(unittest.TestCase):
         self.assertIn("BANCA POR DIA", text)
         self.assertIn("limite de perda", text)
         self.assertIn("travadas", text)
+
+    def test_win_target_zero_means_no_win_stop(self):
+        from auto_trader_iq.bankroll_ledger import StopRules, run_days
+
+        entries = [self._entry("2026-11-12T14:00:00+00:00", True) for _ in range(10)]
+        result = run_days(
+            entries,
+            bankroll=200.0,
+            stake_amount=5.0,
+            payout=0.86,
+            rules=StopRules(stop_loss_fraction=0.50, stop_win_fraction=0.0),
+        )
+        day = result["days"][0]
+        self.assertEqual(day["stop"], "nenhum")
+        self.assertEqual(day["entries"], 10)
+        self.assertEqual(day["blocked"], 0)
+
+    def test_streak_table_shows_the_margin_of_small_cells(self):
+        from auto_trader_iq.grade_report import format_flow_rule
+
+        flow = {
+            "mode": "cores",
+            "window": 5,
+            "by_streak": {
+                4: {
+                    "total": 31,
+                    "acerta": 23,
+                    "favorável": 23,
+                    "neutra": 3,
+                    "adversa": 5,
+                    "median_move_units": 0.6,
+                }
+            },
+            "by_streak_direction": {},
+            "settlement": {},
+        }
+        text = format_flow_rule(flow)
+        # 74% com 31 casos não é uma taxa: o relatório mostra o quanto isso oscila.
+        self.assertIn("74%", text)
+        self.assertIn("+/- 15pp", text)
