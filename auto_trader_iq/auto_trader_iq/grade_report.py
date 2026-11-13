@@ -1102,7 +1102,7 @@ def format_bankroll(
         f" · horas {len(blocks)}",
         f"    caminho real: {bankroll:.0f} -> {path['final']:.0f}"
         f" ({(path['final'] / bankroll - 1):+.0%})"
-        f" · maior queda {path['max_drawdown']:.0%}",
+        f" · maior queda desde o pico {path['max_drawdown']:.0%}",
     ]
     if spread:
         lines.append(
@@ -1210,6 +1210,10 @@ def format_ledger(
             "está DENTRO do ruído: ele corta por sorte, não por falha"
             if stop_loss and stop_loss < noise
             else "fica fora do ruído do dia: quando dispara, algo mudou"
+        )
+        lines.append(
+            "    pior = fundo do dia contra a banca de abertura; a queda do bloco"
+            " acima é contra o pico, por isso as duas não batem."
         )
         lines.append(
             f"    ruído do dia (±1σ): ±{noise:.0%} em {count} apostas ({day_key})"
