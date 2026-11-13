@@ -882,3 +882,51 @@ class BankrollLedgerTests(unittest.TestCase):
         self.assertEqual(len(result["days"]), 2)
         self.assertFalse(result["suspect_day_bucket"])
         self.assertGreaterEqual(result["span_hours"], 24)
+
+    def test_ledger_states_the_period_it_booked(self):
+        from auto_trader_iq.grade_report import format_ledger
+
+        flow = {
+            "sequence": [
+                {"when": "2026-11-12T08:00:00+00:00", "win": True, "direction": "BUY"},
+                {"when": "2026-11-13T00:37:00+00:00", "win": False, "direction": "SELL"},
+            ]
+        }
+        text = "\n".join(
+            format_ledger(
+                flow,
+                bankroll=200.0,
+                stake_amount=5.0,
+                stake_fraction=0.02,
+                payout=0.86,
+                stop_loss=0.25,
+                stop_win=0.0,
+                detail=1,
+            )
+        )
+        self.assertIn("período:", text)
+        self.assertIn("17 h", text)
+
+    def test_ledger_shows_hours_in_local_time(self):
+        from auto_trader_iq.grade_report import format_ledger
+
+        flow = {
+            "sequence": [
+                {"when": "2026-11-12T08:00:00+00:00", "win": True, "direction": "BUY"},
+                {"when": "2026-11-12T08:05:00+00:00", "win": True, "direction": "BUY"},
+            ]
+        }
+        text = "\n".join(
+            format_ledger(
+                flow,
+                bankroll=200.0,
+                stake_amount=5.0,
+                stake_fraction=0.02,
+                payout=0.86,
+                stop_loss=0.25,
+                stop_win=0.0,
+                detail=2,
+            )
+        )
+        self.assertIn("hora local", text)
+        self.assertNotIn("08:05:00", text)

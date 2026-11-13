@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from .bankroll import bootstrap_by_block, breakeven_rate, simulate
-from .bankroll_ledger import StopRules, run_days
+from .bankroll_ledger import StopRules, _moment, run_days
 from .opportunity_grade import (
     DEFAULT_CRITERIA,
     GRADE_METHOD,
@@ -1101,14 +1101,27 @@ def format_ledger(
         payout=payout,
         rules=rules,
     )
+    stamps = [m for m in (_moment(str(item.get("when"))) for item in entries) if m]
+    window = ""
+    if stamps:
+        first = min(stamps).astimezone()
+        last = max(stamps).astimezone()
+        window = (
+            f"    período: {first:%d/%m %H:%M} a {last:%d/%m %H:%M} (hora local)"
+            f" · {(max(stamps) - min(stamps)).total_seconds() / 3600:.0f} h"
+        )
     lines = [
         "",
         "BANCA POR DIA - stop de ganho e de perda (conta do que foi medido, sem ordem)",
         f"    banca {bankroll:.0f} · R$ {stake:.2f} por entrada · payout {payout:.0%}"
         f" · stop de {stop_loss:.0%} da banca do dia na perda"
         f" e meta de ganho {f'{stop_win:.0%}' if stop_win else 'desligada'}",
-        "    dia           entrada  acerto  travada  inicio   fim    resultado  parou em",
     ]
+    if window:
+        lines.append(window)
+    lines.append(
+        "    dia           entrada  acerto  travada  inicio   fim    resultado  parou em"
+    )
     for day in result["days"]:
         total = day["entries"] or 1
         change = day["end_balance"] / day["start_balance"] - 1
@@ -1139,12 +1152,15 @@ def format_ledger(
         shown = result["days"][-1]["ledger"][-detail:]
         lines.append("")
         lines.append(
-            f"    ÚLTIMAS {len(shown)} ENTRADAS CONTADAS - uma linha por ordem que"
+            f"    {'ÚLTIMA' if len(shown) == 1 else 'ÚLTIMAS'} {len(shown)}"
+            f" {'ENTRADA CONTADA' if len(shown) == 1 else 'ENTRADAS CONTADAS'}"
+            " - uma linha por ordem que"
             " seria executada (nada foi executado)"
         )
-        lines.append("    hora                 direção   aposta   resultado    lucro   banca")
+        lines.append("    hora local           direção   aposta   resultado    lucro   banca")
         for item in shown:
-            when = item["when"][11:19]
+            moment = _moment(str(item.get("when")))
+            when = f"{moment.astimezone():%d/%m %H:%M}" if moment else str(item.get("when"))[11:16]
             result_label = "acertou" if item["win"] else "errou  "
             lines.append(
                 f"    {when:<20} {item['direction']:<8} {item['stake']:>7.2f}"
