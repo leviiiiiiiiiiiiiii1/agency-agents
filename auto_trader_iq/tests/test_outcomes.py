@@ -662,3 +662,55 @@ class FormatTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BankrollTests(unittest.TestCase):
+    def test_win_then_loss_compounds_on_the_current_bankroll(self):
+        from auto_trader_iq.bankroll import simulate
+
+        result = simulate([True, False], bankroll=100.0, payout=1.0, stake_fraction=0.1)
+        # 100 -> +10 -> 110 -> -11 -> 99
+        self.assertAlmostEqual(result["final"], 99.0)
+        self.assertAlmostEqual(result["max_drawdown"], -0.1)
+        self.assertFalse(result["ruined"])
+
+    def test_payout_of_eighty_five_percent_moves_the_balance_by_less(self):
+        from auto_trader_iq.bankroll import simulate
+
+        result = simulate([True], bankroll=100.0, payout=0.85, stake_fraction=0.1)
+        self.assertAlmostEqual(result["final"], 108.5)
+
+    def test_breakeven_matches_the_payout(self):
+        from auto_trader_iq.bankroll import breakeven_rate
+
+        self.assertAlmostEqual(breakeven_rate(0.85), 1 / 1.85)
+        self.assertAlmostEqual(breakeven_rate(0.90), 1 / 1.90)
+
+    def test_bootstrap_keeps_the_observed_bets_and_orders_percentiles(self):
+        from auto_trader_iq.bankroll import bootstrap_by_block
+
+        blocks = [[True, True, False], [True, False], [False, True, True]]
+        result = bootstrap_by_block(
+            blocks, bankroll=200.0, payout=0.85, stake_fraction=0.02, runs=200
+        )
+        self.assertLessEqual(result["final_p05"], result["final_p50"])
+        self.assertLessEqual(result["final_p50"], result["final_p95"])
+        # Queda é negativa: o "p95" aqui é o extremo ruim, então é o menor número.
+        self.assertLessEqual(result["drawdown_p95"], result["drawdown_p50"])
+        self.assertGreater(result["final_p50"], 0)
+
+    def test_bankroll_section_says_it_is_not_a_forecast(self):
+        from auto_trader_iq.grade_report import format_bankroll
+
+        flow = {
+            "sequence": [
+                {"block": 0, "win": True},
+                {"block": 0, "win": False},
+                {"block": 1, "win": True},
+            ]
+        }
+        lines = format_bankroll(flow, bankroll=200.0, payout=0.85, stake=0.02)
+        text = "\n".join(lines)
+        self.assertIn("não prevê", text)
+        self.assertIn("apostas 3", text)
+        self.assertIn("horas 2", text)

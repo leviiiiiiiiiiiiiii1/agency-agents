@@ -23,6 +23,7 @@ from dataclasses import fields
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from .bankroll import bootstrap_by_block, breakeven_rate, simulate
 from .opportunity_grade import (
     DEFAULT_CRITERIA,
     GRADE_METHOD,
@@ -941,6 +942,10 @@ def compute_flow_rule(
         mode_counts[found] = mode_counts.get(found, 0) + 1
     mode = max(mode_counts, key=lambda key: mode_counts[key]) if mode_counts else "fechamentos"
     by_streak: dict[int, list[dict[str, Any]]] = {}
+    # A ordem de verdade, para a conta da banca: a aposta que veio antes tem de
+    # ser apostada antes, senão a maior queda do cálculo é ficção.
+    sequence: list[dict[str, Any]] = []
+    block_ids: dict[Any, int] = {}
     for frame in _one_per_bar(timeline, bar_seconds):
         ladder = frame.get("price_ladder") or {}
         found_mode, directions = _flow_directions(ladder, window)
@@ -958,6 +963,14 @@ def compute_flow_rule(
         if measured is None:
             continue
         by_streak.setdefault(streak, []).append({**measured, "direction": direction})
+        if streak >= 2:
+            when = _parse_time(frame.get("occurred_at_utc"))
+            key = (frame.get("session_id"), int(when.timestamp() // 3600) if when else 0)
+            if key not in block_ids:
+                block_ids[key] = len(block_ids)
+            sequence.append(
+                {"block": block_ids[key], "win": float(measured["move_units"]) > 0}
+            )
     def _settle(items: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         total = len(items)
         wins = sum(1 for item in items if float(item["move_units"]) > 0)
@@ -973,6 +986,7 @@ def compute_flow_rule(
     return {
         "mode": mode,
         "window": window,
+        "sequence": sequence,
         "settlement": settlement,
         "by_streak": {
             streak: _summarize_items(items) for streak, items in sorted(by_streak.items())
@@ -988,6 +1002,58 @@ def compute_flow_rule(
             for streak, items in sorted(by_streak.items())
         },
     }
+
+
+def format_bankroll(
+    flow: Mapping[str, Any],
+    *,
+    bankroll: float,
+    payout: float,
+    stake: float,
+) -> list[str]:
+    """O que a banca faria seguindo exatamente os desfechos que foram medidos."""
+    sequence = list(flow.get("sequence") or [])
+    if not sequence:
+        return [
+            "BANCA HIPOTÉTICA",
+            "    Sem aposta acompanhada até o horizonte: nada a simular.",
+        ]
+    ordered = [bool(item.get("win")) for item in sequence]
+    wins = sum(1 for win in ordered if win)
+    blocks: dict[Any, list[bool]] = {}
+    for item in sequence:
+        blocks.setdefault(item.get("block"), []).append(bool(item.get("win")))
+    path = simulate(ordered, bankroll=bankroll, payout=payout, stake_fraction=stake)
+    spread = bootstrap_by_block(
+        list(blocks.values()), bankroll=bankroll, payout=payout, stake_fraction=stake
+    )
+    lines = [
+        "",
+        "BANCA HIPOTÉTICA - a regra de fluxo com os desfechos medidos, nada previsto",
+        f"    banca {bankroll:.0f} · payout {payout:.0%} · aposta {stake:.0%} da banca"
+        f" · equilíbrio {breakeven_rate(payout):.1%} de acerto"
+        f" · empate conta como perda",
+        f"    apostas {len(ordered)} · acertos {wins} ({wins / len(ordered):.0%})"
+        f" · horas {len(blocks)}",
+        f"    caminho real: {bankroll:.0f} -> {path['final']:.0f}"
+        f" ({(path['final'] / bankroll - 1):+.0%})"
+        f" · maior queda {path['max_drawdown']:.0%}",
+    ]
+    if spread:
+        lines.append(
+            f"    ordem das horas embaralhada ({spread['runs']}x): final entre"
+            f" {spread['final_p05']:.0f} e {spread['final_p95']:.0f},"
+            f" metade em {spread['final_p50']:.0f}"
+            f" · queda mediana {spread['drawdown_p50']:.0%},"
+            f" nos 5% piores {spread['drawdown_p95']:.0%}"
+            f" · quebra em {spread['ruined']:.1%} das ordens"
+        )
+    lines.append(
+        "    Isto não prevê o próximo resultado: projeta a taxa medida. Se a taxa"
+        " verdadeira for a do extremo do intervalo, a banca final também vai para"
+        " o extremo - e é por isso que a taxa ainda não está provada."
+    )
+    return lines
 
 
 def format_flow_rule(flow: Mapping[str, Any]) -> str:
@@ -2219,6 +2285,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Quantas velas depois do sinal avaliar; aceita vários (padrão: 3).",
     )
     parser.add_argument(
+        "--bankroll",
+        type=float,
+        default=None,
+        help="Banca hipotética para simular a regra de fluxo (ex.: 200).",
+    )
+    parser.add_argument(
+        "--payout",
+        type=float,
+        default=0.85,
+        help="Payout da simulação de banca (padrão: 0.85 = 85%%).",
+    )
+    parser.add_argument(
+        "--stake",
+        type=float,
+        default=0.02,
+        help="Fração da banca apostada em cada entrada (padrão: 0.02 = 2%%).",
+    )
+    parser.add_argument(
         "--min-move",
         type=float,
         default=0.5,
@@ -2310,6 +2394,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(format_baseline(baseline))
             print(format_session_comparison(sessions))
             print(format_flow_rule(flow))
+            if args.bankroll:
+                print(
+                    "\n".join(
+                        format_bankroll(
+                            flow,
+                            bankroll=args.bankroll,
+                            payout=args.payout,
+                            stake=args.stake,
+                        )
+                    )
+                )
     return 0
 
 
