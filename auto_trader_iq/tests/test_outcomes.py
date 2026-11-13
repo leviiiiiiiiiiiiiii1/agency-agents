@@ -1024,3 +1024,18 @@ class DayStopTests(unittest.TestCase):
         self.assertIn("pior", text)
         # Uma perda de cinco em 200 é -2,5%: é essa a distância que importa.
         self.assertIn("-3%", text)
+
+    def test_same_candle_seen_by_two_sessions_counts_once(self):
+        # App reiniciado no meio: a sessão nova vê a mesma vela que a antiga.
+        # Sem deduplicar por relógio, a mesma aposta entrava duas vezes na banca.
+        frames = [
+            frame("2026-11-11T18:00:00+00:00", "A", "BUY", 0, [140.0] * 5, session="s1"),
+            frame("2026-11-11T18:03:00+00:00", "A", "BUY", 0, [100.0, 140.0, 140.0, 140.0],
+                  session="s1"),
+            frame("2026-11-11T18:03:00+00:00", "A", "BUY", 0, [100.0, 140.0, 140.0, 140.0],
+                  session="s2"),
+        ]
+        result = compute_outcomes(frames)
+        self.assertEqual(result["evaluated"], 1)
+        self.assertEqual(result["repeated_across_sessions"], 1)
+        self.assertEqual(len(result["sequence"]), 1)

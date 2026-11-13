@@ -294,7 +294,8 @@ def compute_outcomes(
     results: list[dict[str, Any]] = []
     skipped = 0
     repeated = 0
-    seen_candles: set[tuple[Any, int]] = set()
+    seen_candles: dict[int, Any] = {}
+    cross_session = 0
     for frame in signals:
         features = frame.get("features") or {}
         direction = features.get("direction")
@@ -306,8 +307,10 @@ def compute_outcomes(
         if candle is not None:
             if candle in seen_candles:
                 repeated += 1
+                if seen_candles[candle] != frame.get("session_id"):
+                    cross_session += 1
                 continue
-            seen_candles.add(candle)
+            seen_candles[candle] = frame.get("session_id")
         measured = _measure(
             timeline,
             frame,
@@ -520,6 +523,7 @@ def compute_outcomes(
         ),
         "skipped": skipped,
         "repeated_frames": repeated,
+        "repeated_across_sessions": cross_session,
         "signals_with_ladder": len(signals),
         "signals_graded": graded_total,
         "frames_with_ladder": len(timeline),
@@ -922,7 +926,10 @@ def _entry_candle(
     if when is None or not isinstance(age, int):
         return None
     window = max(1.0, float(bar_seconds))
-    return (frame.get("session_id"), int(when.timestamp() // window) - age)
+    # A vela é identificada pelo minuto do relógio, não pela sessão: se o app foi
+    # reiniciado e as duas sessões viram a mesma vela, é a mesma aposta. Manter a
+    # sessão na chave contava essa vela duas vezes.
+    return int(when.timestamp() // window) - age
 
 
 def _one_per_bar(
@@ -934,12 +941,13 @@ def _one_per_bar(
     o mesmo minuto votar cinco vezes. Fica o quadro mais recente de cada vela.
     """
     window = max(1.0, float(bar_seconds))
-    latest: dict[tuple[Any, int], Mapping[str, Any]] = {}
+    latest: dict[int, Mapping[str, Any]] = {}
     for frame in timeline:
         when = _parse_time(frame.get("occurred_at_utc"))
         if when is None:
             continue
-        key = (frame.get("session_id"), int(when.timestamp() // window))
+        # Mesmo motivo do `_entry_candle`: o minuto do relógio identifica a vela.
+        key = int(when.timestamp() // window)
         latest[key] = frame
     return list(latest.values())
 
@@ -2008,6 +2016,13 @@ def format_outcomes(outcomes: Mapping[str, Any]) -> str:
             f"repetidos no mesmo candle (contados uma vez): "
             f"{outcomes.get('repeated_frames', 0)}"
         )
+        if outcomes.get("repeated_across_sessions"):
+            # Duas sessões abertas vendo a mesma vela votavam duas vezes: antes
+            # da correção, esse número entrava na banca como aposta separada.
+            lines.append(
+                f"    ({outcomes['repeated_across_sessions']} desses vieram de outra"
+                " sessão vendo a mesma vela - sessão reiniciada, mesma aposta)"
+            )
         lines.append("")
         lines.append(
             "    classe   n     favorável   neutra   adversa   mediano   acerto"
