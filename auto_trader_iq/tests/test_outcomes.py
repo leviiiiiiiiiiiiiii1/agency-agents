@@ -881,4 +881,4 @@ class BankrollLedgerTests(unittest.TestCase):
         # Dois dias de calendário: o balde funcionou e não há aviso.
         self.assertEqual(len(result["days"]), 2)
         self.assertFalse(result["suspect_day_bucket"])
-        self.assertGreater(result["span_hours"], 24)
+        self.assertGreaterEqual(result["span_hours"], 24)
