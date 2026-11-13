@@ -1100,3 +1100,26 @@ class DayStopTests(unittest.TestCase):
         by_hash = result["by_criteria_hash"]
         self.assertEqual(set(by_hash), {"cdde517363f504c8", "29e7f80bf3066e89"})
         self.assertEqual(sum(bucket["n"] for bucket in by_hash.values()), 2)
+
+    def test_flow_verdict_says_how_much_capture_is_missing(self):
+        from auto_trader_iq.grade_report import _flow_edge_verdict
+
+        # Vantagem pequena e z baixo: o relatório tem de dizer quanto tempo de
+        # gráfico falta, não só quantas apostas.
+        rows = [
+            {
+                "started_at_utc": f"2026-11-12T{9 + i:02d}:00:00+00:00",
+                "flow_by_direction": {
+                    "BUY": {"total": 22, "acerta": 12},
+                    "SELL": {"total": 23, "acerta": 12},
+                },
+                "base_by_direction": {
+                    "BUY": {"total": 40, "acerta": 20},
+                    "SELL": {"total": 40, "acerta": 20},
+                },
+            }
+            for i in range(8)
+        ]
+        text = "\n".join(_flow_edge_verdict(rows))
+        self.assertIn("Faltam ~", text)
+        self.assertIn("h de captura", text)

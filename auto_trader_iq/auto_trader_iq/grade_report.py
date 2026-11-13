@@ -1613,6 +1613,18 @@ def _flow_edge_verdict(rows: Sequence[Mapping[str, Any]]) -> list[str]:
             f"    Ritmo atual: {margin * 100:+.1f}pp por aposta em {bets} apostas"
             f" elegíveis; z = 1.96 exigiria ~{needed:.0f}."
         )
+        # Quanto tempo de gráfico isso é: "faltam 11 apostas" e "faltam 11
+        # apostas, uma hora de captura" levam a decisões diferentes.
+        stamps = [m for m in (_parse_time(row.get("started_at_utc")) for row in rows) if m]
+        if len(stamps) >= 2:
+            hours = (max(stamps) - min(stamps)).total_seconds() / 3600 + 1.0
+            rate = bets / hours
+            missing = max(0.0, needed - bets)
+            if rate > 0:
+                lines.append(
+                    f"    Faltam ~{missing:.0f} apostas ≈ {missing / rate:.1f} h de"
+                    f" captura no ritmo de hoje ({rate:.1f} elegíveis por hora)."
+                )
     # A vantagem que decide não é "acima de zero", é acima do payout: a base
     # deste bloco já paga parte da conta, e o resto tem de vir da regra.
     if bets:
