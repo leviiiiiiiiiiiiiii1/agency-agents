@@ -1090,6 +1090,8 @@ def format_ledger(
     entries = [item for item in (flow.get("sequence") or []) if item.get("when")]
     if not entries:
         return []
+    # A banca só faz sentido na ordem em que as apostas aconteceram.
+    entries.sort(key=lambda item: str(item.get("when")))
     stake = stake_amount if stake_amount else bankroll * stake_fraction
     rules = StopRules(stop_loss_fraction=stop_loss, stop_win_fraction=stop_win)
     result = run_days(
@@ -1122,9 +1124,11 @@ def format_ledger(
     )
     if result.get("suspect_day_bucket"):
         lines.append(
-            f"    AVISO: as entradas atravessam {result['span_hours']:.0f} horas e"
-            " caíram todas num dia só. O balde de dia (fuso local) está errado e o"
-            " stop abaixo vale para o período inteiro, não para um dia."
+            f"    AVISO: as entradas vão de {result['first_when']} a"
+            f" {result['last_when']} - {result['span_hours']:.0f} horas - e caíram"
+            f" todas num dia só ({', '.join(result['day_keys']) or 'nenhum'})."
+            " O balde de dia (fuso local) está errado: o stop vale para o período"
+            " inteiro, não para um dia."
         )
     if result["blocked"]:
         lines.append(

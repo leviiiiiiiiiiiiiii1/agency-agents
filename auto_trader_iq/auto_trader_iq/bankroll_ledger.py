@@ -141,16 +141,17 @@ def run_days(
     # Se tudo caiu num dia só mas as entradas atravessam mais de 24 horas, o
     # balde de dia está errado (fuso, data sem fuso, ordem) e o stop virou um
     # stop de 27 horas. Melhor avisar do que apresentar a conta como se fosse dia.
+    stamp = [m for m in (_moment(str(e.get("when") or "")) for e in entries) if m]
     span_hours = 0.0
-    if len(entries) >= 2:
-        first = _moment(str(entries[0].get("when") or ""))
-        last = _moment(str(entries[-1].get("when") or ""))
-        if first and last:
-            span_hours = (last - first).total_seconds() / 3600.0
+    if len(stamp) >= 2:
+        span_hours = (max(stamp) - min(stamp)).total_seconds() / 3600.0
     suspect = len(days) <= 1 and span_hours > 24.0
     return {
         "days": days,
         "span_hours": span_hours,
+        "first_when": str(entries[0].get("when") or "") if entries else "",
+        "last_when": str(entries[-1].get("when") or "") if entries else "",
+        "day_keys": [day["day"] for day in days],
         "suspect_day_bucket": suspect,
         "final": balance,
         "entries": taken,
