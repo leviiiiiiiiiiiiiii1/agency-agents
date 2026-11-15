@@ -47,8 +47,8 @@ def _grid_lines(
     lines: list[str] = []
     for name in ("sem filtro", "todos os filtros"):
         variant = _variants(config)[[item[0] for item in _variants(config)].index(name)][1]
-        lines += ["", f"    Entrada atrasada × expiração - {name} (acerto · n)"]
-        header = "    " + " " * 12 + "".join(f"{f'{e} vela(s)':>14}" for e in expiries)
+        lines += ["", f"    Entrada atrasada × expiração - {name} (acerto · A/P/E)"]
+        header = "    " + " " * 12 + "".join(f"{f'{e} vela(s)':>18}" for e in expiries)
         lines.append(header)
         best: tuple[float, int, int] | None = None
         for delay in delays:
@@ -69,8 +69,11 @@ def _grid_lines(
                         ),
                     )
                 accuracy = stats.accuracy
-                label = "-" if accuracy is None else f"{accuracy:.0%} ({stats.executed})"
-                cells.append(f"{label:>14}")
+                if accuracy is None:
+                    label = "-"
+                else:
+                    label = f"{accuracy:.0%} {stats.wins}/{stats.losses}/{stats.draws}"
+                cells.append(f"{label:>18}")
                 if accuracy is not None and stats.executed >= 10:
                     if best is None or accuracy > best[0]:
                         best = (accuracy, delay, expiry)
@@ -198,7 +201,8 @@ def format_report(
         f"    HMA {config.hma_period} · MACD {config.macd_fast}/{config.macd_slow}"
         f"/{config.macd_signal} · janela de confirmação {config.confirm_window} vela(s)",
         "",
-        "    variante            sinais  executadas  bloqueadas  acerto   EV/op   líquido  queda",
+        "    variante            sinais  executadas  bloqueadas  acerto   EV/op   líquido  queda"
+        "        W/L/E",
     ]
     results: dict[str, StrategyStats] = {}
     for name, variant in _variants(config):
@@ -211,7 +215,16 @@ def format_report(
             f"   {'-' if accuracy is None else f'{accuracy:>5.0%}'}"
             f"  {'-' if ev is None else f'{ev:>+6.2f}'}"
             f" {stats.net:>+9.2f} {stats.max_drawdown:>+6.2f}"
+            f"  {stats.wins:>3}/{stats.losses:>3}/{stats.draws:>3}"
         )
+    lines.extend(
+        [
+            "",
+            "    Acertos/perdas/empates separados: um empate no fechamento conta como perda,",
+            "    mas não é o mesmo que uma perda. Muito empate significa que o gráfico não",
+            "    andou o suficiente para decidir - e aí o acerto baixo não é sinal invertido.",
+        ]
+    )
     lines.extend(_timing_lines(series, config))
     lines.extend(
         _grid_lines(series, config, results, payout=payout, delays=(0, 1, 2, 3), expiries=(1, 2, 3))

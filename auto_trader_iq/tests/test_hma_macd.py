@@ -5,6 +5,7 @@ import unittest
 from auto_trader_iq.hma_macd import (
     BLOCK_LATERAL,
     HmaMacdConfig,
+    StrategyStats,
     backtest,
     confirmation_lags,
     direction_of,
@@ -318,6 +319,27 @@ class LadderTests(unittest.TestCase):
         self.assertIn("Entrada atrasada", text)
         self.assertIn("sem filtro", text)
         self.assertIn("todos os filtros", text)
+
+    def test_a_tie_at_the_close_counts_against_the_accuracy(self):
+        stats = StrategyStats(wins=1, losses=0, draws=1)
+        self.assertAlmostEqual(stats.accuracy, 0.5)
+
+    def test_the_report_shows_wins_losses_and_ties_separately(self):
+        from auto_trader_iq.hma_macd import MarketSeries
+        from auto_trader_iq.hma_macd_report import format_report
+
+        series = [
+            MarketSeries(
+                label="sessao-a",
+                closes=tuple(walk(size=600)),
+                hours=tuple(9 + (i // 60) % 6 for i in range(600)),
+            )
+        ]
+        text = "\n".join(
+            format_report(series, config=HmaMacdConfig(confirm_window=2), payout=0.86, expiry=1)
+        )
+        self.assertIn("W/L/E", text)
+        self.assertIn("A/P/E", text)
 
 
 if __name__ == "__main__":
