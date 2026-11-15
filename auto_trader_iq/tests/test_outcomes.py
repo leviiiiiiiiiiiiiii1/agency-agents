@@ -1146,3 +1146,28 @@ class DayStopTests(unittest.TestCase):
         # Cada linha é o mesmo stream com aposta menor: o final cai e o stop
         # deixa de ser ruído. Sem esse contraste a tabela não diria nada.
         self.assertIn("±      26%", text)
+
+    def test_the_report_marks_which_threshold_version_is_the_current_one(self):
+        from auto_trader_iq.grade_report import (
+            compute_outcomes,
+            current_criteria_hash,
+            format_outcomes,
+        )
+
+        current = current_criteria_hash()
+        frames = [
+            frame("2026-11-11T18:00:00+00:00", "A", "BUY", 0, [140.0] * 5),
+            frame("2026-11-11T18:03:00+00:00", "A", "BUY", 0, [100.0, 140.0, 140.0, 140.0]),
+            frame("2026-11-11T18:10:00+00:00", "A", "BUY", 0, [140.0] * 5),
+            frame("2026-11-11T18:13:00+00:00", "A", "BUY", 0, [180.0, 140.0, 140.0, 140.0]),
+        ]
+        for item in frames[:2]:
+            item["criteria_hash"] = current
+        for item in frames[2:]:
+            item["criteria_hash"] = "aaaaaaaaaaaaaaaa"
+        text = format_outcomes(compute_outcomes(frames))
+        # Ordem alfabética não é ordem de recência: sem a marca, o leitor toma
+        # o classificador velho pelo de hoje.
+        self.assertIn(f"{current:<18} n=   1  acerto", text)
+        self.assertLess(text.index(current), text.index("aaaaaaaaaaaaaaaa"))
+        self.assertIn("<- atual", text)

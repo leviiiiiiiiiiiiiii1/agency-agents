@@ -13,6 +13,7 @@ vinculado, porque nenhuma ordem é enviada. Dizer o contrário seria inventar n�
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -28,6 +29,7 @@ from .bankroll_ledger import StopRules, _moment, run_days
 from .opportunity_grade import (
     DEFAULT_CRITERIA,
     GRADE_METHOD,
+    GRADE_RULES_VERSION,
     GradeCriteria,
     SignalFeatures,
     grade_opportunity,
@@ -167,6 +169,20 @@ def _fresh_signal_runs(frames: Sequence[Mapping[str, Any]]) -> int:
 FAVORABLE = "favorável"
 ADVERSE = "adversa"
 NEUTRAL = "neutra"
+
+
+def current_criteria_hash() -> str:
+    """Hash dos limiares que este código usa hoje.
+
+    Sem isso o relatório lista três hashes em ordem alfabética e chama o último
+    de recente - e o leitor conclui que o classificador atual é o que tem 58
+    apostas, quando é o que tem 478.
+    """
+    payload = json.dumps(
+        {**DEFAULT_CRITERIA.as_dict(), "rules_version": GRADE_RULES_VERSION},
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 def _parse_time(value: Any) -> Any:
@@ -2154,14 +2170,16 @@ def format_outcomes(outcomes: Mapping[str, Any]) -> str:
             )
         if len(outcomes.get("by_criteria_hash") or {}) > 1:
             lines.append("    Por versão de limiar (o desfecho não é do classificador de hoje):")
+            current = current_criteria_hash()
             for key, bucket in sorted(
                 (outcomes["by_criteria_hash"] or {}).items(),
-                key=lambda pair: -pair[1]["n"],
+                key=lambda pair: (pair[0] != current, -pair[1]["n"]),
             ):
                 total = bucket["n"] or 1
+                mark = "  <- atual" if key == current else ""
                 lines.append(
                     f"      {key:<18} n={bucket['n']:>4}  acerto"
-                    f" {bucket['acerta'] / total:>4.0%}"
+                    f" {bucket['acerta'] / total:>4.0%}{mark}"
                 )
         lines.append("")
         lines.append(
@@ -2350,7 +2368,12 @@ def format_report(summary: Mapping[str, Any], sweeps: Sequence[tuple[str, Sequen
         f"Período: {summary['first_frame_at_utc']} -> {summary['last_frame_at_utc']}"
     )
     if summary["criteria_hashes"]:
-        lines.append(f"Hash(es) dos limiares: {', '.join(summary['criteria_hashes'])}")
+        current = current_criteria_hash()
+        listed = [
+            f"{value}{' (atual)' if value == current else ''}"
+            for value in summary["criteria_hashes"]
+        ]
+        lines.append(f"Hash(es) dos limiares: {', '.join(listed)}")
     lines += ["", "Distribuição atual das classes:"]
     lines.append(_format_counts(summary["counts"], summary["frames"]))
 
@@ -2482,11 +2505,16 @@ def format_report(summary: Mapping[str, Any], sweeps: Sequence[tuple[str, Sequen
             )
 
     if summary.get("by_criteria_hash"):
-        lines += ["", "Por versão de limiares (a mais recente aparece por último):"]
-        for item in summary["by_criteria_hash"]:
+        current = current_criteria_hash()
+        lines += ["", "Por versão de limiares (o atual vem primeiro):"]
+        for item in sorted(
+            summary["by_criteria_hash"],
+            key=lambda row: (row["hash"] != current, -row["frames"]),
+        ):
+            mark = "  <- atual" if item["hash"] == current else ""
             lines.append(
                 f"    {item['hash']}  quadros={item['frames']}  "
-                f"com medida={item['frames_with_features']}"
+                f"com medida={item['frames_with_features']}{mark}"
             )
             lines.append("      " + _format_counts(item["counts"], item["frames"]).strip())
 
