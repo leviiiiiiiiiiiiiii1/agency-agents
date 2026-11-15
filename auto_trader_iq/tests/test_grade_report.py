@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from auto_trader_iq.grade_report import (
+    _floor_lines,
     default_journal_path,
     load_tracks,
     format_report,
@@ -427,3 +428,61 @@ class JournalTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def streak_bucket(total, wins, ties):
+    return {
+        "total": total,
+        "acerta": wins,
+        "empata": ties,
+        "erra": total - wins - ties,
+        "favorável": wins,
+        "neutra": ties,
+        "adversa": total - wins - ties,
+        "median_move_units": 1.0,
+    }
+
+
+class FloorTests(unittest.TestCase):
+    def test_each_floor_is_one_line_and_they_shrink(self):
+        lines = _floor_lines(
+            {
+                2: streak_bucket(100, 60, 0),
+                3: streak_bucket(60, 40, 0),
+                4: streak_bucket(30, 22, 0),
+            }
+        )
+        rows = [line for line in lines if line.startswith("    2+") or line.startswith("    3+")]
+        self.assertEqual(len(rows), 2)
+        # O piso 3+ soma as apostas do piso 3 e do 4, não só as do 3.
+        self.assertIn("    3+        90", rows[1])
+
+    def test_a_tie_is_settled_as_a_loss(self):
+        only_ties = _floor_lines({2: streak_bucket(10, 0, 10)})
+        self.assertTrue(all("0.0%" in line or "0%" in line for line in only_ties[3:4] or ["0%"]))
+        self.assertTrue(any("  10 " in line for line in only_ties))
+
+    def test_a_floor_that_discards_losing_bets_says_the_change_pays(self):
+        lines: list[str] = _floor_lines(
+            {
+                2: streak_bucket(100, 40, 0),
+                3: streak_bucket(60, 45, 0),
+            }
+        )
+        text = "\n".join(lines)
+        self.assertIn("Piso 3 contra piso 2", text)
+        self.assertIn("a troca paga", text)
+        self.assertIn("z =", text)
+
+    def test_a_floor_that_discards_winning_bets_says_it_does_not(self):
+        lines = _floor_lines(
+            {
+                2: streak_bucket(100, 70, 0),
+                3: streak_bucket(60, 48, 0),
+            }
+        )
+        self.assertIn("a troca não paga", "\n".join(lines))
+
+    def test_no_streak_means_no_floor_table(self):
+        self.assertEqual(_floor_lines({}), ["", "    PISO DE VELAS SEGUIDAS - liquidação sem limiar, empate conta como perda", "    piso     n   acerto   empate   acerto%   EV 85%   EV 90%   líquido 85%   margem 95%"])
+

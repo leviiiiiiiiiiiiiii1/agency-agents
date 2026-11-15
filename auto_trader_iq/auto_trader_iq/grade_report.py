@@ -1083,6 +1083,97 @@ def compute_flow_rule(
     }
 
 
+def _floor_lines(streaks: Mapping[int, Mapping[str, Any]]) -> list[str]:
+    """Quanto vale exigir mais velas seguidas antes de apostar.
+
+    A regra mede a direção das velas repetidas. Exigir três em vez de duas joga
+    fora as apostas que só tinham duas - e é isso que decide a troca: se o que
+    foi descartado já pagava, subir o piso só troca volume por nada.
+
+    A conta é em dinheiro, na liquidação sem limiar, com empate contado como
+    perda, porque é assim que a corretora liquida.
+    """
+    lines = [
+        "",
+        "    PISO DE VELAS SEGUIDAS - liquidação sem limiar, empate conta como perda",
+        "    piso     n   acerto   empate   acerto%   EV 85%   EV 90%   líquido 85%"
+        "   margem 95%",
+    ]
+    totals: dict[int, dict[str, float]] = {}
+    for minimum in (2, 3, 4, 5):
+        kept = [bucket for streak, bucket in streaks.items() if streak >= minimum]
+        if not kept:
+            continue
+        total = sum(float(bucket["total"]) for bucket in kept)
+        wins = sum(float(bucket.get("acerta", 0)) for bucket in kept)
+        ties = sum(float(bucket.get("empata", 0)) for bucket in kept)
+        if not total:
+            continue
+        rate = wins / total
+        margin = 1.96 * math.sqrt(rate * (1 - rate) / total) if total else 0.0
+        net = wins * (1.0 + PAYOUT_MIN) - total
+        totals[minimum] = {"total": total, "wins": wins, "ties": ties, "rate": rate, "net": net}
+        lines.append(
+            f"    {minimum}+    {int(total):>6}   {int(wins):>6}   {int(ties):>6}"
+            f"   {rate:>6.1%}   {_expected_value(rate, PAYOUT_MIN):>+6.1%}"
+            f"   {_expected_value(rate, PAYOUT_MAX):>+6.1%}   {net:>+10.1f}"
+            f"   +/-{margin * 100:>3.0f}pp"
+        )
+    if len(totals) > 1:
+        best_rate = max(totals, key=lambda key: totals[key]["rate"])
+        best_net = max(totals, key=lambda key: totals[key]["net"])
+        if best_rate != best_net:
+            lines.append("")
+            lines.append(
+                f"    Em resumo: por operação o piso {best_rate} é o melhor"
+                f" ({totals[best_rate]['rate']:.0%} contra {totals[best_net]['rate']:.0%}"
+                f" do piso {best_net}), mas no total o piso {best_net} rende mais"
+                f" ({totals[best_net]['net']:+.1f} contra {totals[best_rate]['net']:+.1f})"
+                f" porque tem {int(totals[best_net]['total'] - totals[best_rate]['total'])}"
+                " aposta(s) a mais."
+            )
+    base = totals.get(2)
+    if base and len(totals) > 1:
+        lines.append("")
+        for minimum, kept in sorted(totals.items()):
+            if minimum == 2:
+                continue
+            dropped = base["total"] - kept["total"]
+            if dropped <= 0:
+                continue
+            dropped_wins = base["wins"] - kept["wins"]
+            dropped_rate = dropped_wins / dropped
+            dropped_net = dropped_wins * (1.0 + PAYOUT_MIN) - dropped
+            lines.append(
+                f"    Piso {minimum} contra piso 2: descarta {int(dropped)} aposta(s) que"
+                f" acertaram {dropped_rate:.0%}"
+                f" e renderam {dropped_net / dropped:+.2f} por operação a"
+                f" {PAYOUT_MIN:.0%}; a troca {'paga' if dropped_net < 0 else 'não paga'}."
+            )
+        # Uma troca de piso é uma comparação entre dois grupos: sem a conta da
+        # diferença, "68% contra 63%" pode ser só o tamanho diferente da amostra.
+        for minimum in (3,):
+            kept = totals.get(minimum)
+            if not kept or not base:
+                continue
+            dropped = base["total"] - kept["total"]
+            dropped_wins = base["wins"] - kept["wins"]
+            if dropped <= 0 or kept["total"] <= 0:
+                continue
+            p1 = kept["wins"] / kept["total"]
+            p2 = dropped_wins / dropped
+            pooled = (kept["wins"] + dropped_wins) / base["total"]
+            variance = pooled * (1 - pooled) * (1 / kept["total"] + 1 / dropped)
+            if variance <= 0:
+                continue
+            z = (p1 - p2) / math.sqrt(variance)
+            lines.append(
+                f"    Diferença 3+ contra exatamente 2: {p1 - p2:+.1%}, z = {z:+.2f}"
+                f" - {'fora' if abs(z) >= 1.96 else 'dentro'} do ruído a 95%."
+            )
+    return lines
+
+
 def format_bankroll(
     flow: Mapping[str, Any],
     *,
@@ -1377,22 +1468,7 @@ def format_flow_rule(flow: Mapping[str, Any]) -> str:
             f"{bucket['neutra']:>4}   {bucket['adversa']:>4}   "
             f"{bucket['median_move_units']:>7}   +/-{margin * 100:>3.0f}pp"
         )
-    for minimum in (2, 3):
-        kept = [
-            bucket
-            for streak, bucket in streaks.items()
-            if streak >= minimum
-        ]
-        if not kept:
-            continue
-        total = sum(bucket["total"] for bucket in kept)
-        favorable = sum(bucket["favorável"] for bucket in kept)
-        if not total:
-            continue
-        lines.append(
-            f"    Regra de {minimum}+ velas seguidas: {favorable}/{total}"
-            f" ({favorable / total:.0%}) favorável"
-        )
+    lines.extend(_floor_lines(streaks))
     splits = flow.get("by_streak_direction") or {}
     if splits:
         lines.append("")

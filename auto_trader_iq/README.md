@@ -112,6 +112,14 @@ python -m auto_trader_iq.grade_report --bar-seconds 60 --horizon-bars 3 --min-mo
 
 **Isto não é taxa de acerto.** Não há custo, spread, payout ou resultado financeiro: é deslocamento relativo, útil para comparar classes entre si na mesma amostra. A conversão de tempo em velas assume o período informado em `--bar-seconds`; num gráfico de 5 minutos, use `300`.
 
+### Piso de velas seguidas: duas ou três?
+
+A regra de fluxo aposta na direção das velas repetidas e hoje exige duas. Exigir três joga fora todas as apostas que tinham exatamente duas — e é essa perda que decide a troca, não a taxa de acerto que sobra.
+
+O bloco **PISO DE VELAS SEGUIDAS** do relatório mostra, para cada piso (2+, 3+, 4+, 5+), o número de apostas, acertos, empates, o acerto na liquidação sem limiar (empate conta como perda), o EV por operação a 85% e a 90% e o líquido total em unidades de aposta. Depois diz o que cada piso mais alto **descarta** e quanto esse descarte rendia, e testa a diferença entre 3+ e exatamente 2 com z.
+
+Um piso mais alto costuma ter EV por operação melhor e líquido total pior, porque sobra menos aposta. Qual dos dois importa depende do limite diário de operações: com teto, EV por operação manda; sem teto, o líquido manda.
+
 ### Diagnóstico visual de geometria
 
 Quando o rótulo mais à direita fica 3 ou mais velas à esquerda da última vela detectada, o app grava, no máximo uma vez por minuto, uma imagem anotada em `%LOCALAPPDATA%\AutoTraderIQ\screenshots\geometry_*.png` (centros de vela em azul, última vela em magenta, rótulos em laranja, o mais à direita em vermelho) junto de um `.json` com as medidas, os intervalos entre velas (`gaps_px`), os centros detectados (`bar_centers_x`) e o tamanho da imagem — detalhe suficiente para diagnosticar sem a imagem. Serve para separar velas fantasmas, rótulo desenhado longe do candle e sinal realmente antigo — coisas que nenhum número sozinho distingue.

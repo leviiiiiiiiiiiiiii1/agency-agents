@@ -616,7 +616,7 @@ class FlowRuleTests(unittest.TestCase):
     def test_flow_block_is_rendered(self):
         text = format_flow_rule(compute_flow_rule(self.closes_frames(), horizon_bars=3))
         self.assertIn("REGRA DE FLUXO", text)
-        self.assertIn("Regra de 2+ velas seguidas", text)
+        self.assertIn("PISO DE VELAS SEGUIDAS", text)
         text.encode("cp1252")
 
     def test_settlement_counts_what_happened_without_a_threshold(self):
