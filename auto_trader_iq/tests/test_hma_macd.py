@@ -271,5 +271,54 @@ class LadderTests(unittest.TestCase):
         self.assertEqual(len(series_from_ladder(frames)), 2)
 
 
+    def test_a_late_entry_never_reads_past_the_series(self):
+        config = HmaMacdConfig(
+            confirm_window=60,
+            block_lateral=False,
+            block_weak_hist=False,
+            block_volatility=False,
+            min_slope_units=0.0,
+        )
+        values = walk(size=700)
+        base = backtest(values, config, payout=0.86, expiry_bars=1)
+        late = backtest(values, config, payout=0.86, expiry_bars=1, entry_delay=3)
+        self.assertGreater(base.executed, 0)
+        # Entrar três velas depois só pode perder operações no fim da série.
+        self.assertLessEqual(late.executed, base.executed)
+        self.assertLessEqual(base.executed - late.executed, 3)
+
+    def test_delaying_the_entry_changes_the_price_it_pays(self):
+        config = HmaMacdConfig(
+            confirm_window=60,
+            block_lateral=False,
+            block_weak_hist=False,
+            block_volatility=False,
+            min_slope_units=0.0,
+        )
+        rising = [100 + i for i in range(500)]
+        early = backtest(rising, config, payout=0.86, expiry_bars=1)
+        later = backtest(rising, config, payout=0.86, expiry_bars=2, entry_delay=1)
+        self.assertEqual(early.losses, 0)
+        self.assertEqual(later.losses, 0)
+
+    def test_the_grid_runs_both_variants(self):
+        from auto_trader_iq.hma_macd import MarketSeries
+        from auto_trader_iq.hma_macd_report import format_report
+
+        series = [
+            MarketSeries(
+                label="sessao-a",
+                closes=tuple(walk(size=600)),
+                hours=tuple(9 + (i // 60) % 6 for i in range(600)),
+            )
+        ]
+        text = "\n".join(
+            format_report(series, config=HmaMacdConfig(confirm_window=3), payout=0.86, expiry=1)
+        )
+        self.assertIn("Entrada atrasada", text)
+        self.assertIn("sem filtro", text)
+        self.assertIn("todos os filtros", text)
+
+
 if __name__ == "__main__":
     unittest.main()

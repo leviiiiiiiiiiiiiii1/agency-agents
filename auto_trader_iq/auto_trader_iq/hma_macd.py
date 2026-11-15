@@ -547,6 +547,7 @@ def backtest(
     stake: float = 1.0,
     hours: Sequence[int] | None = None,
     asset: str | None = None,
+    entry_delay: int = 0,
 ) -> StrategyStats:
     """Aplica a estratégia e liquida cada sinal aprovado na vela de expiração.
 
@@ -568,11 +569,12 @@ def backtest(
         # Entrada na abertura da vela seguinte: o último fechamento conhecido é
         # o da vela da confirmação. Expiração de 1 vela sai no fechamento
         # seguinte, que é exatamente uma vela de exposição.
-        exit_index = signal.confirm_index + horizon
+        entry_index = signal.confirm_index + entry_delay
+        exit_index = entry_index + horizon
         if exit_index >= len(closes):
             stats.total -= 1
             continue
-        entry = closes[signal.confirm_index]
+        entry = closes[entry_index]
         moved = closes[exit_index] - entry
         won = moved > 0 if signal.direction == BUY else moved < 0
         draw = moved == 0

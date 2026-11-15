@@ -30,6 +30,60 @@ from .hma_macd import (
 MIN_SIGNALS_FOR_READING = 30
 
 
+def _grid_lines(
+    series: Sequence[Any],
+    config: HmaMacdConfig,
+    results: dict[str, StrategyStats],
+    *,
+    payout: float,
+    delays: Sequence[int],
+    expiries: Sequence[int],
+) -> list[str]:
+    """Entrada atrasada × expiração, para saber se o prejuízo é de horário.
+
+    A regra manda entrar na abertura seguinte. Se entrar mais tarde muda o
+    sinal do resultado, o problema não é o indicador: é o instante da entrada.
+    """
+    lines: list[str] = []
+    for name in ("sem filtro", "todos os filtros"):
+        variant = _variants(config)[[item[0] for item in _variants(config)].index(name)][1]
+        lines += ["", f"    Entrada atrasada × expiração - {name} (acerto · n)"]
+        header = "    " + " " * 12 + "".join(f"{f'{e} vela(s)':>14}" for e in expiries)
+        lines.append(header)
+        best: tuple[float, int, int] | None = None
+        for delay in delays:
+            cells = []
+            for expiry in expiries:
+                stats = StrategyStats()
+                for item in series:
+                    _merge(
+                        stats,
+                        backtest(
+                            item.closes,
+                            variant,
+                            payout=payout,
+                            expiry_bars=expiry,
+                            hours=item.hours,
+                            asset=item.label,
+                            entry_delay=delay,
+                        ),
+                    )
+                accuracy = stats.accuracy
+                label = "-" if accuracy is None else f"{accuracy:.0%} ({stats.executed})"
+                cells.append(f"{label:>14}")
+                if accuracy is not None and stats.executed >= 10:
+                    if best is None or accuracy > best[0]:
+                        best = (accuracy, delay, expiry)
+            lines.append(f"    entra {delay:+d} vela(s)".ljust(16) + "".join(cells))
+        if best:
+            lines.append(
+                f"      melhor célula: {best[0]:.0%} com atraso {best[1]} e expiração"
+                f" {best[2]} - escolhida depois de olhar a tabela, então precisa de"
+                " amostra própria antes de virar regra."
+            )
+    return lines
+
+
 def _timing_lines(series: Sequence[Any], config: HmaMacdConfig) -> list[str]:
     """Quanto o MACD demora para confirmar a virada da HMA, medido."""
     lags: list[int] = []
@@ -159,6 +213,9 @@ def format_report(
             f" {stats.net:>+9.2f} {stats.max_drawdown:>+6.2f}"
         )
     lines.extend(_timing_lines(series, config))
+    lines.extend(
+        _grid_lines(series, config, results, payout=payout, delays=(0, 1, 2, 3), expiries=(1, 2, 3))
+    )
     everything = results["todos os filtros"]
     lines.append("")
     lines.append("    Motivos de bloqueio (todos os filtros):")
