@@ -4,6 +4,8 @@ from auto_trader_iq.flow_signal import (
     BUY,
     SELL,
     direction_of_colour,
+    entry_from_ladder,
+    flow_decision,
     flow_entry,
     flow_signal,
 )
@@ -93,3 +95,39 @@ class FlowSignalTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FlowDecisionTests(unittest.TestCase):
+    def test_an_entry_says_why_it_is_allowed(self):
+        decision = flow_decision(["green", "red", "red"], expiry_bars=2)
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.entry.direction, SELL)
+        self.assertIn("2 velas seguidas", decision.reason)
+
+    def test_a_one_candle_expiry_says_what_is_missing(self):
+        decision = flow_decision(["green", "red", "red"], expiry_bars=1)
+        self.assertFalse(decision.allowed)
+        self.assertIn("não medida", decision.reason)
+
+    def test_a_short_streak_says_how_short_it_is(self):
+        decision = flow_decision(["red", "green"], expiry_bars=2)
+        self.assertFalse(decision.allowed)
+        self.assertIn("abaixo do piso", decision.reason)
+
+    def test_an_uncalibrated_candle_says_so(self):
+        decision = flow_decision(["red", "red", "purple"], expiry_bars=2)
+        self.assertIn("sem cor calibrada", decision.reason)
+
+    def test_an_empty_reading_is_not_an_entry(self):
+        self.assertIn("nenhuma vela lida", flow_decision([], expiry_bars=2).reason)
+
+    def test_the_decision_can_be_taken_from_the_ladder_the_app_already_saves(self):
+        decision = entry_from_ladder({"colors": ["green", "red", "red"]}, expiry_bars=2)
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.entry.direction, SELL)
+
+    def test_a_frame_without_colours_says_it_cannot_read(self):
+        decision = entry_from_ladder({"closes_px": [1.0, 2.0]}, expiry_bars=2)
+        self.assertFalse(decision.allowed)
+        self.assertIn("sem cores gravadas", decision.reason)
+

@@ -30,8 +30,9 @@ de uma vela em vez de deixar o número parecer aprovado.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 FLOW_WINDOW = 5
 FLOW_MIN_STREAK = 2
@@ -70,6 +71,76 @@ def direction_of_colour(colour: str) -> str | None:
     if colour in _LOW_COLOURS:
         return SELL
     return None
+
+
+@dataclass(frozen=True, slots=True)
+class FlowDecision:
+    """A resposta que o app registra: entrou ou não, e por quê.
+
+    Um critério que só sabe dizer "não" não serve para auditar nada. Aqui o
+    motivo acompanha a decisão, e é ele que vai para as estatísticas quando a
+    entrada é recusada.
+    """
+
+    entry: FlowEntry | None
+    reason: str
+
+    @property
+    def allowed(self) -> bool:
+        return self.entry is not None
+
+
+def flow_decision(
+    colours: Sequence[str],
+    *,
+    expiry_bars: int,
+    window: int = FLOW_WINDOW,
+    min_streak: int = FLOW_MIN_STREAK,
+) -> FlowDecision:
+    """Decisão de entrada com o motivo, a partir das cores da escada gravada.
+
+    As cores vêm da mais antiga para a mais nova; a mais nova é a vela em que a
+    entrada seria aberta. Cor não calibrada na vela mais recente encerra a
+    leitura, porque não há direção confirmada para apostar.
+    """
+    recent = list(colours)[-window:]
+    if expiry_bars < MIN_EXPIRY_BARS:
+        return FlowDecision(
+            None,
+            f"expiração de {expiry_bars} vela(s) não medida: abaixo do equilíbrio",
+        )
+    if not recent:
+        return FlowDecision(None, "nenhuma vela lida")
+    newest = direction_of_colour(recent[-1])
+    if newest is None:
+        return FlowDecision(None, "vela mais recente sem cor calibrada")
+    streak = 0
+    for colour in reversed(recent):
+        if direction_of_colour(colour) != newest:
+            break
+        streak += 1
+    if streak < min_streak:
+        if streak == 1:
+            return FlowDecision(None, f"1 vela seguida, abaixo do piso de {min_streak}")
+        return FlowDecision(None, f"{streak} velas seguidas, abaixo do piso de {min_streak}")
+    entry = flow_entry(recent, expiry_bars=expiry_bars, window=window, min_streak=min_streak)
+    return FlowDecision(entry, entry.reason if entry else "sem entrada")
+
+
+def entry_from_ladder(
+    ladder: Mapping[str, Any],
+    *,
+    expiry_bars: int,
+    window: int = FLOW_WINDOW,
+    min_streak: int = FLOW_MIN_STREAK,
+) -> FlowDecision:
+    """Mesma decisão, a partir da escada que o app já grava no journal."""
+    colours = ladder.get("colors") or []
+    if not colours:
+        return FlowDecision(None, "quadro sem cores gravadas")
+    return flow_decision(
+        list(colours), expiry_bars=expiry_bars, window=window, min_streak=min_streak
+    )
 
 
 @dataclass(frozen=True, slots=True)

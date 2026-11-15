@@ -126,6 +126,16 @@ O bloco **LIQUIDAÇÃO POR EXPIRAÇÃO** mede a mesma aposta fechando em 1, 2, 3
 
 `flow_entry` transforma isso em critério: devolve direção, número de velas e expiração quando há sequência de duas ou mais, e **recusa expiração de uma vela** — não porque falte sinal, mas porque nesse tempo o resultado medido não passa do equilíbrio.
 
+`flow_decision` e `entry_from_ladder` dão a mesma decisão com o motivo junto (“2 velas seguidas, abaixo do piso de 3”, “vela mais recente sem cor calibrada”, “expiração de 1 vela não medida”), e leem direto do `price_ladder` que o app já grava. Sem o motivo, uma recusa não pode ser auditada nem estatisticamente contada.
+
+```python
+from auto_trader_iq.flow_signal import entry_from_ladder
+
+decision = entry_from_ladder(frame["price_ladder"], expiry_bars=2)
+decision.allowed        # True ou False
+decision.reason         # o que decidiu, em uma linha
+```
+
 Logo abaixo, o bloco **MESMA SEQUÊNCIA, DIREÇÕES OPOSTAS** mede as mesmas velas apostando ao contrário. "Três velas e entra na quarta" não diz a direção: continuar e reverter são lados opostos da mesma aposta, então a comparação é direta e não depende de escolher a direção depois de ver o resultado.
 
 ### Diagnóstico visual de geometria
