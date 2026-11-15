@@ -1016,6 +1016,7 @@ def compute_flow_rule(
         mode_counts[found] = mode_counts.get(found, 0) + 1
     mode = max(mode_counts, key=lambda key: mode_counts[key]) if mode_counts else "fechamentos"
     by_streak: dict[int, list[dict[str, Any]]] = {}
+    by_streak_flipped: dict[int, list[dict[str, Any]]] = {}
     # A ordem de verdade, para a conta da banca: a aposta que veio antes tem de
     # ser apostada antes, senão a maior queda do cálculo é ficção.
     sequence: list[dict[str, Any]] = []
@@ -1037,6 +1038,7 @@ def compute_flow_rule(
         if measured is None:
             continue
         by_streak.setdefault(streak, []).append({**measured, "direction": direction})
+        by_streak_flipped.setdefault(streak, []).append({**_flip(measured), "direction": direction})
         if streak >= 2:
             when = _parse_time(frame.get("occurred_at_utc"))
             key = (frame.get("session_id"), int(when.timestamp() // 3600) if when else 0)
@@ -1070,6 +1072,10 @@ def compute_flow_rule(
         "by_streak": {
             streak: _summarize_items(items) for streak, items in sorted(by_streak.items())
         },
+        "by_streak_flipped": {
+            streak: _summarize_items(items)
+            for streak, items in sorted(by_streak_flipped.items())
+        },
         "by_streak_direction": {
             streak: {
                 direction: _summarize_items(
@@ -1081,6 +1087,45 @@ def compute_flow_rule(
             for streak, items in sorted(by_streak.items())
         },
     }
+
+
+def _reversal_lines(
+    streaks: Mapping[int, Mapping[str, Any]],
+    flipped: Mapping[int, Mapping[str, Any]],
+) -> list[str]:
+    """A mesma sequência apostada ao contrário, no mesmo conjunto de velas.
+
+    "Três velas e entra na quarta" não diz em que direção. Continuar e reverter
+    são apostas opostas sobre as mesmas velas: uma ganha exatamente o que a
+    outra perde, e os empates continuam empates dos dois lados. Comparar as duas
+    na mesma amostra evita escolher a direção pelo resultado.
+    """
+
+    def rate(buckets: Mapping[int, Mapping[str, Any]], minimum: int) -> tuple[float, int]:
+        kept = [bucket for streak, bucket in buckets.items() if streak >= minimum]
+        total = sum(float(bucket.get("total", 0)) for bucket in kept)
+        wins = sum(float(bucket.get("acerta", 0)) for bucket in kept)
+        return (wins / total if total else 0.0), int(total)
+
+    lines = [
+        "",
+        "    MESMA SEQUÊNCIA, DIREÇÕES OPOSTAS - liquidação sem limiar, empate é perda",
+        "    piso   continua   reverte      diferença",
+    ]
+    for minimum in (2, 3, 4):
+        follow, follow_n = rate(streaks, minimum)
+        against, against_n = rate(flipped, minimum)
+        if not follow_n or follow_n != against_n:
+            continue
+        lines.append(
+            f"    {minimum}+   {follow:>7.1%}   {against:>7.1%}   {follow - against:>+11.1%}"
+            f"   ({follow_n} apostas)"
+        )
+    lines.append(
+        "    Continuar é o que a regra de fluxo mede; reverter é a hipótese contrária nas"
+        " mesmas velas."
+    )
+    return lines
 
 
 def _floor_lines(streaks: Mapping[int, Mapping[str, Any]]) -> list[str]:
@@ -1469,6 +1514,9 @@ def format_flow_rule(flow: Mapping[str, Any]) -> str:
             f"{bucket['median_move_units']:>7}   +/-{margin * 100:>3.0f}pp"
         )
     lines.extend(_floor_lines(streaks))
+    flipped = flow.get("by_streak_flipped") or {}
+    if flipped and streaks:
+        lines.extend(_reversal_lines(streaks, flipped))
     splits = flow.get("by_streak_direction") or {}
     if splits:
         lines.append("")

@@ -8,6 +8,7 @@ from unittest import mock
 
 from auto_trader_iq.grade_report import (
     _floor_lines,
+    _reversal_lines,
     default_journal_path,
     load_tracks,
     format_report,
@@ -485,4 +486,27 @@ class FloorTests(unittest.TestCase):
 
     def test_no_streak_means_no_floor_table(self):
         self.assertEqual(_floor_lines({}), ["", "    PISO DE VELAS SEGUIDAS - liquidação sem limiar, empate conta como perda", "    piso     n   acerto   empate   acerto%   EV 85%   EV 90%   líquido 85%   margem 95%"])
+
+
+class ReversalTests(unittest.TestCase):
+    def test_the_opposite_bet_is_the_complement_of_the_same_bets(self):
+        lines = _reversal_lines(
+            {2: streak_bucket(100, 60, 0), 3: streak_bucket(50, 35, 0)},
+            {2: streak_bucket(100, 40, 0), 3: streak_bucket(50, 15, 0)},
+        )
+        text = "\n".join(lines)
+        self.assertIn("MESMA SEQUÊNCIA", text)
+        self.assertIn("3+     70.0%     30.0%", text)
+
+    def test_a_tie_stays_a_tie_on_both_sides(self):
+        lines = _reversal_lines(
+            {2: streak_bucket(10, 4, 2)},
+            {2: streak_bucket(10, 4, 2)},
+        )
+        text = "\n".join(lines)
+        self.assertIn("2+     40.0%     40.0%", text)
+
+    def test_floors_that_do_not_share_the_same_bets_are_skipped(self):
+        lines = _reversal_lines({2: streak_bucket(10, 6, 0)}, {2: streak_bucket(9, 4, 0)})
+        self.assertFalse(any(line.strip().startswith("2+") for line in lines))
 

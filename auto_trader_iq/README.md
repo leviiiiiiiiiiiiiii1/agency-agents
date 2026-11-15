@@ -120,6 +120,8 @@ O bloco **PISO DE VELAS SEGUIDAS** do relatório mostra, para cada piso (2+, 3+,
 
 Um piso mais alto costuma ter EV por operação melhor e líquido total pior, porque sobra menos aposta. Qual dos dois importa depende do limite diário de operações: com teto, EV por operação manda; sem teto, o líquido manda.
 
+Logo abaixo, o bloco **MESMA SEQUÊNCIA, DIREÇÕES OPOSTAS** mede as mesmas velas apostando ao contrário. "Três velas e entra na quarta" não diz a direção: continuar e reverter são lados opostos da mesma aposta, então a comparação é direta e não depende de escolher a direção depois de ver o resultado.
+
 ### Diagnóstico visual de geometria
 
 Quando o rótulo mais à direita fica 3 ou mais velas à esquerda da última vela detectada, o app grava, no máximo uma vez por minuto, uma imagem anotada em `%LOCALAPPDATA%\AutoTraderIQ\screenshots\geometry_*.png` (centros de vela em azul, última vela em magenta, rótulos em laranja, o mais à direita em vermelho) junto de um `.json` com as medidas, os intervalos entre velas (`gaps_px`), os centros detectados (`bar_centers_x`) e o tamanho da imagem — detalhe suficiente para diagnosticar sem a imagem. Serve para separar velas fantasmas, rótulo desenhado longe do candle e sinal realmente antigo — coisas que nenhum número sozinho distingue.
