@@ -1089,6 +1089,47 @@ def compute_flow_rule(
     }
 
 
+def _floor_direction_lines(
+    by_direction: Mapping[int, Mapping[str, Mapping[str, Any]]]
+) -> list[str]:
+    """O piso separado por direção, porque a média esconde um dos lados.
+
+    Um gráfico que caiu na semana de captura paga SELL e pune BUY. Se a regra
+    acerta só de um lado, ela pode estar herdando a queda em vez de escolher o
+    momento: num piso pode haver 49 apostas de venda e 13 de compra.
+    """
+    lines = [
+        "",
+        "    PISO POR DIREÇÃO - liquidação sem limiar, empate é perda",
+        "    piso        BUY n/acerto   EV 85%        SELL n/acerto   EV 85%",
+    ]
+
+    def cell(minimum: int, direction: str) -> str:
+        kept = [
+            buckets[direction]
+            for streak, buckets in by_direction.items()
+            if streak >= minimum and direction in buckets
+        ]
+        total = sum(float(bucket.get("total", 0)) for bucket in kept)
+        wins = sum(float(bucket.get("acerta", 0)) for bucket in kept)
+        if not total:
+            return f"{'-':>5} {'-':>7}   {'-':>6}"
+        rate = wins / total
+        return f"{int(total):>5}/{rate:>6.1%}   {_expected_value(rate, PAYOUT_MIN):>+6.1%}"
+
+    for minimum in (2, 3, 4):
+        if not any(streak >= minimum for streak in by_direction):
+            continue
+        lines.append(
+            f"    {minimum}+    {cell(minimum, 'BUY'):>26}    {cell(minimum, 'SELL'):>26}"
+        )
+    lines.append(
+        "    Um lado com poucas apostas não confirma a regra do outro: leia as duas"
+        " colunas antes de aceitar a média."
+    )
+    return lines
+
+
 def _reversal_lines(
     streaks: Mapping[int, Mapping[str, Any]],
     flipped: Mapping[int, Mapping[str, Any]],
@@ -1514,6 +1555,9 @@ def format_flow_rule(flow: Mapping[str, Any]) -> str:
             f"{bucket['median_move_units']:>7}   +/-{margin * 100:>3.0f}pp"
         )
     lines.extend(_floor_lines(streaks))
+    by_direction = flow.get("by_streak_direction") or {}
+    if by_direction:
+        lines.extend(_floor_direction_lines(by_direction))
     flipped = flow.get("by_streak_flipped") or {}
     if flipped and streaks:
         lines.extend(_reversal_lines(streaks, flipped))

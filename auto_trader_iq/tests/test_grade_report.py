@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from auto_trader_iq.grade_report import (
+    _floor_direction_lines,
     _floor_lines,
     _reversal_lines,
     default_journal_path,
@@ -509,4 +510,28 @@ class ReversalTests(unittest.TestCase):
     def test_floors_that_do_not_share_the_same_bets_are_skipped(self):
         lines = _reversal_lines({2: streak_bucket(10, 6, 0)}, {2: streak_bucket(9, 4, 0)})
         self.assertFalse(any(line.strip().startswith("2+") for line in lines))
+
+
+class FloorDirectionTests(unittest.TestCase):
+    def test_each_side_is_counted_on_its_own(self):
+        lines = _floor_direction_lines(
+            {
+                2: {"BUY": streak_bucket(100, 60, 0), "SELL": streak_bucket(50, 20, 0)},
+                3: {"BUY": streak_bucket(10, 9, 0), "SELL": streak_bucket(30, 25, 0)},
+            }
+        )
+        text = "\n".join(lines)
+        self.assertIn("2+", text)
+        # Piso 3 soma 10 de compra e 30 de venda, cada lado na sua coluna.
+        self.assertIn("10/ 90.0%", text)
+        self.assertIn("30/ 83.3%", text)
+
+    def test_a_missing_side_does_not_borrow_the_other(self):
+        lines = _floor_direction_lines({2: {"SELL": streak_bucket(20, 12, 0)}})
+        row = [line for line in lines if line.strip().startswith("2+")][0]
+        self.assertIn("-", row)
+        self.assertIn("20/", row)
+
+    def test_no_streaks_leaves_only_the_headers(self):
+        self.assertEqual(len(_floor_direction_lines({})), 4)
 
