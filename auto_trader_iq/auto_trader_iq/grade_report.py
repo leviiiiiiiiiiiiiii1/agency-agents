@@ -204,6 +204,7 @@ def _measure(
     bar_seconds: float,
     horizon_bars: int,
     min_move_units: float,
+    from_index: int | None = None,
 ) -> dict[str, Any] | None:
     """Localiza o quadro de referência e mede o deslocamento do preço.
 
@@ -222,7 +223,12 @@ def _measure(
     best_error = None
     # O quadro de referência pode ser qualquer um com escada: exigir que ele
     # também esteja classificado descartava quase todos os sinais.
-    for later in timeline:
+    # Medir a mesma aposta em quatro expirações varre a linha do tempo quatro
+    # vezes. Quem chama já sabe onde o quadro começa, e nada antes dele pode ser
+    # o quadro de referência: começar do índice evita repetir a varredura inteira.
+    begin = 0 if from_index is None else max(0, from_index)
+    for index in range(begin, len(timeline)):
+        later = timeline[index]
         if later.get("session_id") != start.get("session_id"):
             continue
         if str(later.get("occurred_at_utc")) <= str(start.get("occurred_at_utc")):
@@ -915,6 +921,9 @@ COLOR_DIRECTION = {"green": "BUY", "red": "SELL", "white": "SELL"}
 BLOCK_SECONDS = 3600
 
 FLOW_WINDOW = 5
+# A liquidação do fluxo já foi medida a 3 velas. Quem opera binário escolhe a
+# expiração na hora, então a mesma regra é medida em cada uma antes de virar regra.
+SETTLEMENT_HORIZONS = (1, 2, 3, 4)
 
 # Payout informado pelo usuário: ele opera entre 85% e 90%. Abaixo de 1/(1+p)
 # a aposta perde dinheiro mesmo acertando mais da metade das vezes.
@@ -1017,10 +1026,12 @@ def compute_flow_rule(
     mode = max(mode_counts, key=lambda key: mode_counts[key]) if mode_counts else "fechamentos"
     by_streak: dict[int, list[dict[str, Any]]] = {}
     by_streak_flipped: dict[int, list[dict[str, Any]]] = {}
+    by_streak_expiry: dict[int, dict[int, list[float]]] = {}
     # A ordem de verdade, para a conta da banca: a aposta que veio antes tem de
     # ser apostada antes, senão a maior queda do cálculo é ficção.
     sequence: list[dict[str, Any]] = []
     block_ids: dict[Any, int] = {}
+    positions = {id(frame): index for index, frame in enumerate(timeline)}
     for frame in _one_per_bar(timeline, bar_seconds):
         ladder = frame.get("price_ladder") or {}
         found_mode, directions = _flow_directions(ladder, window)
@@ -1032,11 +1043,29 @@ def compute_flow_rule(
             if item != direction:
                 break
             streak += 1
+        here = positions.get(id(frame))
         measured = _measure(
-            timeline, frame, direction, 0, bar_seconds, horizon_bars, min_move_units
+            timeline,
+            frame,
+            direction,
+            0,
+            bar_seconds,
+            horizon_bars,
+            min_move_units,
+            from_index=here,
         )
         if measured is None:
             continue
+        for horizon in SETTLEMENT_HORIZONS:
+            move = (
+                measured["move_units"]
+                if horizon == horizon_bars
+                else _settlement_move(
+                    timeline, frame, direction, bar_seconds, horizon, from_index=here
+                )
+            )
+            if move is not None:
+                by_streak_expiry.setdefault(horizon, {}).setdefault(streak, []).append(move)
         by_streak.setdefault(streak, []).append({**measured, "direction": direction})
         by_streak_flipped.setdefault(streak, []).append({**_flip(measured), "direction": direction})
         if streak >= 2:
@@ -1072,6 +1101,12 @@ def compute_flow_rule(
         "by_streak": {
             streak: _summarize_items(items) for streak, items in sorted(by_streak.items())
         },
+        "by_streak_expiry": {
+            horizon: {
+                streak: _settle_moves(moves) for streak, moves in sorted(buckets.items())
+            }
+            for horizon, buckets in sorted(by_streak_expiry.items())
+        },
         "by_streak_flipped": {
             streak: _summarize_items(items)
             for streak, items in sorted(by_streak_flipped.items())
@@ -1087,6 +1122,73 @@ def compute_flow_rule(
             for streak, items in sorted(by_streak.items())
         },
     }
+
+
+def _settlement_move(
+    timeline: Sequence[Mapping[str, Any]],
+    start: Mapping[str, Any],
+    direction: str,
+    bar_seconds: float,
+    horizon_bars: int,
+    from_index: int | None = None,
+) -> float | None:
+    """Deslocamento até a vela de expiração, sem limiar de movimento."""
+    measured = _measure(
+        timeline, start, direction, 0, bar_seconds, horizon_bars, 0.0, from_index=from_index
+    )
+    if measured is None:
+        return None
+    return float(measured["move_units"])
+
+
+def _settle_moves(moves: Sequence[float]) -> dict[str, Any]:
+    """Fecha em quantas vela: acertou, empatou, errou. Empate conta como perda."""
+    wins = sum(1 for move in moves if move > 0)
+    ties = sum(1 for move in moves if move == 0)
+    return {"total": len(moves), "acerta": wins, "empata": ties, "erra": len(moves) - wins - ties}
+
+
+def _expiry_lines(
+    by_expiry: Mapping[int, Mapping[int, Mapping[str, Any]]]
+) -> list[str]:
+    """A mesma sequência liquidada em 1, 2, 3 e 4 velas.
+
+    A expiração é escolhida na hora da operação, então uma regra que só paga em
+    três velas não é a mesma regra de quem opera em uma. Aqui a aposta é idêntica
+    e muda só o instante do fechamento.
+    """
+    floors = (2, 3, 4)
+    lines = [
+        "",
+        "    LIQUIDAÇÃO POR EXPIRAÇÃO - mesma aposta, muda o instante do fechamento",
+        "    expiração" + "".join(f"{f'{floor}+ n/acerto':>20}" for floor in floors),
+    ]
+    best: tuple[float, int, int] | None = None
+    for horizon, buckets in sorted(by_expiry.items()):
+        cells = []
+        for floor in floors:
+            kept = [bucket for streak, bucket in buckets.items() if streak >= floor]
+            total = sum(float(bucket["total"]) for bucket in kept)
+            wins = sum(float(bucket["acerta"]) for bucket in kept)
+            if not total:
+                cells.append(f"{'-':>20}")
+                continue
+            rate = wins / total
+            cells.append(f"{f'{int(total)}/{rate:.1%}':>20}")
+            if int(total) >= 100 and (best is None or rate > best[0]):
+                best = (rate, horizon, floor)
+        label = "1 vela" if horizon == 1 else f"{horizon} velas"
+        lines.append(f"    {label:<10}" + "".join(cells))
+    if best:
+        rate, horizon, floor = best
+        lines.append(
+            f"    Melhor célula: {rate:.1%} com expiração de {horizon} vela(s) e piso"
+            f" {floor}+. Trocas de expiração mudam o jogo: só adote com amostra própria."
+        )
+    lines.append(
+        "    Equilíbrio: 54.1% a 85% · 52.6% a 90%. Empate no fechamento conta como perda."
+    )
+    return lines
 
 
 def _floor_direction_lines(
@@ -1555,6 +1657,9 @@ def format_flow_rule(flow: Mapping[str, Any]) -> str:
             f"{bucket['median_move_units']:>7}   +/-{margin * 100:>3.0f}pp"
         )
     lines.extend(_floor_lines(streaks))
+    expiry_table = flow.get("by_streak_expiry") or {}
+    if expiry_table:
+        lines.extend(_expiry_lines(expiry_table))
     by_direction = flow.get("by_streak_direction") or {}
     if by_direction:
         lines.extend(_floor_direction_lines(by_direction))

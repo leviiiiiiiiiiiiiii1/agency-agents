@@ -7,8 +7,10 @@ from pathlib import Path
 from unittest import mock
 
 from auto_trader_iq.grade_report import (
+    _expiry_lines,
     _floor_direction_lines,
     _floor_lines,
+    _settle_moves,
     _reversal_lines,
     default_journal_path,
     load_tracks,
@@ -534,4 +536,27 @@ class FloorDirectionTests(unittest.TestCase):
 
     def test_no_streaks_leaves_only_the_headers(self):
         self.assertEqual(len(_floor_direction_lines({})), 4)
+
+
+class ExpiryTests(unittest.TestCase):
+    def test_the_same_bets_are_counted_at_every_expiry(self):
+        lines = _expiry_lines(
+            {
+                1: {2: streak_bucket(100, 60, 0), 3: streak_bucket(60, 40, 0)},
+                3: {2: streak_bucket(100, 70, 0), 3: streak_bucket(60, 45, 0)},
+            }
+        )
+        text = "\n".join(lines)
+        self.assertIn("1 vela", text)
+        self.assertIn("3 velas", text)
+        self.assertIn("160/71.9%", text)
+
+    def test_a_cell_below_a_hundred_bets_never_wins_the_prize(self):
+        lines = _expiry_lines({1: {2: streak_bucket(50, 45, 0)}, 3: {2: streak_bucket(200, 130, 0)}})
+        text = "\n".join(lines)
+        self.assertIn("Melhor célula: 65.0% com expiração de 3 vela(s)", text)
+
+    def test_ties_are_counted_as_losses_in_the_settlement(self):
+        settled = _settle_moves([0.5, 0.0, -0.4, 0.0])
+        self.assertEqual(settled, {"total": 4, "acerta": 1, "empata": 2, "erra": 1})
 

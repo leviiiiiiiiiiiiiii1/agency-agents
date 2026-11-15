@@ -120,6 +120,10 @@ O bloco **PISO DE VELAS SEGUIDAS** do relatório mostra, para cada piso (2+, 3+,
 
 Um piso mais alto costuma ter EV por operação melhor e líquido total pior, porque sobra menos aposta. Qual dos dois importa depende do limite diário de operações: com teto, EV por operação manda; sem teto, o líquido manda.
 
+Medido no journal do usuário, o piso **2** rendeu 63,4% com líquido maior, e o **3** rendeu 68,1% com EV por operação de +26,1% a 85%. O que decidiu não foi o total: as apostas com exatamente duas velas ficaram em 56% com margem de ±8pp, indistinguíveis do equilíbrio de 54,1%, enquanto de três em diante a taxa ficou plana em ~68% nos dois sentidos e em três faixas de comprimento. Por isso `FLOW_MIN_STREAK` é **3**.
+
+O bloco **LIQUIDAÇÃO POR EXPIRAÇÃO** mede a mesma aposta fechando em 1, 2, 3 e 4 velas. A expiração é escolhida na hora da operação, então uma regra que só paga em três velas não é a mesma regra de quem opera em uma: aqui a aposta é idêntica e muda só o instante do fechamento, com o equilíbrio (54,1% a 85% · 52,6% a 90%) impresso embaixo.
+
 Logo abaixo, o bloco **MESMA SEQUÊNCIA, DIREÇÕES OPOSTAS** mede as mesmas velas apostando ao contrário. "Três velas e entra na quarta" não diz a direção: continuar e reverter são lados opostos da mesma aposta, então a comparação é direta e não depende de escolher a direção depois de ver o resultado.
 
 ### Diagnóstico visual de geometria

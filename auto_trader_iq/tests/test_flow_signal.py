@@ -20,10 +20,19 @@ class ColourDirectionTests(unittest.TestCase):
 
 
 class FlowSignalTests(unittest.TestCase):
-    def test_two_candles_in_the_same_direction_are_a_signal(self):
-        signal = flow_signal(["green", "red", "green", "green"])
+    def test_three_candles_in_the_same_direction_are_a_signal(self):
+        signal = flow_signal(["red", "green", "green", "green"])
         self.assertIsNotNone(signal)
         self.assertEqual(signal.direction, BUY)
+        self.assertEqual(signal.streak, 3)
+
+    def test_two_candles_are_not_enough_by_default(self):
+        # Medido: exatamente duas seguidas ficaram em 56% com margem de +/-8pp,
+        # indistinguível do equilíbrio. O piso subiu para três por isso.
+        self.assertIsNone(flow_signal(["green", "red", "green", "green"]))
+
+    def test_two_candles_still_work_when_the_caller_asks_for_two(self):
+        signal = flow_signal(["green", "red", "green", "green"], min_streak=2)
         self.assertEqual(signal.streak, 2)
 
     def test_one_candle_is_not_a_signal(self):
@@ -37,15 +46,15 @@ class FlowSignalTests(unittest.TestCase):
         self.assertIsNone(flow_signal(["green", "green", "red", "red", "green"]))
 
     def test_red_followed_by_white_is_still_the_same_direction(self):
-        signal = flow_signal(["green", "green", "red", "white"])
+        signal = flow_signal(["green", "green", "red", "white"], min_streak=2)
         self.assertEqual(signal.direction, SELL)
         self.assertEqual(signal.streak, 2)
 
     def test_only_the_last_five_candles_are_read(self):
-        colours = ["green"] * 6 + ["red", "red"]
+        colours = ["green"] * 6 + ["red", "red", "red"]
         signal = flow_signal(colours)
         self.assertEqual(signal.direction, SELL)
-        self.assertEqual(signal.streak, 2)
+        self.assertEqual(signal.streak, 3)
 
     def test_an_uncalibrated_newest_candle_blocks_the_signal(self):
         self.assertIsNone(flow_signal(["green", "green", "purple"]))

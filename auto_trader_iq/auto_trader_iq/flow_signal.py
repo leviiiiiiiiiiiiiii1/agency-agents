@@ -15,6 +15,12 @@ Duas travas vêm da calibração do gráfico do usuário, não do gosto de quem 
 A janela é de cinco velas, e a aposta é sempre na direção da sequência, nunca
 na reversão: o que foi medido é a continuação, e é só isso que este código
 autoriza.
+
+O piso é de três velas, e não duas, por medição: no journal do usuário, apostas
+com exatamente duas seguidas acertaram 56% (margem de +/-8pp, contra equilíbrio
+de 54,1% a 85%), enquanto de três em diante a taxa fica plana em ~68% nos dois
+sentidos. Duas velas não pagam o que cobram em capital e limite diário; três
+sustentam a mesma taxa em qualquer corte.
 """
 
 from __future__ import annotations
@@ -23,7 +29,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 FLOW_WINDOW = 5
-FLOW_MIN_STREAK = 2
+FLOW_MIN_STREAK = 3
 
 BUY = "BUY"
 SELL = "SELL"
