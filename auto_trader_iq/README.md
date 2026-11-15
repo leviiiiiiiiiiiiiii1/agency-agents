@@ -138,6 +138,23 @@ decision.reason         # o que decidiu, em uma linha
 
 Logo abaixo, o bloco **MESMA SEQUÊNCIA, DIREÇÕES OPOSTAS** mede as mesmas velas apostando ao contrário. "Três velas e entra na quarta" não diz a direção: continuar e reverter são lados opostos da mesma aposta, então a comparação é direta e não depende de escolher a direção depois de ver o resultado.
 
+### Executor da regra de fluxo
+
+`flow_executor.FlowExecutor` transforma a decisão em comando, uma vela por vez: `entry` (clicar), `wait` (ainda não é o segundo fixo) ou `none` (com o motivo). Ele **não clica** — não lê a tela, não sabe o que é DEMO ou REAL e não guarda banca. Quem executa decide isso.
+
+As travas são as da medição, não gosto: uma decisão por vela (a regra foi medida com uma aposta por vela), recusa de qualquer expiração abaixo de duas velas, e contagem de recusas por motivo para que o funil possa ser auditado depois.
+
+```python
+from auto_trader_iq.flow_executor import FlowExecutor
+
+flow = FlowExecutor(expiry_bars=2, entry_second=5)
+command = flow.evaluate(ladder["colors"], candle_id=minute_id, second=clock.second)
+if command.allowed:
+    ...  # quem clica é o app, com as travas que ele já tem
+```
+
+**A expiração não é controlada pelo app.** O clique aperta o botão de compra/venda da corretora; o tempo de expiração é o que estiver selecionado na plataforma. Se estiver em 1 minuto, o número aplicável é 57,2% e não os 68,3% medidos — o executor não tem como verificar isso por você.
+
 ### Diagnóstico visual de geometria
 
 Quando o rótulo mais à direita fica 3 ou mais velas à esquerda da última vela detectada, o app grava, no máximo uma vez por minuto, uma imagem anotada em `%LOCALAPPDATA%\AutoTraderIQ\screenshots\geometry_*.png` (centros de vela em azul, última vela em magenta, rótulos em laranja, o mais à direita em vermelho) junto de um `.json` com as medidas, os intervalos entre velas (`gaps_px`), os centros detectados (`bar_centers_x`) e o tamanho da imagem — detalhe suficiente para diagnosticar sem a imagem. Serve para separar velas fantasmas, rótulo desenhado longe do candle e sinal realmente antigo — coisas que nenhum número sozinho distingue.
