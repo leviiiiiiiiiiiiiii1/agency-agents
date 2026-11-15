@@ -134,6 +134,38 @@ O relatório **não calcula taxa de acerto**. Os quadros não têm desfecho vinc
 
 O CSV legado em `%LOCALAPPDATA%\AutoTraderIQ\simulation_history.csv` continua preservado e serve à compatibilidade/exportação; ele não é apagado nem substituído pelo journal.
 
+## Estratégia HMA + MACD (scalping M1)
+
+Estratégia independente, medida antes de ser adotada. Ela não substitui nem altera
+a classificação A/B/C, o contexto, a simulação manual ou a automação de cliques:
+é um módulo à parte (`auto_trader_iq/hma_macd.py`), sem estado global e sem
+escrever nada no journal.
+
+A regra é a da especificação: HMA 16 define direção pela inclinação entre velas
+fechadas; MACD 12/26/9 confirma pelo cruzamento do histograma no zero, na mesma
+vela da virada ou até `confirm_window` velas depois; a entrada é na abertura da
+vela seguinte à confirmação. Nenhuma vela futura é lida e a confirmação nunca é
+procurada antes da virada.
+
+Antes de ligar qualquer coisa, meça:
+
+```powershell
+.\.venv\Scripts\python.exe -m auto_trader_iq.hma_macd_report --payout 0.86 --expiry 1
+```
+
+O relatório monta a série M1 por sessão a partir das escadas de preço gravadas,
+roda a estratégia em cinco variantes (sem filtro, cada filtro isolado e todos) e
+mostra sinais, executadas, bloqueadas, acerto, EV por operação, líquido e queda.
+Ele também imprime o **atraso entre a virada da HMA e o cruzamento do MACD**:
+se a mediana desse atraso for maior que a janela de confirmação, a regra
+simplesmente quase não gera sinal, e é melhor saber disso antes.
+
+Limites conhecidos: a série é reconstruída em pixels (mede direção, não preço);
+sessões diferentes não são emendadas; o app não recebe candles de corretora, lê a
+tela; e não existe executor de ordens — cliques e operações continuam bloqueados.
+A seção de configuração `hma_macd` no JSON de configurações é lida e gravada por
+`load_config`/`save_config`; a tela correspondente ainda não foi adicionada.
+
 ## Histórico e arquivos locais
 
 O histórico em `%LOCALAPPDATA%\AutoTraderIQ\simulation_history.csv` (Windows) registra metadados de sinais, entradas simuladas e tentativas de clique; não contém imagens e não é transmitido. A interface identifica separadamente entradas **SIMULADAS** e tentativas **AUTOMÁTICAS**. Tentativa de clique não significa ordem aceita nem resultado financeiro. **Salvar todas as entradas…** exporta os registros; **Limpar log…** apaga o CSV após confirmação.
