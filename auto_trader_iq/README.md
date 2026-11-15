@@ -153,6 +153,14 @@ if command.allowed:
     ...  # quem clica é o app, com as travas que ele já tem
 ```
 
+**Como ligar no painel.** A caixa *"Entradas automáticas pela regra de fluxo (2+ velas · expiração 2 min)"* fica no bloco de automação DEMO e só aceita ser marcada depois que a automação DEMO já está ativa: ela entra por baixo das mesmas travas (conta DEMO confirmada, botões calibrados na janela em primeiro plano, segundo fixo, uma tentativa por vela). A caixa **não é restaurada ao abrir o app** — precisa ser marcada em cada sessão, como a própria automação.
+
+Pontos que o app não resolve por você:
+
+- **a expiração**: o clique aperta o botão da corretora; os 2 minutos precisam estar selecionados na plataforma. Se estiver em 1 minuto, o número aplicável é 57,2% e não os 68,3% medidos;
+- **a leitura**: a escada de cores vem do mesmo pipeline do OCR, então com o OCR desligado não existe escada e não há entrada por fluxo;
+- **o resultado**: nenhum desfecho é lido de volta. Caixa, Soros e stop continuam sendo os que já existem, e o journal registra `sinal_armado_fluxo` e `entrada_demo_clicada` com o motivo de cada recusa ao lado do estado do painel.
+
 **A expiração não é controlada pelo app.** O clique aperta o botão de compra/venda da corretora; o tempo de expiração é o que estiver selecionado na plataforma. Se estiver em 1 minuto, o número aplicável é 57,2% e não os 68,3% medidos — o executor não tem como verificar isso por você.
 
 ### Diagnóstico visual de geometria

@@ -33,6 +33,7 @@ from .operation_modes import ModeDecision, OperationMode, actual_order_execution
 from .opportunity_store import OpportunityStore
 from .signal_lifecycle import SignalLifecycle, SignalLifecycleTracker
 from .demo_clock import WindowsUtcMinusThreeClock, demo_entry_second_action
+from .flow_executor import FlowExecutor
 from .demo_click import (
     ClickTarget,
     click_demo_direction,
@@ -110,6 +111,9 @@ MIN_DEMO_ACTIVATION_TIMEOUT_SECONDS = 15
 MAX_DEMO_ACTIVATION_TIMEOUT_SECONDS = 28_800
 DEFAULT_DEMO_ENTRY_SECOND = 5
 MIN_DEMO_ENTRY_SECOND = 0
+# A regra de fluxo foi medida em 2 velas (68,3%) e reprovada em 1 (52,0% para
+# três seguidas). O executor não aceita outro valor enquanto não houver medição.
+FLOW_ENTRY_EXPIRY_BARS = 2
 MAX_DEMO_ENTRY_SECOND = 30
 DEFAULT_DEMO_MOUSE_KEEPALIVE_SECONDS = 60
 MIN_DEMO_MOUSE_KEEPALIVE_SECONDS = 30
@@ -380,6 +384,19 @@ class AutoTraderApp(tk.Tk):
         self.demo_entry_second_active = DEFAULT_DEMO_ENTRY_SECOND
         self.demo_entry_after_id: str | None = None
         self.demo_entries_this_activation = 0
+        # De onde veio o sinal pendente: rótulo OCR (padrão) ou regra de fluxo.
+        # A diferença importa porque a checagem de "etiqueta ainda na tela" só
+        # faz sentido para o primeiro, e o fluxo não depende de rótulo nenhum.
+        self.pending_source = "ocr"
+        self.latest_price_ladder: dict[str, object] | None = None
+        self.flow_entries_var = tk.BooleanVar(value=False)
+        self.flow_entries_enabled = False
+        self.flow_executor = FlowExecutor(
+            expiry_bars=FLOW_ENTRY_EXPIRY_BARS, entry_second=DEFAULT_DEMO_ENTRY_SECOND
+        )
+        self.flow_status = tk.StringVar(
+            value="Regra de fluxo: desligada · exige expiração de 2 min na plataforma"
+        )
         self.demo_minute_tracker = PlatformMinuteTracker()
         self.pending_demo_candle_id: int | None = None
         self.last_demo_entry_candle_id: int | None = None
@@ -830,6 +847,17 @@ class AutoTraderApp(tk.Tk):
             demo_entry_second_row,
             text=f"tenta em :SS; sinal tardio descartado · padrão :{DEFAULT_DEMO_ENTRY_SECOND:02d}",
         ).pack(side="left", padx=(6, 0))
+        demo_flow_row = ttk.Frame(simulation_box)
+        demo_flow_row.pack(fill="x", pady=(3, 0))
+        ttk.Checkbutton(
+            demo_flow_row,
+            text="Entradas automáticas pela regra de fluxo (2+ velas · expiração 2 min)",
+            variable=self.flow_entries_var,
+            command=self._on_flow_entries_toggle,
+        ).pack(side="left")
+        ttk.Label(demo_flow_row, textvariable=self.flow_status, wraplength=460).pack(
+            side="left", padx=(8, 0), fill="x", expand=True
+        )
         exclusion_row = ttk.Frame(simulation_box)
         exclusion_row.pack(fill="x", pady=(3, 0))
         ttk.Button(
@@ -1703,6 +1731,7 @@ class AutoTraderApp(tk.Tk):
         if (
             not self.demo_automation_enabled
             or pending is None
+            or self.pending_source == "flow"
             or self._market_context_allows_direction(pending.direction)
         ):
             return
@@ -1790,6 +1819,7 @@ class AutoTraderApp(tk.Tk):
             pending = self.simulation.arm(candidate, dedupe_scope=str(current_candle_id))
         except ValueError:
             return
+        self.pending_source = "ocr"
         self.pending_demo_candle_id = current_candle_id
         self.pending_armed_clock = clock
         self.pending_rollover_notified = False
@@ -1805,6 +1835,100 @@ class AutoTraderApp(tk.Tk):
             f"Sinal {label} armado para clique automático ({pending.confidence:.0f}%). "
             f"Entrada programada para :{self.demo_entry_second_active:02d}; "
             f"uma tentativa nesta vela M1 do relógio Windows UTC−3.{persistence_note}"
+        )
+        self._refresh_simulation_buttons()
+        self._execute_demo_click()
+
+    def _on_flow_entries_toggle(self) -> None:
+        """A regra de fluxo só entra com a automação DEMO já ativa."""
+        if self.flow_entries_var.get() and not self.demo_automation_enabled:
+            self.flow_entries_var.set(False)
+            self.flow_entries_enabled = False
+            self.flow_status.set(
+                "Ligue a automação DEMO primeiro; a regra de fluxo entra por baixo dela."
+            )
+            return
+        self.flow_entries_enabled = bool(self.flow_entries_var.get())
+        if self.flow_entries_enabled:
+            self.flow_status.set(
+                "Regra de fluxo ativa: 2+ velas seguidas, entrada no segundo fixo, "
+                "expiração 2 min. Confira a expiração na plataforma — o app não a controla. "
+                "Rearma a cada abertura do app."
+            )
+        else:
+            self.flow_status.set("Regra de fluxo: desligada.")
+        self._persist_config()
+
+    def _maybe_auto_flow_entry(self) -> None:
+        """Entrada automática pela regra medida, com o motivo sempre visível.
+
+        O sinal não vem de rótulo no gráfico: vem das cores das últimas velas, que
+        é o que a medição usou. Por isso o pendente nasce marcado como ``flow`` e
+        as checagens de rótulo são puladas mais adiante.
+        """
+        if (
+            not self.flow_entries_enabled
+            or not self.demo_automation_enabled
+            or not self.running
+            or self.timeframe_var.get() != "M1"
+            or self.simulation.pending is not None
+        ):
+            return
+        clock = self.demo_clock.reading()
+        current_candle_id = self.demo_minute_tracker.update(clock)
+        if current_candle_id is None:
+            return
+        ladder = self.latest_price_ladder or {}
+        colours = list(ladder.get("colors") or [])
+        if not colours:
+            return
+        # A escada guarda da vela mais nova para a mais antiga; a regra lê ao contrário.
+        command = self.flow_executor.evaluate(
+            list(reversed(colours)),
+            candle_id=str(current_candle_id),
+            second=clock.second,
+        )
+        if not command.allowed:
+            if command.kind == "none":
+                self.flow_status.set(f"Fluxo: {command.reason} · {self.flow_executor.summary()}")
+            return
+        direction = command.direction or ""
+        target = self.demo_click_targets.get(direction)
+        if target is None:
+            self.flow_status.set(
+                f"Fluxo: {direction} identificado, mas o botão dessa direção não está "
+                "calibrado; nada foi clicado."
+            )
+            return
+        candidate = SignalCandidate(
+            direction=direction,
+            confidence=100.0,
+            left=target.x,
+            top=target.y,
+            width=1,
+            height=1,
+            observed_text="FLUXO",
+        )
+        try:
+            pending = self.simulation.arm(candidate, dedupe_scope=str(current_candle_id))
+        except ValueError as exc:
+            self.flow_status.set(f"Fluxo: {exc}")
+            return
+        self.pending_source = "flow"
+        self.pending_demo_candle_id = current_candle_id
+        self.pending_armed_clock = clock
+        self.pending_rollover_notified = False
+        label = "COMPRA" if pending.direction == "BUY" else "VENDER"
+        error = self._record_simulation_event(
+            "sinal_armado_fluxo", direction=pending.direction, observed_text=pending.observed_text,
+            confidence=pending.confidence, signal_x=pending.x, signal_y=pending.y,
+            clock_override=clock, clock_source_override=DEMO_CLOCK_SOURCE,
+            armed_clock_override=clock,
+        )
+        persistence_note = f" Histórico não gravado: {error}" if error else ""
+        self.flow_status.set(
+            f"Fluxo: {command.reason}. {label} armado para :{self.demo_entry_second_active:02d}; "
+            f"expiração de {command.expiry_bars} velas.{persistence_note}"
         )
         self._refresh_simulation_buttons()
         self._execute_demo_click()
@@ -1860,7 +1984,11 @@ class AutoTraderApp(tk.Tk):
             self._cancel_pending_simulation()
             self.demo_status.set("Clique bloqueado pelo modo de segurança; nenhuma ordem foi enviada.")
             return
-        if not self._market_context_allows_direction(pending.direction):
+        # O sinal de fluxo É o contexto: exigir que o classificador de regime
+        # concorde com ele barraria justamente a regra que foi medida.
+        if self.pending_source != "flow" and not self._market_context_allows_direction(
+            pending.direction
+        ):
             self.demo_signal_guard.mark_consumed(pending.direction, pending.x, pending.y)
             self._cancel_pending_simulation()
             label = "COMPRA" if pending.direction == "BUY" else "VENDER"
@@ -1892,7 +2020,7 @@ class AutoTraderApp(tk.Tk):
             )
             self._cancel_pending_simulation()
             return
-        if not self._pending_demo_candidate_is_current(pending):
+        if self.pending_source != "flow" and not self._pending_demo_candidate_is_current(pending):
             self.demo_signal_guard.mark_consumed(pending.direction, pending.x, pending.y)
             self._cancel_pending_simulation()
             self.demo_status.set(
@@ -2726,6 +2854,9 @@ class AutoTraderApp(tk.Tk):
             label_geometry,
             ladder,
         ) = result
+        # A regra de fluxo lê a escada que já é gravada no journal: mesma leitura,
+        # mesmas cores, nenhuma segunda fonte de verdade.
+        self.latest_price_ladder = ladder
         self.latest_candidates_at = captured_at
         # Passa todas as caixas OCR ao reconciliador central; a deduplicação e a
         # contagem de caixas concorrentes são responsabilidade de uma única camada.
@@ -2858,6 +2989,7 @@ class AutoTraderApp(tk.Tk):
                 source="OCR_ENGINE",
             )
         self._maybe_auto_arm_demo_signal()
+        self._maybe_auto_flow_entry()
         self._update_timer_status(now)
 
     def _record_ocr_opportunities(
@@ -4195,7 +4327,18 @@ class AutoTraderApp(tk.Tk):
             prefix = "Referência de idade migrada" if migrated else "Aviso"
             self.capture_status.set(f"{prefix}: {note}")
 
+    def _apply_demo_entry_second(self) -> None:
+        """O segundo digitado vira o segundo usado; antes ele só era salvo."""
+        try:
+            second = int(self.demo_entry_second_var.get())
+        except (AttributeError, TypeError, ValueError):
+            return
+        if MIN_DEMO_ENTRY_SECOND <= second <= MAX_DEMO_ENTRY_SECOND:
+            self.demo_entry_second_active = second
+            self.flow_executor.entry_second = second
+
     def _persist_config(self) -> None:
+        self._apply_demo_entry_second()
         payload: dict[str, object] = {
             "operation_mode": self.operation_mode.value,
             "timeframe": self.timeframe_var.get(),
@@ -4312,6 +4455,7 @@ class AutoTraderApp(tk.Tk):
                 entry_second = DEFAULT_DEMO_ENTRY_SECOND
             if MIN_DEMO_ENTRY_SECOND <= entry_second <= MAX_DEMO_ENTRY_SECOND:
                 self.demo_entry_second_var.set(f"{entry_second:02d}")
+                self._apply_demo_entry_second()
             confidence = config.get("confidence")
             if confidence is not None:
                 self.confidence_var.set(str(confidence))
