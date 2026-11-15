@@ -4,6 +4,7 @@ from auto_trader_iq.flow_signal import (
     BUY,
     SELL,
     direction_of_colour,
+    flow_entry,
     flow_signal,
 )
 
@@ -20,20 +21,17 @@ class ColourDirectionTests(unittest.TestCase):
 
 
 class FlowSignalTests(unittest.TestCase):
-    def test_three_candles_in_the_same_direction_are_a_signal(self):
-        signal = flow_signal(["red", "green", "green", "green"])
+    def test_two_candles_in_the_same_direction_are_a_signal(self):
+        # Duas é o piso medido: é o único que passa o equilíbrio em toda
+        # expiração (57,2% em uma vela, 68,3% em duas).
+        signal = flow_signal(["green", "red", "green", "green"])
         self.assertIsNotNone(signal)
         self.assertEqual(signal.direction, BUY)
-        self.assertEqual(signal.streak, 3)
-
-    def test_two_candles_are_not_enough_by_default(self):
-        # Medido: exatamente duas seguidas ficaram em 56% com margem de +/-8pp,
-        # indistinguível do equilíbrio. O piso subiu para três por isso.
-        self.assertIsNone(flow_signal(["green", "red", "green", "green"]))
-
-    def test_two_candles_still_work_when_the_caller_asks_for_two(self):
-        signal = flow_signal(["green", "red", "green", "green"], min_streak=2)
         self.assertEqual(signal.streak, 2)
+
+    def test_three_candles_report_three(self):
+        signal = flow_signal(["red", "green", "green", "green"])
+        self.assertEqual(signal.streak, 3)
 
     def test_one_candle_is_not_a_signal(self):
         self.assertIsNone(flow_signal(["red", "green"]))
@@ -68,6 +66,23 @@ class FlowSignalTests(unittest.TestCase):
         signal = flow_signal(["green"] * 9, window=3)
         self.assertEqual(signal.streak, 3)
         self.assertEqual(signal.window, 3)
+
+    def test_the_entry_refuses_a_one_candle_expiry(self):
+        # 57,2% com +/-5pp cruza o equilíbrio de 54,1%: não é entrada.
+        self.assertIsNone(flow_entry(["green", "red", "red"], expiry_bars=1))
+
+    def test_the_entry_carries_direction_streak_and_expiry(self):
+        entry = flow_entry(["green", "red", "red"], expiry_bars=2)
+        self.assertEqual(entry.direction, SELL)
+        self.assertEqual(entry.streak, 2)
+        self.assertEqual(entry.expiry_bars, 2)
+        self.assertIn("expiração de 2 velas", entry.reason)
+
+    def test_the_entry_needs_a_streak_before_it_needs_an_expiry(self):
+        self.assertIsNone(flow_entry(["red", "green"], expiry_bars=2))
+
+    def test_the_entry_refuses_an_uncalibrated_newest_candle(self):
+        self.assertIsNone(flow_entry(["red", "red", "purple"], expiry_bars=2))
 
     def test_invalid_window_is_refused(self):
         with self.assertRaises(ValueError):

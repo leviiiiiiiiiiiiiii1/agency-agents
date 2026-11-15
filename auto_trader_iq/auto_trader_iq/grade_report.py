@@ -1179,6 +1179,18 @@ def _expiry_lines(
                 best = (rate, horizon, floor)
         label = "1 vela" if horizon == 1 else f"{horizon} velas"
         lines.append(f"    {label:<10}" + "".join(cells))
+    below = []
+    for horizon, buckets in sorted(by_expiry.items()):
+        for floor in floors:
+            kept = [bucket for streak, bucket in buckets.items() if streak >= floor]
+            total = sum(float(bucket["total"]) for bucket in kept)
+            wins = sum(float(bucket["acerta"]) for bucket in kept)
+            if total >= 30 and wins / total < _breakeven(PAYOUT_MIN):
+                below.append(
+                    f"{floor}+ em {horizon} vela(s) ({wins / total:.1%}, n={int(total)})"
+                )
+    if below:
+        lines.append("    Abaixo do equilíbrio a 85%: " + " · ".join(below) + ".")
     if best:
         rate, horizon, floor = best
         lines.append(
