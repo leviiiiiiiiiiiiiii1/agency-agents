@@ -87,6 +87,25 @@ class OperationModeTests(unittest.TestCase):
             with self.subTest(mode=mode):
                 self.assertFalse(actual_order_execution_allowed(mode))
 
+    def test_demo_opens_only_with_the_users_statement(self):
+        # A afirmação é do usuário e vale por sessão: sem ela, DEMO segue fechado.
+        self.assertEqual(
+            mode_decision(OperationMode.DEMO, demo_confirmed=True),
+            ModeDecision.DEMO_UNDER_USER_CONFIRMATION,
+        )
+        self.assertTrue(
+            actual_order_execution_allowed(OperationMode.DEMO, demo_confirmed=True)
+        )
+
+    def test_real_never_opens_even_with_the_statement(self):
+        for mode in (
+            OperationMode.REAL,
+            OperationMode.OBSERVATION,
+            OperationMode.SIMULATION,
+        ):
+            with self.subTest(mode=mode):
+                self.assertFalse(actual_order_execution_allowed(mode, demo_confirmed=True))
+
 
 class SignalLifecycleTests(unittest.TestCase):
     @staticmethod

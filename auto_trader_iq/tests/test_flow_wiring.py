@@ -39,6 +39,10 @@ class FlowWiringTests(unittest.TestCase):
         self.assertIn("FLOW_ENTRY_EXPIRY_BARS = 2", self.source)
         self.assertIn("FlowExecutor(\n            expiry_bars=FLOW_ENTRY_EXPIRY_BARS", self.source)
 
+    def test_the_click_still_asks_the_user_about_the_account(self):
+        self.assertIn("actual_order_execution_allowed(\n", self.source)
+        self.assertIn("demo_confirmed=self.demo_account_confirmed", self.source)
+
     def test_the_switch_is_not_restored_on_startup(self):
         # Opt-in a cada sessão: nada de clicar sozinho porque ficou salvo.
         self.assertNotIn('"flow_entries_enabled"', self.source)

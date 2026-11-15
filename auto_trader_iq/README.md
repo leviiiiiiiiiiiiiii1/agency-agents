@@ -153,6 +153,8 @@ if command.allowed:
     ...  # quem clica é o app, com as travas que ele já tem
 ```
 
+**Como o modo DEMO abre.** O build antigo bloqueava DEMO por completo, porque nenhum adaptador lê a conta, a ordem ou o saldo. Agora o DEMO abre por uma declaração explícita do usuário — uma caixa de confirmação por sessão, com o aviso de que o app não verifica a conta e que o clique aperta o botão de verdade. A declaração vale só para a sessão, não é salva, e **REAL continua bloqueado em qualquer caso**: sair do modo DEMO desliga os cliques na hora.
+
 **Como ligar no painel.** A caixa *"Entradas automáticas pela regra de fluxo (2+ velas · expiração 2 min)"* fica no bloco de automação DEMO e só aceita ser marcada depois que a automação DEMO já está ativa: ela entra por baixo das mesmas travas (conta DEMO confirmada, botões calibrados na janela em primeiro plano, segundo fixo, uma tentativa por vela). A caixa **não é restaurada ao abrir o app** — precisa ser marcada em cada sessão, como a própria automação.
 
 Pontos que o app não resolve por você:

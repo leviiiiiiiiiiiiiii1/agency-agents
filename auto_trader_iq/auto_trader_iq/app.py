@@ -1554,15 +1554,24 @@ class AutoTraderApp(tk.Tk):
         self._schedule_demo_mouse_keepalive()
 
     def _update_demo_toggle_text(self) -> None:
-        text = "Cliques bloqueados · sem verificação de conta"
+        ready = self.operation_mode is OperationMode.DEMO and self.demo_account_confirmed
+        if self.demo_automation_enabled:
+            text = "Parar cliques automáticos"
+        elif ready:
+            text = "Ligar cliques automáticos DEMO"
+        else:
+            text = "Cliques bloqueados · escolha DEMO e confirme a conta"
         for name in ("demo_toggle_button", "compact_demo_toggle_button"):
             button = getattr(self, name, None)
             if button is not None:
-                button.configure(text=text, state="disabled")
+                button.configure(
+                    text=text,
+                    state="normal" if (ready or self.demo_automation_enabled) else "disabled",
+                )
         for name in ("demo_timeout_spinbox", "demo_entry_second_spinbox"):
             spinbox = getattr(self, name, None)
             if spinbox is not None:
-                spinbox.configure(state="disabled")
+                spinbox.configure(state="normal" if (ready or self.demo_automation_enabled) else "disabled")
 
     def _active_candle_color_direction_map(self) -> dict[str, str]:
         if self.region is None or self.candle_palette_profile_id is None:
@@ -1619,7 +1628,23 @@ class AutoTraderApp(tk.Tk):
         except ValueError:
             requested = OperationMode.OBSERVATION
         decision = mode_decision(requested)
-        if decision not in {ModeDecision.OBSERVE_ONLY, ModeDecision.SIMULATION_ONLY}:
+        if (
+            requested is OperationMode.DEMO
+            and decision is ModeDecision.BLOCKED_NO_ACCOUNT_VERIFICATION
+        ):
+            if not self._confirm_demo_account():
+                self.operation_mode = OperationMode.OBSERVATION
+                self.operation_mode_var.set(self.operation_mode.value)
+                self.operation_mode_status.set(
+                    "DEMO não confirmado: permanece em OBSERVAÇÃO; nenhum clique será enviado."
+                )
+                return
+            decision = mode_decision(requested, demo_confirmed=True)
+        if decision not in {
+            ModeDecision.OBSERVE_ONLY,
+            ModeDecision.SIMULATION_ONLY,
+            ModeDecision.DEMO_UNDER_USER_CONFIRMATION,
+        }:
             self.operation_mode = OperationMode.OBSERVATION
             self.operation_mode_var.set(self.operation_mode.value)
             self.operation_mode_status.set(
@@ -1632,6 +1657,12 @@ class AutoTraderApp(tk.Tk):
                 parent=self,
             )
             return
+        if requested is not OperationMode.DEMO and self.demo_automation_enabled:
+            # Sair do DEMO desliga os cliques na hora: não se opera por engano
+            # com o que sobrou armado de outro modo.
+            self._deactivate_demo_automation()
+            if self.simulation.pending is not None:
+                self._cancel_pending_simulation()
         self.operation_mode = requested
         if requested is OperationMode.OBSERVATION:
             if self.simulation.pending is not None:
@@ -1639,11 +1670,47 @@ class AutoTraderApp(tk.Tk):
             self.operation_mode_status.set(
                 "OBSERVAÇÃO: captura e registro; não arma entradas nem envia cliques."
             )
+        elif requested is OperationMode.DEMO:
+            self.operation_mode_status.set(
+                "DEMO declarado pelo usuário: os cliques apertam os botões calibrados e o "
+                "app não verifica a conta. REAL segue bloqueado."
+            )
         else:
             self.operation_mode_status.set(
                 "SIMULAÇÃO: entradas são hipotéticas; resultados financeiros não são inferidos."
             )
+        self._update_demo_toggle_text()
         self._persist_config()
+
+    def _confirm_demo_account(self) -> bool:
+        """Declaração do usuário, uma vez por sessão, de que a conta é DEMO.
+
+        O app não tem adaptador que leia a conta. Antes, isso bloqueava o modo
+        DEMO por completo; agora o usuário assume a afirmação e ela vale só para
+        esta sessão. REAL continua bloqueado em qualquer caso.
+        """
+        if self.demo_account_confirmed:
+            return True
+        confirmed = messagebox.askyesno(
+            APP_NAME,
+            "O app NÃO consegue verificar a conta aberta na plataforma.\n\n"
+            "Ao continuar, você declara que a conta visível na corretora é DEMO. "
+            "Os cliques automáticos apertam os botões calibrados de verdade: se a "
+            "plataforma estiver em conta real, a ordem será real.\n\n"
+            "REAL segue bloqueado neste build. Continuar em DEMO?",
+            parent=self,
+            icon="warning",
+        )
+        if not confirmed:
+            return False
+        self.demo_account_confirmed = True
+        if self.capture_session_id is not None:
+            self._record_capture_journal_event(
+                "demo_declarado_pelo_usuario",
+                {"scope": "sessao", "statement": "conta DEMO declarada pelo usuário"},
+            )
+        self._update_demo_toggle_text()
+        return True
 
     def _toggle_demo_automation(self) -> None:
         if self.demo_automation_enabled:
@@ -1652,12 +1719,41 @@ class AutoTraderApp(tk.Tk):
                 self._cancel_pending_simulation()
             self.demo_status.set("Cliques automáticos desligados; nenhum sinal pendente será executado.")
             return
-        self.demo_status.set(
-            "Cliques automáticos bloqueados: não há adaptador confiável para verificar conta DEMO, "
-            "saldo, ordem executada ou resultado."
+        if self.operation_mode is not OperationMode.DEMO:
+            self.demo_status.set(
+                "Selecione o modo DEMO antes de ligar os cliques automáticos."
+            )
+            return
+        if not self._confirm_demo_account():
+            self.demo_status.set("Cliques automáticos continuam desligados.")
+            self._update_demo_toggle_text()
+            return
+        missing = [
+            name for name, key in (("COMPRAR", "BUY"), ("VENDER", "SELL"))
+            if self.demo_click_targets[key] is None
+        ]
+        if missing:
+            self.demo_status.set(
+                "Calibre " + " e ".join(missing) + " antes de ligar os cliques automáticos."
+            )
+            return
+        self.demo_automation_enabled = True
+        self.demo_entries_this_activation = 0
+        self.last_demo_entry_candle_id = None
+        self.demo_activation_timeout_active = self._demo_activation_timeout_seconds()
+        if self.simulation.pending is None:
+            self.pending_source = "ocr"
+        self.simulation_status.set(
+            "Automação DEMO ligada: uma tentativa por vela M1, no segundo fixo. "
+            "A conta é a que estiver visível — o app não verifica qual é."
         )
-        self.operation_mode_status.set(
-            "DEMO/REAL indisponíveis; permaneça em OBSERVAÇÃO ou SIMULAÇÃO. Nenhum clique foi enviado."
+        self.demo_status.set(
+            f"Automação DEMO ativa por até {self.demo_activation_timeout_active} s. "
+            "Os cliques apertam os botões calibrados de verdade."
+        )
+        self._update_demo_toggle_text()
+        self.demo_timeout_after_id = self.after(
+            self.demo_activation_timeout_active * 1000, self._expire_demo_activation
         )
 
     def _capture_quality_is_fresh(self) -> bool:
@@ -1978,7 +2074,9 @@ class AutoTraderApp(tk.Tk):
         pending = self.simulation.pending
         if not self.demo_automation_enabled or pending is None:
             return
-        if not actual_order_execution_allowed(self.operation_mode):
+        if not actual_order_execution_allowed(
+            self.operation_mode, demo_confirmed=self.demo_account_confirmed
+        ):
             self._deactivate_demo_automation()
             self.demo_signal_guard.mark_consumed(pending.direction, pending.x, pending.y)
             self._cancel_pending_simulation()
@@ -4326,6 +4424,16 @@ class AutoTraderApp(tk.Tk):
         if note:
             prefix = "Referência de idade migrada" if migrated else "Aviso"
             self.capture_status.set(f"{prefix}: {note}")
+
+    def _demo_activation_timeout_seconds(self) -> int:
+        """Prazo da automação lido do painel, com o padrão quando o campo não presta."""
+        try:
+            seconds = int(self.demo_activation_timeout_var.get())
+        except (AttributeError, TypeError, ValueError):
+            return DEFAULT_DEMO_ACTIVATION_TIMEOUT_SECONDS
+        if MIN_DEMO_ACTIVATION_TIMEOUT_SECONDS <= seconds <= MAX_DEMO_ACTIVATION_TIMEOUT_SECONDS:
+            return seconds
+        return DEFAULT_DEMO_ACTIVATION_TIMEOUT_SECONDS
 
     def _apply_demo_entry_second(self) -> None:
         """O segundo digitado vira o segundo usado; antes ele só era salvo."""
