@@ -35,6 +35,24 @@ class FlowWiringTests(unittest.TestCase):
         self.assertIn('self.pending_source != "flow" and not self._pending_demo_candidate_is_current', self.source)
         self.assertIn('self.pending_source != "flow" and not self._market_context_allows_direction(', self.source)
 
+    def test_the_toggle_button_is_never_left_dead(self):
+        # Um botão cinza escondeu o caminho inteiro: o pedido do usuário foi
+        # "não tem esse botão". Quem recusa é o comando, com o motivo escrito.
+        start = self.source.index("def _update_demo_toggle_text")
+        block = self.source[start:start + 900]
+        self.assertIn('state="normal"', block)
+        self.assertNotIn('state="disabled"', block)
+        self.assertEqual(
+            self.source.count('text="Ligar cliques automáticos DEMO"'), 2
+        )
+        self.assertNotIn('text="Cliques bloqueados · sem verificação de conta"', self.source)
+
+    def test_stopping_keeps_the_declaration_about_the_account(self):
+        start = self.source.index("def _deactivate_demo_automation")
+        block = self.source[start:start + 900]
+        self.assertIn("self.demo_automation_enabled = False", block)
+        self.assertNotIn("self.demo_account_confirmed = False", block)
+
     def test_the_expiry_is_the_measured_one(self):
         self.assertIn("FLOW_ENTRY_EXPIRY_BARS = 2", self.source)
         self.assertIn("FlowExecutor(\n            expiry_bars=FLOW_ENTRY_EXPIRY_BARS", self.source)

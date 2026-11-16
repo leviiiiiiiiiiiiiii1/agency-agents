@@ -371,7 +371,10 @@ class AutoTraderApp(tk.Tk):
                 "sessão(ões) de captura sem encerramento explícito. Não foram fechadas automaticamente."
             )
         self.demo_status = tk.StringVar(
-            value="Cliques automáticos bloqueados: não há verificação confiável da conta."
+            value=(
+                "Cliques automáticos desligados. Escolha o modo DEMO e aceite a "
+                "declaração da conta para ligá-los."
+            )
         )
         self.demo_automation_enabled = False
         self.demo_account_confirmed = False
@@ -759,9 +762,8 @@ class AutoTraderApp(tk.Tk):
         self.cancel_sim_button.pack(side="left", padx=6)
         self.demo_toggle_button = ttk.Button(
             sim_buttons,
-            text="Cliques bloqueados · sem verificação de conta",
+            text="Ligar cliques automáticos DEMO",
             command=self._toggle_demo_automation,
-            state="disabled",
         )
         self.demo_toggle_button.pack(side="right", padx=6)
         demo_target_row = ttk.Frame(simulation_box)
@@ -990,9 +992,8 @@ class AutoTraderApp(tk.Tk):
         compact_controls.pack(fill="x", pady=(2, 2))
         self.compact_demo_toggle_button = ttk.Button(
             compact_controls,
-            text="Cliques bloqueados · sem verificação de conta",
+            text="Ligar cliques automáticos DEMO",
             command=self._toggle_demo_automation,
-            state="disabled",
         )
         self.compact_demo_toggle_button.pack(side="left", padx=(0, 6))
         self.compact_sequence_button = ttk.Button(
@@ -1554,24 +1555,26 @@ class AutoTraderApp(tk.Tk):
         self._schedule_demo_mouse_keepalive()
 
     def _update_demo_toggle_text(self) -> None:
-        ready = self.operation_mode is OperationMode.DEMO and self.demo_account_confirmed
-        if self.demo_automation_enabled:
-            text = "Parar cliques automáticos"
-        elif ready:
-            text = "Ligar cliques automáticos DEMO"
-        else:
-            text = "Cliques bloqueados · escolha DEMO e confirme a conta"
+        """Rótulo do botão de automação. Ele nunca fica desabilitado.
+
+        Um botão cinza não diz o que falta, e travar a descoberta foi pior do que
+        travar o clique: quem recusa é o comando, escrevendo o motivo na linha de
+        status. A trava de verdade continua onde sempre esteve - na declaração da
+        conta e no modo.
+        """
+        text = (
+            "Parar cliques automáticos"
+            if self.demo_automation_enabled
+            else "Ligar cliques automáticos DEMO"
+        )
         for name in ("demo_toggle_button", "compact_demo_toggle_button"):
             button = getattr(self, name, None)
             if button is not None:
-                button.configure(
-                    text=text,
-                    state="normal" if (ready or self.demo_automation_enabled) else "disabled",
-                )
+                button.configure(text=text, state="normal")
         for name in ("demo_timeout_spinbox", "demo_entry_second_spinbox"):
             spinbox = getattr(self, name, None)
             if spinbox is not None:
-                spinbox.configure(state="normal" if (ready or self.demo_automation_enabled) else "disabled")
+                spinbox.configure(state="normal")
 
     def _active_candle_color_direction_map(self) -> dict[str, str]:
         if self.region is None or self.candle_palette_profile_id is None:
@@ -1657,12 +1660,14 @@ class AutoTraderApp(tk.Tk):
                 parent=self,
             )
             return
-        if requested is not OperationMode.DEMO and self.demo_automation_enabled:
-            # Sair do DEMO desliga os cliques na hora: não se opera por engano
-            # com o que sobrou armado de outro modo.
-            self._deactivate_demo_automation()
-            if self.simulation.pending is not None:
-                self._cancel_pending_simulation()
+        if requested is not OperationMode.DEMO:
+            # Sair do DEMO desliga os cliques na hora e apaga a declaração: a
+            # afirmação era sobre uma conta que deixou de estar em uso.
+            if self.demo_automation_enabled:
+                self._deactivate_demo_automation()
+                if self.simulation.pending is not None:
+                    self._cancel_pending_simulation()
+            self.demo_account_confirmed = False
         self.operation_mode = requested
         if requested is OperationMode.OBSERVATION:
             if self.simulation.pending is not None:
@@ -1722,6 +1727,13 @@ class AutoTraderApp(tk.Tk):
         if self.operation_mode is not OperationMode.DEMO:
             self.demo_status.set(
                 "Selecione o modo DEMO antes de ligar os cliques automáticos."
+            )
+            messagebox.showinfo(
+                APP_NAME,
+                "Os cliques automáticos só existem no modo DEMO.\n\n"
+                "Mude o campo Modo para DEMO e aceite a declaração; depois volte "
+                "a este botão. Nenhum clique foi enviado.",
+                parent=self,
             )
             return
         if not self._confirm_demo_account():
@@ -2249,7 +2261,9 @@ class AutoTraderApp(tk.Tk):
         self._cancel_scheduled_demo_entry()
         self._cancel_demo_mouse_keepalive()
         self.demo_automation_enabled = False
-        self.demo_account_confirmed = False
+        # A declaração é sobre a conta e continua valendo; quem a apaga é a saída
+        # do modo DEMO. Antes, parar a automação devolvia o botão ao estado
+        # bloqueado e parecia que o modo tinha sido esquecido.
         if self.demo_mouse_keepalive_var.get():
             self.demo_mouse_keepalive_status.set(
                 "Keep-alive sem clique parado porque a automação terminou."
