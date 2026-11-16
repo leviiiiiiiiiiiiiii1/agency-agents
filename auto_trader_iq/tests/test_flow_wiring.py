@@ -53,6 +53,18 @@ class FlowWiringTests(unittest.TestCase):
         self.assertIn("self.demo_automation_enabled = False", block)
         self.assertNotIn("self.demo_account_confirmed = False", block)
 
+    def test_the_checkbox_sits_next_to_the_demo_button(self):
+        # No rodapé do painel ela caía fora da janela e não havia onde marcar.
+        self.assertLess(
+            self.source.index('text="Entradas automáticas pela regra de fluxo'),
+            self.source.index('text="Calibrar COMPRAR"'),
+        )
+
+    def test_checking_it_without_the_automation_does_not_uncheck_itself(self):
+        start = self.source.index("def _on_flow_entries_toggle")
+        block = self.source[start:start + 1200]
+        self.assertNotIn("self.flow_entries_var.set(False)", block)
+
     def test_the_expiry_is_the_measured_one(self):
         self.assertIn("FLOW_ENTRY_EXPIRY_BARS = 2", self.source)
         self.assertIn("FlowExecutor(\n            expiry_bars=FLOW_ENTRY_EXPIRY_BARS", self.source)

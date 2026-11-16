@@ -766,6 +766,19 @@ class AutoTraderApp(tk.Tk):
             command=self._toggle_demo_automation,
         )
         self.demo_toggle_button.pack(side="right", padx=6)
+        # A caixa da regra de fluxo mora aqui, colada no botão que arma os cliques.
+        # No rodapé ela caía fora da janela e não havia como marcá-la.
+        demo_flow_row = ttk.Frame(simulation_box)
+        demo_flow_row.pack(fill="x", pady=(3, 0))
+        ttk.Checkbutton(
+            demo_flow_row,
+            text="Entradas automáticas pela regra de fluxo (2+ velas · expiração 2 min)",
+            variable=self.flow_entries_var,
+            command=self._on_flow_entries_toggle,
+        ).pack(side="left")
+        ttk.Label(demo_flow_row, textvariable=self.flow_status, wraplength=460).pack(
+            side="left", padx=(8, 0), fill="x", expand=True
+        )
         demo_target_row = ttk.Frame(simulation_box)
         demo_target_row.pack(fill="x", pady=(4, 0))
         ttk.Button(
@@ -849,17 +862,6 @@ class AutoTraderApp(tk.Tk):
             demo_entry_second_row,
             text=f"tenta em :SS; sinal tardio descartado · padrão :{DEFAULT_DEMO_ENTRY_SECOND:02d}",
         ).pack(side="left", padx=(6, 0))
-        demo_flow_row = ttk.Frame(simulation_box)
-        demo_flow_row.pack(fill="x", pady=(3, 0))
-        ttk.Checkbutton(
-            demo_flow_row,
-            text="Entradas automáticas pela regra de fluxo (2+ velas · expiração 2 min)",
-            variable=self.flow_entries_var,
-            command=self._on_flow_entries_toggle,
-        ).pack(side="left")
-        ttk.Label(demo_flow_row, textvariable=self.flow_status, wraplength=460).pack(
-            side="left", padx=(8, 0), fill="x", expand=True
-        )
         exclusion_row = ttk.Frame(simulation_box)
         exclusion_row.pack(fill="x", pady=(3, 0))
         ttk.Button(
@@ -1948,16 +1950,20 @@ class AutoTraderApp(tk.Tk):
         self._execute_demo_click()
 
     def _on_flow_entries_toggle(self) -> None:
-        """A regra de fluxo só entra com a automação DEMO já ativa."""
-        if self.flow_entries_var.get() and not self.demo_automation_enabled:
-            self.flow_entries_var.set(False)
-            self.flow_entries_enabled = False
-            self.flow_status.set(
-                "Ligue a automação DEMO primeiro; a regra de fluxo entra por baixo dela."
-            )
-            return
+        """A caixa guarda a intenção; quem executa é a automação DEMO.
+
+        Antes, marcar a caixa com a automação desligada desmarcava na mesma hora e
+        a caixa parecia quebrada. Agora ela fica marcada e a linha de status diz o
+        que falta — a checagem de ``demo_automation_enabled`` continua no caminho
+        da entrada, então nada dispara sem a automação.
+        """
         self.flow_entries_enabled = bool(self.flow_entries_var.get())
-        if self.flow_entries_enabled:
+        if self.flow_entries_enabled and not self.demo_automation_enabled:
+            self.flow_status.set(
+                "Regra de fluxo marcada: 2+ velas, entrada no segundo fixo, expiração 2 min. "
+                "Só executa com a automação DEMO ligada."
+            )
+        elif self.flow_entries_enabled:
             self.flow_status.set(
                 "Regra de fluxo ativa: 2+ velas seguidas, entrada no segundo fixo, "
                 "expiração 2 min. Confira a expiração na plataforma — o app não a controla. "
