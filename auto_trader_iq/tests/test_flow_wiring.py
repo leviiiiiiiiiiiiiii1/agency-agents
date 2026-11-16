@@ -53,12 +53,14 @@ class FlowWiringTests(unittest.TestCase):
         self.assertIn("self.demo_automation_enabled = False", block)
         self.assertNotIn("self.demo_account_confirmed = False", block)
 
-    def test_the_checkbox_sits_next_to_the_demo_button(self):
-        # No rodapé do painel ela caía fora da janela e não havia onde marcar.
+    def test_the_switch_sits_next_to_the_demo_button_in_both_panels(self):
+        # No rodapé do painel ele caía fora da janela, e a caixa ainda se
+        # desmarcava sozinha: virou botão, colado no botão que arma os cliques.
         self.assertLess(
-            self.source.index('text="Entradas automáticas pela regra de fluxo'),
+            self.source.index('text="Ligar regra de fluxo (2+ velas · 2 min)"'),
             self.source.index('text="Calibrar COMPRAR"'),
         )
+        self.assertIn('text="Fluxo: ligar (2+ velas)"', self.source)
 
     def test_checking_it_without_the_automation_does_not_uncheck_itself(self):
         start = self.source.index("def _on_flow_entries_toggle")

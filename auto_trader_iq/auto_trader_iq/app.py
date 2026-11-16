@@ -770,12 +770,12 @@ class AutoTraderApp(tk.Tk):
         # No rodapé ela caía fora da janela e não havia como marcá-la.
         demo_flow_row = ttk.Frame(simulation_box)
         demo_flow_row.pack(fill="x", pady=(3, 0))
-        ttk.Checkbutton(
+        self.flow_toggle_button = ttk.Button(
             demo_flow_row,
-            text="Entradas automáticas pela regra de fluxo (2+ velas · expiração 2 min)",
-            variable=self.flow_entries_var,
+            text="Ligar regra de fluxo (2+ velas · 2 min)",
             command=self._on_flow_entries_toggle,
-        ).pack(side="left")
+        )
+        self.flow_toggle_button.pack(side="left")
         ttk.Label(demo_flow_row, textvariable=self.flow_status, wraplength=460).pack(
             side="left", padx=(8, 0), fill="x", expand=True
         )
@@ -998,6 +998,12 @@ class AutoTraderApp(tk.Tk):
             command=self._toggle_demo_automation,
         )
         self.compact_demo_toggle_button.pack(side="left", padx=(0, 6))
+        self.compact_flow_toggle_button = ttk.Button(
+            compact_controls,
+            text="Fluxo: ligar (2+ velas)",
+            command=self._on_flow_entries_toggle,
+        )
+        self.compact_flow_toggle_button.pack(side="left", padx=(0, 6))
         self.compact_sequence_button = ttk.Button(
             compact_controls, text="Gravar sequência (75 s)", command=self._toggle_sequence_recording
         )
@@ -1949,6 +1955,26 @@ class AutoTraderApp(tk.Tk):
         self._refresh_simulation_buttons()
         self._execute_demo_click()
 
+    def _update_flow_toggle_text(self) -> None:
+        """Rótulo do interruptor da regra de fluxo, nos dois painéis."""
+        full = (
+            "Regra de fluxo ligada · desligar"
+            if self.flow_entries_enabled
+            else "Ligar regra de fluxo (2+ velas · 2 min)"
+        )
+        compact = (
+            "Fluxo: ligada · desligar"
+            if self.flow_entries_enabled
+            else "Fluxo: ligar (2+ velas)"
+        )
+        for name, text in (
+            ("flow_toggle_button", full),
+            ("compact_flow_toggle_button", compact),
+        ):
+            button = getattr(self, name, None)
+            if button is not None:
+                button.configure(text=text, state="normal")
+
     def _on_flow_entries_toggle(self) -> None:
         """A caixa guarda a intenção; quem executa é a automação DEMO.
 
@@ -1957,7 +1983,9 @@ class AutoTraderApp(tk.Tk):
         que falta — a checagem de ``demo_automation_enabled`` continua no caminho
         da entrada, então nada dispara sem a automação.
         """
-        self.flow_entries_enabled = bool(self.flow_entries_var.get())
+        self.flow_entries_enabled = not self.flow_entries_enabled
+        self.flow_entries_var.set(self.flow_entries_enabled)
+        self._update_flow_toggle_text()
         if self.flow_entries_enabled and not self.demo_automation_enabled:
             self.flow_status.set(
                 "Regra de fluxo marcada: 2+ velas, entrada no segundo fixo, expiração 2 min. "
@@ -1971,6 +1999,7 @@ class AutoTraderApp(tk.Tk):
             )
         else:
             self.flow_status.set("Regra de fluxo: desligada.")
+        self.simulation_status.set(self.flow_status.get())
         self._persist_config()
 
     def _maybe_auto_flow_entry(self) -> None:
