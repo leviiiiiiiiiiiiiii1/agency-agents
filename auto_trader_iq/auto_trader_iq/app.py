@@ -34,6 +34,7 @@ from .opportunity_store import OpportunityStore
 from .signal_lifecycle import SignalLifecycle, SignalLifecycleTracker
 from .demo_clock import WindowsUtcMinusThreeClock, demo_entry_second_action
 from .flow_executor import FlowExecutor
+from .flow_signal import BUY, FLOW_WINDOW, direction_of_colour
 from .demo_click import (
     ClickTarget,
     click_demo_direction,
@@ -1004,6 +1005,9 @@ class AutoTraderApp(tk.Tk):
             command=self._on_flow_entries_toggle,
         )
         self.compact_flow_toggle_button.pack(side="left", padx=(0, 6))
+        ttk.Label(
+            self.compact_frame, textvariable=self.flow_status, wraplength=640
+        ).pack(anchor="w", pady=(0, 2))
         self.compact_sequence_button = ttk.Button(
             compact_controls, text="Gravar sequência (75 s)", command=self._toggle_sequence_recording
         )
@@ -1999,8 +2003,24 @@ class AutoTraderApp(tk.Tk):
             )
         else:
             self.flow_status.set("Regra de fluxo: desligada.")
-        self.simulation_status.set(self.flow_status.get())
         self._persist_config()
+
+    def _flow_reading_text(self, colours: list[str]) -> str:
+        """O que a escada diz agora, em uma linha curta e sem preço."""
+        recent = list(colours)[-FLOW_WINDOW:]
+        if not recent:
+            return "sem cores na escada"
+        newest = direction_of_colour(recent[-1])
+        if newest is None:
+            return f"vela mais recente em '{recent[-1]}', cor não calibrada"
+        streak = 0
+        for colour in reversed(recent):
+            if direction_of_colour(colour) != newest:
+                break
+            streak += 1
+        side = "alta" if newest == BUY else "baixa"
+        candles = "vela" if streak == 1 else "velas"
+        return f"{streak} {candles} de {side} · {'›'.join(recent)}"
 
     def _maybe_auto_flow_entry(self) -> None:
         """Entrada automática pela regra medida, com o motivo sempre visível.
@@ -2008,39 +2028,61 @@ class AutoTraderApp(tk.Tk):
         O sinal não vem de rótulo no gráfico: vem das cores das últimas velas, que
         é o que a medição usou. Por isso o pendente nasce marcado como ``flow`` e
         as checagens de rótulo são puladas mais adiante.
+
+        Toda saída escreve na linha de fluxo. Uma regra que não entrou por algum
+        motivo e não diz qual é indistinguível de uma regra quebrada - foi assim
+        que uma execução sem nenhuma entrada passou uma sessão inteira em silêncio.
         """
-        if (
-            not self.flow_entries_enabled
-            or not self.demo_automation_enabled
-            or not self.running
-            or self.timeframe_var.get() != "M1"
-            or self.simulation.pending is not None
-        ):
+        if not self.flow_entries_enabled:
+            return
+        if not self.demo_automation_enabled:
+            self.flow_status.set(
+                "Fluxo: pronta, mas a automação DEMO está desligada; nada é avaliado."
+            )
+            return
+        if not self.running:
+            self.flow_status.set("Fluxo: captura parada; nada é avaliado.")
+            return
+        if self.timeframe_var.get() != "M1":
+            self.flow_status.set(
+                f"Fluxo: só vale em M1; o período está em {self.timeframe_var.get()}."
+            )
+            return
+        if self.simulation.pending is not None:
+            self.flow_status.set("Fluxo: já existe sinal pendente nesta vela.")
             return
         clock = self.demo_clock.reading()
         current_candle_id = self.demo_minute_tracker.update(clock)
         if current_candle_id is None:
+            self.flow_status.set("Fluxo: relógio sem minuto válido; nada foi avaliado.")
             return
         ladder = self.latest_price_ladder or {}
         colours = list(ladder.get("colors") or [])
         if not colours:
+            self.flow_status.set(
+                "Fluxo: a escada desta leitura não trouxe cores — confira a região "
+                "capturada e a calibração da paleta."
+            )
             return
         # A escada guarda da vela mais nova para a mais antiga; a regra lê ao contrário.
+        ordered = list(reversed(colours))
         command = self.flow_executor.evaluate(
-            list(reversed(colours)),
+            ordered,
             candle_id=str(current_candle_id),
             second=clock.second,
         )
+        reading = self._flow_reading_text(ordered)
         if not command.allowed:
-            if command.kind == "none":
-                self.flow_status.set(f"Fluxo: {command.reason} · {self.flow_executor.summary()}")
+            self.flow_status.set(
+                f"Fluxo: {reading} · {command.reason} · {self.flow_executor.summary()}"
+            )
             return
         direction = command.direction or ""
         target = self.demo_click_targets.get(direction)
         if target is None:
             self.flow_status.set(
-                f"Fluxo: {direction} identificado, mas o botão dessa direção não está "
-                "calibrado; nada foi clicado."
+                f"Fluxo: {reading}. {direction} identificado, mas o botão dessa direção "
+                "não está calibrado; nada foi clicado."
             )
             return
         candidate = SignalCandidate(
@@ -2055,7 +2097,7 @@ class AutoTraderApp(tk.Tk):
         try:
             pending = self.simulation.arm(candidate, dedupe_scope=str(current_candle_id))
         except ValueError as exc:
-            self.flow_status.set(f"Fluxo: {exc}")
+            self.flow_status.set(f"Fluxo: {reading}. {exc}")
             return
         self.pending_source = "flow"
         self.pending_demo_candle_id = current_candle_id
@@ -2070,8 +2112,9 @@ class AutoTraderApp(tk.Tk):
         )
         persistence_note = f" Histórico não gravado: {error}" if error else ""
         self.flow_status.set(
-            f"Fluxo: {command.reason}. {label} armado para :{self.demo_entry_second_active:02d}; "
-            f"expiração de {command.expiry_bars} velas.{persistence_note}"
+            f"Fluxo: {reading} · {command.reason}. {label} armado para "
+            f":{self.demo_entry_second_active:02d}; expiração de {command.expiry_bars} velas."
+            f"{persistence_note}"
         )
         self._refresh_simulation_buttons()
         self._execute_demo_click()

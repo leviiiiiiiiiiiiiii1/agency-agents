@@ -27,7 +27,7 @@ class FlowWiringTests(unittest.TestCase):
 
     def test_the_flow_entry_needs_the_demo_automation_on(self):
         start = self.source.index("def _maybe_auto_flow_entry")
-        block = self.source[start:start + 700]
+        block = self.source[start:self.source.index("def _target_window_is_topmost")]
         self.assertIn("not self.flow_entries_enabled", block)
         self.assertIn("not self.demo_automation_enabled", block)
 

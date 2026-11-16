@@ -105,16 +105,21 @@ class FlowExecutor:
             window=self.window,
             min_streak=self.min_streak,
         )
+        if second < self.entry_second:
+            # Antes do segundo fixo nada é terminal. A vela abre com a última
+            # vela ainda de corpo curto, e a sequência pode amadurecer até :SS;
+            # encerrar aqui gastava a vela antes de a regra poder agir.
+            if decision.allowed:
+                return EntryCommand(
+                    WAIT,
+                    f"sequência formada; aguardando :{self.entry_second:02d}",
+                    candle_id=candle_id,
+                    direction=decision.entry.direction,
+                    expiry_bars=self.expiry_bars,
+                )
+            return EntryCommand(WAIT, decision.reason, candle_id=candle_id)
         if not decision.allowed:
             return self._refuse(decision.reason, candle_id)
-        if second < self.entry_second:
-            return EntryCommand(
-                WAIT,
-                f"aguardando :{self.entry_second:02d} para padronizar a entrada",
-                candle_id=candle_id,
-                direction=decision.entry.direction,
-                expiry_bars=self.expiry_bars,
-            )
         self.last_candle_id = candle_id
         self.entries += 1
         return EntryCommand(

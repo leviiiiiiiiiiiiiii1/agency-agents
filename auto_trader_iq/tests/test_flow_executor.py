@@ -21,6 +21,16 @@ class EntryRuleTests(unittest.TestCase):
         self.assertEqual(flow.evaluate(["green", "red", "red"], candle_id="c1", second=3).kind, WAIT)
         self.assertEqual(flow.evaluate(["green", "red", "red"], candle_id="c1", second=5).kind, ENTRY)
 
+    def test_a_thin_streak_before_the_second_does_not_spend_the_candle(self):
+        # A vela abre com a última ainda de corpo curto: se a sequência só
+        # amadurece em :12, a decisão de :02 não pode fechar a vela.
+        flow = executor(entry_second=15)
+        early = flow.evaluate(["green", "red"], candle_id="c1", second=2)
+        self.assertEqual(early.kind, WAIT)
+        mature = flow.evaluate(["green", "red", "red", "red"], candle_id="c1", second=15)
+        self.assertEqual(mature.kind, ENTRY)
+        self.assertEqual(mature.direction, "SELL")
+
     def test_after_the_fixed_second_the_candle_is_lost(self):
         flow = executor()
         command = flow.evaluate(["green", "red", "red"], candle_id="c1", second=9)
