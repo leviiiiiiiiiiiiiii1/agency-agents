@@ -2,10 +2,11 @@ import React, { useMemo, useState } from 'react';
 import {
   LayoutDashboard, Wallet, SlidersHorizontal, ListOrdered, CalendarDays,
   BarChart3, Target, Layers3, History, Settings2, Table2, Plus, Sun, Moon,
-  Menu, FlaskConical, TrendingUp, ShieldCheck, ChevronLeft, ChevronRight,
+  Menu, FlaskConical, TrendingUp, ShieldCheck, ChevronLeft, ChevronRight, FileSpreadsheet,
 } from 'lucide-react';
 import { StoreProvider, useStore, type PageId } from './state/store';
 import { OperationEditor } from './components/OperationForm';
+import { ImportExcelModal } from './components/ImportExcelModal';
 import { Toasts } from './components/ui';
 import { money, formatDate, addDays } from './lib/format';
 import { currentBalance } from './lib/calc';
@@ -65,7 +66,7 @@ const TITLES: Record<PageId, { t: string; s: string }> = {
 
 function Shell() {
   const store = useStore();
-  const { data, setData, page, setPage, ops, openOpEditor, refDate, setRefDate, includeDemo, setIncludeDemo, sidebarOpen, setSidebarOpen, storageError } = store;
+  const { data, setData, page, setPage, ops, openOpEditor, refDate, setRefDate, includeDemo, setIncludeDemo, sidebarOpen, setSidebarOpen, storageError, openImport } = store;
   const balance = useMemo(() => currentBalance(data, ops), [data, ops]);
   const demoCount = data.operations.filter((o) => o.demo).length;
   const [showDate, setShowDate] = useState(false);
@@ -101,7 +102,10 @@ function Shell() {
           <button className="nav-item" onClick={() => { openOpEditor('new'); setSidebarOpen(false); }}>
             <Plus size={16} /><span>Nova operação</span>
           </button>
-          <button className="nav-item" onClick={() => go('configuracoes')}>
+          <button className="nav-item" onClick={() => { openImport(); setSidebarOpen(false); }}>
+            <FileSpreadsheet size={16} /><span>Importar do Excel</span>
+          </button>
+          <button className="nav-item" onClick={() => go('historico')}>
             <ShieldCheck size={16} /><span>Backup & segurança</span>
           </button>
         </div>
@@ -142,6 +146,7 @@ function Shell() {
           <button className="icon-btn" title={data.settings.theme === 'dark' ? 'Tema claro' : 'Tema escuro'} onClick={toggleTheme}>
             {data.settings.theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
           </button>
+          <button className="icon-btn" title="Importar resultados do Excel" onClick={openImport}><FileSpreadsheet size={16} /></button>
           <button className="btn primary sm" onClick={() => openOpEditor('new')}><Plus size={15} /> Nova operação</button>
         </header>
 
@@ -170,6 +175,7 @@ function Shell() {
       </div>
 
       <OperationEditor />
+      <ImportExcelModal />
       <Toasts />
     </div>
   );

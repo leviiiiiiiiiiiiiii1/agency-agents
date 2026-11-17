@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Plus, Search, Columns3, FlaskConical, RotateCcw, SlidersHorizontal } from 'lucide-react';
+import { Plus, Search, Columns3, FlaskConical, RotateCcw, SlidersHorizontal, FileUp } from 'lucide-react';
 import { useStore } from '../state/store';
 import { PageHeader, Card, CardHead, Field, Modal, Notice, EmptyState } from '../components/ui';
 import { OperationTable } from '../components/OperationTable';
@@ -9,7 +9,7 @@ import { OP_COLUMNS } from '../lib/defaults';
 import { makeDemoOperations } from '../lib/sample';
 
 export function OperacoesPage() {
-  const { data, setData, ops, openOpEditor, loadDemo, setIncludeDemo, toast, setPage } = useStore();
+  const { data, setData, ops, openOpEditor, openImport, loadDemo, setIncludeDemo, toast, setPage } = useStore();
   const s = data.settings;
   const [search, setSearch] = useState('');
   const [result, setResult] = useState('ALL');
@@ -46,6 +46,7 @@ export function OperacoesPage() {
         actions={<>
           <button className="btn" onClick={() => setFieldsOpen(true)}><SlidersHorizontal size={15} /> Campos do formulário</button>
           <button className="btn" onClick={() => setColumnsOpen(true)}><Columns3 size={15} /> Colunas</button>
+          <button className="btn" onClick={openImport}><FileUp size={15} /> Importar Excel</button>
           <button className="btn primary" onClick={() => openOpEditor('new')}><Plus size={15} /> Nova operação</button>
         </>} />
 
@@ -77,6 +78,7 @@ export function OperacoesPage() {
           text={ops.length ? 'Ajuste os filtros acima para visualizar os registros.' : 'A plataforma não cria dados fictícios. Registre sua primeira operação real ou carregue um exemplo claramente marcado como SIMULAÇÃO.'}
           action={<div className="btn-row" style={{ justifyContent: 'center' }}>
             {ops.length === 0 && <button className="btn primary" onClick={() => openOpEditor('new')}><Plus size={15} /> Registrar operação real</button>}
+            {ops.length === 0 && <button className="btn" onClick={openImport}><FileUp size={15} /> Importar planilha</button>}
             {ops.length === 0 && <button className="btn" onClick={() => { loadDemo(makeDemoOperations()); setIncludeDemo(true); toast('Exemplo demonstrativo carregado (selo SIMULAÇÃO).', 'info'); }}><FlaskConical size={15} /> Carregar exemplo</button>}
             {ops.length > 0 && <button className="btn" onClick={() => { setSearch(''); setResult('ALL'); setFrom(''); setTo(''); }}>Limpar filtros</button>}
           </div>} /></Card>

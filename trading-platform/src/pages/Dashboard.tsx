@@ -3,7 +3,7 @@ import {
   Wallet, Landmark, CalendarClock, TrendingUp, Percent, Hash, CircleCheck, CircleX,
   MinusCircle, Crosshair, BarChart4, Coins, Flame, ArrowDownRight, Trophy, TrendingDown,
   Target, ShieldAlert, Wand2, Plus, Settings2, GripVertical, Eye, EyeOff, RotateCcw,
-  FlaskConical, ArrowUpRight, Activity,
+  FlaskConical, ArrowUpRight, Activity, FileUp,
 } from 'lucide-react';
 import { useStore } from '../state/store';
 import { Card, CardHead, StatCard, Modal, EmptyState, PageHeader, Notice } from '../components/ui';
@@ -16,7 +16,7 @@ import type { DashboardCardDef } from '../types';
 
 export function DashboardPage() {
   const store = useStore();
-  const { data, setData, ops, refDate, openOpEditor, loadDemo, toast, setIncludeDemo } = store;
+  const { data, setData, ops, refDate, openOpEditor, openImport, loadDemo, toast, setIncludeDemo } = store;
   const [customizing, setCustomizing] = useState(false);
   const [dragId, setDragId] = useState<string | null>(null);
 
@@ -127,6 +127,7 @@ export function DashboardPage() {
             text="A plataforma começa vazia por princípio: não exibimos números fictícios como se fossem resultados reais. Registre sua primeira operação ou carregue um conjunto de exemplo claramente identificado como SIMULAÇÃO para explorar os recursos."
             action={<div className="btn-row" style={{ justifyContent: 'center' }}>
               <button className="btn primary" onClick={() => openOpEditor('new')}><Plus size={15} /> Registrar operação real</button>
+              <button className="btn" onClick={openImport}><FileUp size={15} /> Importar planilha Excel</button>
               <button className="btn" onClick={() => { loadDemo(makeDemoOperations()); setIncludeDemo(true); toast('Exemplo demonstrativo carregado e identificado como SIMULAÇÃO.', 'info'); }}>
                 <FlaskConical size={15} /> Carregar exemplo demonstrativo
               </button>

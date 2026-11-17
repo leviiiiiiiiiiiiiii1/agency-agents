@@ -25,6 +25,15 @@ Não é necessário servidor, banco de dados ou conta: **todos os dados ficam no
 
 > Para migrar entre navegadores ou dispositivos, use **Histórico & dados → Fazer backup / Restaurar de arquivo**.
 
+### Restaurar um backup
+
+1. Menu lateral → **Histórico & dados** (ou Atalhos → **Backup & segurança**).
+2. Em *Backup, restauração e persistência*, clique em **Restaurar de arquivo**.
+3. Selecione o `.json` gerado por **Fazer backup** (`backup-trading-AAAA-MM-DD.json`).
+4. Confira o modal e clique em **Restaurar e substituir dados atuais**.
+
+A restauração substitui **todos** os dados atuais (operações, estratégias, movimentações, screenshots, metas e personalizações). Faça um backup do estado atual antes de restaurar. Arquivos `.csv`/`.xlsx` são exportações para leitura, **não** servem para restaurar — apenas o `.json`. Os dados ficam no `localStorage` do navegador (chave `tcc:data:v1`): limpar os dados do navegador apaga tudo, e sem backup não há como recuperar.
+
 ---
 
 ## Módulos
@@ -40,8 +49,27 @@ Não é necessário servidor, banco de dados ou conta: **todos os dados ficam no
 | **Estratégias** | Cadastro completo (nome, descrição, configuração, ativos, timeframe, expiração, cor, status), estatísticas calculadas do histórico real (total, W/L/D, assertividade, lucro, melhor horário, payout médio) e ranking automático. Ativar, desativar, editar e excluir sem perder o histórico. |
 | **Metas & planejamento** | Metas diária/semanal/mensal/de crescimento, objetivo financeiro, limite de perda, operações desejadas, progresso de cada objetivo e planos de crescimento com cenários conservador/realista/agressivo. |
 | **Planilha / Micro séries** | Visão em planilha com linhas verdes/vermelhas, blocos de micro séries, `% Micro Série`, `Investimento`, `Retorno`, `Capital Atual`, setas de "Repor Aqui", linha de `Resultados` e `Lucro de X% \| Y%`. Exportação CSV. |
-| **Histórico & dados** | Filtros avançados, pesquisa, edição/exclusão, exportação CSV e Excel (.xlsx multi-abas), backup/restauração JSON, separação explícita entre dados reais e simulações. |
+| **Histórico & dados** | Filtros avançados, pesquisa, edição/exclusão, **importação de planilhas Excel/CSV**, exportação CSV e Excel (.xlsx multi-abas), backup/restauração JSON, separação explícita entre dados reais e simulações. |
 | **Personalização** | Nome e subtítulo, tema claro/escuro, cores, moeda (BRL/USD/EUR/GBP/ARS/JPY + símbolo livre), localidade, formato de datas, números compactos, cards, colunas, campos do formulário, preferências de gráficos e período padrão dos filtros. |
+
+---
+
+## Importar resultados do Excel
+
+Acesse por qualquer um destes atalhos: botão **Importar do Excel** no topo, item **Importar do Excel** no menu lateral, **Importar Excel** em Registro de operações, **Importar planilha** no estado vazio do Dashboard ou a seção **Importação de planilhas** em Histórico & dados.
+
+1. Clique em **Escolher arquivo** (ou arraste o arquivo). Formatos: `.xlsx`, `.xls`, `.xlsm`, `.csv` (`;` ou `,`), `.tsv`.
+2. Confira a **aba** e a **linha do cabeçalho** (detectadas automaticamente).
+3. Confira/ajuste o **mapeamento de colunas**. São reconhecidos automaticamente nomes como `Data`, `Horário`, `Ativo`, `Investimento`/`Entrada`, `Payout (%)`, `Resultado`/`W - L`, `Retorno`/`Lucro`, `Estratégia`, `Observações`, `Micro série`.
+4. Ajuste as **opções**: payout padrão, data padrão, ordem dia/mês/ano, recalcular lucro, ignorar duplicatas, criar estratégias automaticamente e marcar como SIMULAÇÃO.
+5. Analise a **prévia**: total de linhas, quantidade válida, erros, duplicatas e avisos. Nada é gravado nesta etapa.
+6. Clique em **Importar N operação(ões)**. Os indicadores são recalculados na hora.
+
+O botão **Baixar modelo .xlsx** gera uma planilha com apenas os cabeçalhos e uma aba de instruções — sem dados fictícios.
+
+Normalizações aceitas: datas `dd/MM/yyyy`, ISO, serial do Excel e datas com horário; valores `R$ 1.234,56`, `1,234.56`, `-R$ 21,00`, `85%`, frações `0,85 → 85%`; resultados `W/WIN/GANHO`, `L/LOSS/PERDA`, `D/DRAW/EMPATE`. Se não houver coluna de resultado, ele é inferido pelo lucro (positivo → WIN, negativo → LOSS, zero → DRAW).
+
+Registros importados recebem o selo **IMPORTADO**, podem ser editados/excluídos normalmente e são identificados na coluna "Tipo de dado" das exportações. Limites operacionais (stop, risco, exposição) continuam valendo para novas operações, mas não bloqueiam a carga de histórico.
 
 ---
 

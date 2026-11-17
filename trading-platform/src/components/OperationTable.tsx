@@ -25,7 +25,7 @@ export function OperationTable({ ops, compact = false, maxHeight }: { ops: Opera
       case 'expiry': return o.expiry || '—';
       case 'entry': return <span className="mono">{money(o.entry, s)}</span>;
       case 'payout': return <span className="mono">{o.payout.toFixed(0)}%</span>;
-      case 'result': return <><ResultBadge result={o.result} />{o.demo && <span className="badge badge-demo" style={{ marginLeft: 4 }}>SIM</span>}{o.profitEdited && <span className="badge badge-warn" style={{ marginLeft: 4 }} title="Valor financeiro corrigido manualmente">CORRIGIDO</span>}</>;
+      case 'result': return <><ResultBadge result={o.result} />{o.demo && <span className="badge badge-demo" style={{ marginLeft: 4 }}>SIM</span>}{o.source === 'import' && !o.demo && <span className="badge badge-accent" style={{ marginLeft: 4 }} title="Registro importado de planilha">IMPORTADO</span>}{o.profitEdited && <span className="badge badge-warn" style={{ marginLeft: 4 }} title="Valor financeiro corrigido manualmente">CORRIGIDO</span>}</>;
       case 'profit': return <span className={`mono strong ${o.profit > 0 ? 'value-pos' : o.profit < 0 ? 'value-neg' : ''}`}>{money(o.profit, s, { signed: true })}</span>;
       case 'notes': return <span className="muted" style={{ maxWidth: 190, display: 'inline-block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={o.notes}>{o.notes || '—'}</span>;
       case 'screenshot': return o.screenshot ? <img className="screenshot-thumb" src={o.screenshot} alt="screenshot" onClick={() => setImage(o.screenshot!)} /> : <span className="muted">—</span>;

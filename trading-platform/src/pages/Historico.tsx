@@ -1,6 +1,6 @@
 import React, { useMemo, useRef, useState } from 'react';
 import {
-  Search, Download, FileSpreadsheet, Database, Upload, RotateCcw, FlaskConical,
+  Search, Download, FileSpreadsheet, Database, Upload, RotateCcw, FlaskConical, FileUp, Table2,
   ShieldCheck, HardDrive, Trash2, AlertTriangle, Info, Filter,
 } from 'lucide-react';
 import { useStore } from '../state/store';
@@ -11,10 +11,11 @@ import { money, formatDate, pct } from '../lib/format';
 import { download, wipeData } from '../lib/storage';
 import { exportCsv, exportExcel, backupPayload } from '../lib/exporters';
 import { makeDemoOperations } from '../lib/sample';
+import { downloadTemplate } from '../lib/importers';
 import type { Operation } from '../types';
 
 export function HistoricoPage() {
-  const { data, ops, allOps, includeDemo, setIncludeDemo, range, toast, loadDemo, removeDemo, restore, resetAll } = useStore();
+  const { data, ops, allOps, includeDemo, setIncludeDemo, range, toast, loadDemo, removeDemo, restore, resetAll, openImport } = useStore();
   const s = data.settings;
   const fileRef = useRef<HTMLInputElement>(null);
   const [search, setSearch] = useState('');
@@ -68,7 +69,7 @@ export function HistoricoPage() {
   return (
     <>
       <PageHeader title="Histórico & segurança dos dados" description="Histórico completo com filtros avançados, exportação, backup e restauração. Os dados são salvos automaticamente no armazenamento local deste navegador e permanecem após atualizar ou fechar a página."
-        actions={<><button className="btn" onClick={() => exportCsv(filtered, data, `operacoes-${new Date().toISOString().slice(0, 10)}.csv`)}><Download size={15} /> CSV</button>
+        actions={<><button className="btn" onClick={openImport}><FileUp size={15} /> Importar do Excel</button><button className="btn" onClick={() => exportCsv(filtered, data, `operacoes-${new Date().toISOString().slice(0, 10)}.csv`)}><Download size={15} /> CSV</button>
           <button className="btn" onClick={() => { exportExcel(data, filtered); toast('Planilha Excel exportada.'); }}><FileSpreadsheet size={15} /> Excel</button>
           <button className="btn primary" onClick={doBackup}><Database size={15} /> Fazer backup</button></>} />
 
@@ -112,6 +113,26 @@ export function HistoricoPage() {
 
       <OperationTable ops={filtered} maxHeight={620} />
 
+      <div className="section-title">Importação de planilhas</div>
+      <Card className="mb-14">
+        <CardHead title="Importar resultados do Excel / CSV" sub="Traga seu histórico de uma planilha sem digitar operação por operação" right={<Table2 size={15} className="muted" />} />
+        <div className="row wrap" style={{ gap: 18, alignItems: 'flex-start' }}>
+          <div style={{ flex: 1, minWidth: 280 }}>
+            <div className="small muted" style={{ lineHeight: 1.75 }}>
+              Aceita <b>.xlsx, .xls, .xlsm, .csv</b> (separador <span className="mono">;</span> ou <span className="mono">,</span>) e <b>.tsv</b>. As colunas são detectadas automaticamente (Data, Ativo, Entrada/Investimento, Payout, Resultado W/L, Retorno, Observações, Micro série etc.), mas você pode ajustar o mapeamento antes de confirmar.<br />
+              Datas em <span className="mono">dd/MM/yyyy</span>, ISO ou serial do Excel; valores como <span className="mono">R$ 1.234,56</span>; resultados <span className="mono">W / WIN / L / LOSS / D / DRAW</span>.
+            </div>
+            <div className="btn-row mt-14">
+              <button className="btn primary" onClick={openImport}><FileUp size={14} /> Abrir importação</button>
+              <button className="btn" onClick={() => { downloadTemplate(); toast('Modelo de planilha baixado.', 'info'); }}><Download size={14} /> Baixar modelo .xlsx</button>
+            </div>
+          </div>
+          <div style={{ flex: 1, minWidth: 280 }}>
+            <Notice><ShieldCheck size={14} /> Antes de gravar, a tela de importação mostra uma <b>prévia</b>, aponta linhas com erro, ignora duplicatas e permite marcar tudo como <span className="badge badge-demo">SIMULAÇÃO</span>. O lucro é recalculado pela regra entrada × payout, salvo se você optar por usar a coluna de retorno da planilha.</Notice>
+          </div>
+        </div>
+      </Card>
+
       <div className="section-title">Backup, restauração e persistência</div>
       <div className="grid grid-2">
         <Card>
@@ -153,6 +174,7 @@ export function HistoricoPage() {
         <div className="grid grid-3">
           <div className="card-order"><Download size={16} /><div className="name"><b>CSV</b><div className="tiny muted">Operações filtradas, separador ; com BOM UTF-8 (abre no Excel)</div></div><button className="btn sm" onClick={() => exportCsv(filtered, data)}>Baixar</button></div>
           <div className="card-order"><FileSpreadsheet size={16} /><div className="name"><b>Excel (.xlsx)</b><div className="tiny muted">Aba de operações, diário, estratégias, movimentações, semanal e mensal</div></div><button className="btn sm" onClick={() => { exportExcel(data, filtered); toast('Excel exportado.'); }}>Baixar</button></div>
+          <div className="card-order"><FileUp size={16} /><div className="name"><b>Importação Excel/CSV</b><div className="tiny muted">Carga de histórico com mapeamento, prévia e validação</div></div><button className="btn sm" onClick={openImport}>Importar</button></div>
           <div className="card-order"><Database size={16} /><div className="name"><b>Backup JSON</b><div className="tiny muted">Restauração completa: dados + personalizações + screenshots</div></div><button className="btn sm" onClick={doBackup}>Baixar</button></div>
         </div>
       </Card>

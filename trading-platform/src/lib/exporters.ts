@@ -13,7 +13,7 @@ function rowOf(o: Operation, d: AppData): (string | number)[] {
     o.id, formatDate(o.date, d.settings), o.time, o.asset, o.market, o.direction,
     d.strategies.find((s) => s.id === o.strategyId)?.name || 'Sem estratégia',
     o.timeframe, o.expiry, o.entry, o.payout, o.result, o.profit, o.notes,
-    o.seriesId || '', o.demo ? 'SIMULAÇÃO' : 'REAL',
+    o.seriesId || '', o.demo ? 'SIMULAÇÃO' : o.source === 'import' ? 'IMPORTADO' : 'REAL',
   ];
 }
 

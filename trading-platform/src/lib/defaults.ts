@@ -201,6 +201,7 @@ function normalizeOperation(o: Partial<Operation>): Operation {
     screenshot: o.screenshot,
     seriesId: o.seriesId,
     demo: !!o.demo,
+    source: o.source === 'import' ? 'import' : 'manual',
     createdAt: o.createdAt || Date.now(),
     updatedAt: o.updatedAt,
   };

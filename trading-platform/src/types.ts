@@ -30,6 +30,8 @@ export interface Operation {
   seriesId?: string;     // agrupamento em "micro séries" (visão planilha)
   /** Dados de demonstração / simulação — nunca misturados com dados reais */
   demo?: boolean;
+  /** Origem do registro: digitado manualmente ou importado de planilha */
+  source?: 'manual' | 'import';
   createdAt: number;
   updatedAt?: number;
 }

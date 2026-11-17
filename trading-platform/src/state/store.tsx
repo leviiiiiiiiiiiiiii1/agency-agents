@@ -46,6 +46,10 @@ interface StoreValue {
   opEditor: Operation | 'new' | null;
   openOpEditor: (op: Operation | 'new') => void;
   closeOpEditor: () => void;
+  importOpen: boolean;
+  openImport: () => void;
+  closeImport: () => void;
+  importOperations: (ops: Operation[], strategies: Strategy[]) => void;
 }
 
 const Ctx = createContext<StoreValue | null>(null);
@@ -59,6 +63,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [opEditor, setOpEditor] = useState<Operation | 'new' | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
   const [storageError, setStorageError] = useState<string | null>(null);
   const first = useRef(true);
 
@@ -178,6 +183,17 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   const openOpEditor = useCallback((op: Operation | 'new') => setOpEditor(op), []);
   const closeOpEditor = useCallback(() => setOpEditor(null), []);
+  const openImport = useCallback(() => setImportOpen(true), []);
+  const closeImport = useCallback(() => setImportOpen(false), []);
+  const importOperations = useCallback((newOps: Operation[], newStrategies: Strategy[]) => {
+    if (!newOps.length) return;
+    setData((d) => ({
+      ...d,
+      operations: [...d.operations, ...newOps],
+      strategies: [...d.strategies, ...newStrategies],
+    }));
+    toast(`${newOps.length} operação(ões) importada(s)${newStrategies.length ? ` e ${newStrategies.length} estratégia(s) criada(s)` : ''}. Indicadores recalculados.`);
+  }, [setData, toast]);
 
   const value: StoreValue = {
     data, setData, ops, allOps, page, setPage, refDate, setRefDate, range, setRange,
@@ -185,6 +201,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     saveStrategy, deleteStrategy, addLedger, deleteLedger, savePlan, deletePlan,
     resetAll, restore, storageError, loadDemo, removeDemo, sidebarOpen, setSidebarOpen,
     opEditor, openOpEditor, closeOpEditor,
+    importOpen, openImport, closeImport, importOperations,
   };
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
