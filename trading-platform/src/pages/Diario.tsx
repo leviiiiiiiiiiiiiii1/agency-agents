@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { ChevronLeft, ChevronRight, CalendarDays, Target, Flame, Clock, Layers3, Plus, Pencil, CircleHelp } from 'lucide-react';
+import { ChevronLeft, ChevronRight, CalendarDays, Target, Flame, Clock, Layers3, Plus, Pencil, CircleHelp, CalendarX2, Trash2, Undo2 } from 'lucide-react';
 import { useStore } from '../state/store';
 import { PageHeader, Card, CardHead, StatCard, Modal, Notice } from '../components/ui';
 import { OperationTable } from '../components/OperationTable';
@@ -7,7 +7,7 @@ import { dayInfos, stats, byHour, byStrategy, sortOps, resolveValue } from '../l
 import { money, pct, formatDate, monthLabel, parseISO, daysInMonth, isoOf, addDays } from '../lib/format';
 
 export function DiarioPage() {
-  const { data, setData, ops, refDate, setRefDate, openOpEditor } = useStore();
+  const { data, setData, ops, refDate, setRefDate, openOpEditor, openDayTools, undo, undoInfo } = useStore();
   const s = data.settings;
   const [month, setMonth] = useState(refDate.slice(0, 7));
   const [dayOpen, setDayOpen] = useState<string | null>(null);
@@ -129,13 +129,15 @@ export function DiarioPage() {
         </div>
       </Card>
 
-      <div className="mt-14"><Notice>Clique em qualquer dia do calendário para abrir as operações daquele período. Dias vazios permanecem neutros — nunca são preenchidos com valores fictícios.</Notice></div>
+      <div className="mt-14"><Notice>Clique em qualquer dia do calendário para abrir as operações daquele período. Dias vazios permanecem neutros — nunca são preenchidos com valores fictícios. Para corrigir um dia importado na data errada, use <b>Excluir / mover o dia</b> dentro do dia ou o ícone <CalendarX2 size={12} style={{ verticalAlign: 'middle' }} /> no topo.</Notice></div>
 
       {dayOpen && (
         <Modal title={`Detalhes de ${formatDate(dayOpen, s)}`} wide
           sub={`${dayOps.length} operação(ões) · resultado ${money(stats(dayOps).net, s, { signed: true })} · assertividade ${pct(stats(dayOps).winRate, 1)}`}
           onClose={() => setDayOpen(null)}
           footer={<><button className="btn" onClick={() => { setNoteText(data.dayNotes[dayOpen] || ''); setNoteEdit(true); }}><Pencil size={14} /> Anotação do dia</button>
+            <button className="btn danger" disabled={!dayOps.length} onClick={() => { setDayOpen(null); openDayTools(dayOpen); }}><Trash2 size={14} /> Excluir / mover o dia</button>
+            {undoInfo && <button className="btn" onClick={undo} title={undoInfo.label}><Undo2 size={14} /> Desfazer</button>}
             <button className="btn primary" onClick={() => { setRefDate(dayOpen); openOpEditor('new'); }}><Plus size={14} /> Registrar neste dia</button></>}>
           <div className="grid grid-4 mb-14">
             <div><div className="field-label">Resultado</div><div className={`mono mt-8 ${stats(dayOps).net >= 0 ? 'value-pos' : 'value-neg'}`} style={{ fontSize: 17 }}>{money(stats(dayOps).net, s, { signed: true })}</div></div>

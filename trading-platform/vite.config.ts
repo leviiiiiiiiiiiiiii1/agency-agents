@@ -9,8 +9,11 @@ export default defineConfig({
     allowedHosts: true,
   },
   build: {
+    // O chunk isolado de gráficos (Recharts) fica em ~524 kB / ~148 kB gzip.
+    chunkSizeWarningLimit: 600,
     rollupOptions: {
       output: {
+        // Recharts vai para um chunk próprio (carregado em paralelo, não bloqueia a UI).
         manualChunks: {
           charts: ['recharts'],
         },

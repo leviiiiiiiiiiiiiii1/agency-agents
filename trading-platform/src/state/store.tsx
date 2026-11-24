@@ -50,6 +50,13 @@ interface StoreValue {
   openImport: () => void;
   closeImport: () => void;
   importOperations: (ops: Operation[], strategies: Strategy[]) => void;
+  /** Aplica uma mudança guardando um snapshot para desfazer */
+  mutateWithUndo: (label: string, fn: (d: AppData) => AppData) => void;
+  undo: () => void;
+  undoInfo: { label: string } | null;
+  dayToolsDate: string | null;
+  openDayTools: (date?: string) => void;
+  closeDayTools: () => void;
 }
 
 const Ctx = createContext<StoreValue | null>(null);
@@ -64,6 +71,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [opEditor, setOpEditor] = useState<Operation | 'new' | null>(null);
   const [importOpen, setImportOpen] = useState(false);
+  const [dayToolsDate, setDayToolsDate] = useState<string | null>(null);
+  const [undoInfo, setUndoInfo] = useState<{ label: string } | null>(null);
+  const undoSnapshot = useRef<{ label: string; data: AppData } | null>(null);
   const [storageError, setStorageError] = useState<string | null>(null);
   const first = useRef(true);
 
@@ -181,19 +191,42 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   const removeDemo = useCallback(() => setData((d) => ({ ...d, operations: d.operations.filter((o) => !o.demo) })), [setData]);
 
+  /**
+   * Aplica uma alteração e guarda o estado anterior de forma atômica, para que
+   * movimentações em lote (ex.: corrigir um dia importado errado) possam ser desfeitas.
+   */
+  const mutateWithUndo = useCallback((label: string, fn: (d: AppData) => AppData) => {
+    setDataState((prev) => {
+      undoSnapshot.current = { label, data: prev };
+      return fn(prev);
+    });
+    setUndoInfo({ label });
+  }, []);
+
+  const undo = useCallback(() => {
+    const snap = undoSnapshot.current;
+    if (!snap) return;
+    setDataState(snap.data);
+    undoSnapshot.current = null;
+    setUndoInfo(null);
+    toast(`Ação desfeita: ${snap.label}.`, 'info');
+  }, [toast]);
+
   const openOpEditor = useCallback((op: Operation | 'new') => setOpEditor(op), []);
   const closeOpEditor = useCallback(() => setOpEditor(null), []);
+  const openDayTools = useCallback((date?: string) => setDayToolsDate(date || todayISO()), []);
+  const closeDayTools = useCallback(() => setDayToolsDate(null), []);
   const openImport = useCallback(() => setImportOpen(true), []);
   const closeImport = useCallback(() => setImportOpen(false), []);
   const importOperations = useCallback((newOps: Operation[], newStrategies: Strategy[]) => {
     if (!newOps.length) return;
-    setData((d) => ({
+    mutateWithUndo(`importação de ${newOps.length} operação(ões)`, (d) => ({
       ...d,
       operations: [...d.operations, ...newOps],
       strategies: [...d.strategies, ...newStrategies],
     }));
-    toast(`${newOps.length} operação(ões) importada(s)${newStrategies.length ? ` e ${newStrategies.length} estratégia(s) criada(s)` : ''}. Indicadores recalculados.`);
-  }, [setData, toast]);
+    toast(`${newOps.length} operação(ões) importada(s)${newStrategies.length ? ` e ${newStrategies.length} estratégia(s) criada(s)` : ''}. Indicadores recalculados.`, 'success');
+  }, [mutateWithUndo, toast]);
 
   const value: StoreValue = {
     data, setData, ops, allOps, page, setPage, refDate, setRefDate, range, setRange,
@@ -202,6 +235,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     resetAll, restore, storageError, loadDemo, removeDemo, sidebarOpen, setSidebarOpen,
     opEditor, openOpEditor, closeOpEditor,
     importOpen, openImport, closeImport, importOperations,
+    mutateWithUndo, undo, undoInfo, dayToolsDate, openDayTools, closeDayTools,
   };
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

@@ -1,7 +1,7 @@
 import React, { useMemo, useRef, useState } from 'react';
 import {
   Search, Download, FileSpreadsheet, Database, Upload, RotateCcw, FlaskConical, FileUp, Table2,
-  ShieldCheck, HardDrive, Trash2, AlertTriangle, Info, Filter,
+  ShieldCheck, HardDrive, Trash2, AlertTriangle, Info, Filter, CalendarX2, Undo2, CalendarClock,
 } from 'lucide-react';
 import { useStore } from '../state/store';
 import { PageHeader, Card, CardHead, Field, Notice, Modal, ConfirmDialog, StatCard, ResultBadge } from '../components/ui';
@@ -12,10 +12,11 @@ import { download, wipeData } from '../lib/storage';
 import { exportCsv, exportExcel, backupPayload } from '../lib/exporters';
 import { makeDemoOperations } from '../lib/sample';
 import { downloadTemplate } from '../lib/importers';
+import { importBatches } from '../lib/dayTools';
 import type { Operation } from '../types';
 
 export function HistoricoPage() {
-  const { data, ops, allOps, includeDemo, setIncludeDemo, range, toast, loadDemo, removeDemo, restore, resetAll, openImport } = useStore();
+  const { data, ops, allOps, includeDemo, setIncludeDemo, range, toast, loadDemo, removeDemo, restore, resetAll, openImport, openDayTools, undo, undoInfo } = useStore();
   const s = data.settings;
   const fileRef = useRef<HTMLInputElement>(null);
   const [search, setSearch] = useState('');
@@ -50,6 +51,7 @@ export function HistoricoPage() {
 
   const st = stats(filtered);
   const demoOps = allOps.filter((o) => o.demo);
+  const batches = useMemo(() => importBatches(data).slice(0, 12), [data]);
   const realOps = allOps.filter((o) => !o.demo);
 
   const doBackup = () => {
@@ -125,12 +127,51 @@ export function HistoricoPage() {
             <div className="btn-row mt-14">
               <button className="btn primary" onClick={openImport}><FileUp size={14} /> Abrir importação</button>
               <button className="btn" onClick={() => { downloadTemplate(); toast('Modelo de planilha baixado.', 'info'); }}><Download size={14} /> Baixar modelo .xlsx</button>
+              {undoInfo && <button className="btn" onClick={undo} title={undoInfo.label}><Undo2 size={14} /> Desfazer última ação</button>}
             </div>
+            <div className="mt-14"><Notice kind="warn"><AlertTriangle size={14} /> Importou na data errada? Abra <b>Gerenciar histórico por dia</b> logo abaixo, selecione o dia e use <b>Mover para outro dia</b> ou <b>Excluir do dia</b>. A ação pode ser desfeita.</Notice></div>
           </div>
           <div style={{ flex: 1, minWidth: 280 }}>
             <Notice><ShieldCheck size={14} /> Antes de gravar, a tela de importação mostra uma <b>prévia</b>, aponta linhas com erro, ignora duplicatas e permite marcar tudo como <span className="badge badge-demo">SIMULAÇÃO</span>. O lucro é recalculado pela regra entrada × payout, salvo se você optar por usar a coluna de retorno da planilha.</Notice>
           </div>
         </div>
+      </Card>
+
+      <div className="section-title">Gerenciar histórico por dia</div>
+      <Card className="mb-14">
+        <CardHead title="Excluir, mover ou copiar as operações de um dia" sub="Corrige importações feitas em datas erradas sem apagar nada além do dia escolhido"
+          right={<button className="btn sm" onClick={() => openDayTools()}><CalendarX2 size={14} /> Abrir gerenciador de dia</button>} />
+        <div className="small muted mb-14" style={{ lineHeight: 1.7 }}>
+          Escolha um dia com registros abaixo. No gerenciador você pode <b>mover</b> tudo para a data correta (mantendo horário, ativo, entrada, payout e resultado), <b>copiar</b> para outra data ou <b>excluir</b> apenas aquele dia — incluindo a opção <b>somente operações importadas</b>, que preserva o que você digitou manualmente.
+        </div>
+        {batches.length === 0
+          ? <div className="empty-state"><p>Nenhum dia com operações registradas.</p></div>
+          : (
+            <div className="table-wrap" style={{ maxHeight: 320 }}>
+              <table className="table">
+                <thead><tr><th>Dia</th><th>Total</th><th>Importadas</th><th>Manuais</th><th>Simulação</th><th>Resultado</th><th>Ações</th></tr></thead>
+                <tbody>
+                  {batches.map((b) => (
+                    <tr key={b.date}>
+                      <td className="strong">{formatDate(b.date, s)} <span className="tiny muted mono">({b.date})</span></td>
+                      <td className="mono">{b.count}</td>
+                      <td className="mono">{b.imported > 0 ? <span className="badge badge-demo"><FileSpreadsheet size={10} /> {b.imported}</span> : '—'}</td>
+                      <td className="mono">{b.manual || '—'}</td>
+                      <td className="mono">{b.demo || '—'}</td>
+                      <td className={`mono ${b.net >= 0 ? 'value-pos' : 'value-neg'}`}>{money(b.net, s, { signed: true })}</td>
+                      <td>
+                        <div className="row" style={{ gap: 6 }}>
+                          <button className="btn xs" onClick={() => openDayTools(b.date)}><CalendarClock size={11} /> Gerenciar dia</button>
+                          <button className="btn xs" onClick={() => { setFrom(b.date); setTo(b.date); toast(`Filtro aplicado ao dia ${formatDate(b.date, s)}.`, 'info'); }}>Filtrar</button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        <div className="tiny muted mt-8">Mostrando os 12 dias mais recentes com registros. Para outra data, abra o gerenciador e escolha o dia no campo de data.</div>
       </Card>
 
       <div className="section-title">Backup, restauração e persistência</div>

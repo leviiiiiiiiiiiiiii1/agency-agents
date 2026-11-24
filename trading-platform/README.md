@@ -49,7 +49,7 @@ A restauração substitui **todos** os dados atuais (operações, estratégias, 
 | **Estratégias** | Cadastro completo (nome, descrição, configuração, ativos, timeframe, expiração, cor, status), estatísticas calculadas do histórico real (total, W/L/D, assertividade, lucro, melhor horário, payout médio) e ranking automático. Ativar, desativar, editar e excluir sem perder o histórico. |
 | **Metas & planejamento** | Metas diária/semanal/mensal/de crescimento, objetivo financeiro, limite de perda, operações desejadas, progresso de cada objetivo e planos de crescimento com cenários conservador/realista/agressivo. |
 | **Planilha / Micro séries** | Visão em planilha com linhas verdes/vermelhas, blocos de micro séries, `% Micro Série`, `Investimento`, `Retorno`, `Capital Atual`, setas de "Repor Aqui", linha de `Resultados` e `Lucro de X% \| Y%`. Exportação CSV. |
-| **Histórico & dados** | Filtros avançados, pesquisa, edição/exclusão, **importação de planilhas Excel/CSV**, exportação CSV e Excel (.xlsx multi-abas), backup/restauração JSON, separação explícita entre dados reais e simulações. |
+| **Histórico & dados** | Filtros avançados, pesquisa, edição/exclusão, **importação de planilhas Excel/CSV**, **gerenciador de histórico por dia (excluir/mover/copiar)**, desfazer última ação, exportação CSV e Excel (.xlsx multi-abas), backup/restauração JSON, separação explícita entre dados reais e simulações. |
 | **Personalização** | Nome e subtítulo, tema claro/escuro, cores, moeda (BRL/USD/EUR/GBP/ARS/JPY + símbolo livre), localidade, formato de datas, números compactos, cards, colunas, campos do formulário, preferências de gráficos e período padrão dos filtros. |
 
 ---
@@ -70,6 +70,33 @@ O botão **Baixar modelo .xlsx** gera uma planilha com apenas os cabeçalhos e u
 Normalizações aceitas: datas `dd/MM/yyyy`, ISO, serial do Excel e datas com horário; valores `R$ 1.234,56`, `1,234.56`, `-R$ 21,00`, `85%`, frações `0,85 → 85%`; resultados `W/WIN/GANHO`, `L/LOSS/PERDA`, `D/DRAW/EMPATE`. Se não houver coluna de resultado, ele é inferido pelo lucro (positivo → WIN, negativo → LOSS, zero → DRAW).
 
 Registros importados recebem o selo **IMPORTADO**, podem ser editados/excluídos normalmente e são identificados na coluna "Tipo de dado" das exportações. Limites operacionais (stop, risco, exposição) continuam valendo para novas operações, mas não bloqueiam a carga de histórico.
+
+## Corrigir ou excluir o histórico de um dia
+
+Cenário clássico: a planilha foi importada com a **data errada** (ou o horário caiu em outro dia no fuso). Nada precisa ser apagado no escuro — existe um gerenciador por dia.
+
+**Como abrir:** ícone de calendário com X no topo, atalho **Gerenciar dia** no menu lateral, botão **Excluir / mover o dia** dentro do dia no calendário, ou **Histórico & dados → Gerenciar histórico por dia**.
+
+**No gerenciador você escolhe:**
+
+| Ação | Efeito |
+|---|---|
+| **Mover para outro dia** | Leva as operações do dia para a data correta, preservando horário, ativo, entrada, payout, resultado, observações e prints |
+| **Excluir do dia** | Apaga apenas as operações daquele dia; o resto do histórico fica intacto |
+| **Copiar para outro dia** | Duplica a sequência na data escolhida (novos IDs) |
+
+Escopos disponíveis:
+
+- **Somente operações importadas** — preserva o que você digitou manualmente no mesmo dia;
+- **Incluir registros de simulação** — desmarque para proteger dados de demonstração.
+
+Antes de gravar, o modal mostra a contagem, o resultado financeiro do dia e uma prévia das operações com a origem de cada uma (IMPORTADO × manual). A primeira execução exige **confirmação explícita** ("Confirmar: mover operações").
+
+### Desfazer última ação
+
+Importações, movimentações e exclusões guardam um snapshot em memória. O botão **Desfazer** aparece no topo (ícone ↺), no modal do dia e em **Histórico & dados → Desfazer última ação**. O snapshot vale para a sessão atual e não é gravado no `localStorage` nem no backup.
+
+> Antes de mexer em um dia inteiro, use **Fazer backup**: o JSON captura o estado exato e permite restaurar tudo.
 
 ---
 
